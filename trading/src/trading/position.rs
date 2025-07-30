@@ -1,14 +1,16 @@
-use sep_40_oracle::Asset;
-use soroban_fixed_point_math::SorobanFixedPoint;
-use soroban_sdk::{Address, Env, panic_with_error};
-use soroban_sdk::token::TokenClient;
-use crate::constants::SCALAR_7;
+use crate::constants::{SCALAR_18, SCALAR_7};
 use crate::errors::TradingError;
 use crate::events::TradingEvents;
 use crate::storage;
 use crate::trading::actions::RequestType;
 use crate::trading::trading::Trading;
 pub(crate) use crate::types::{Position, PositionStatus};
+use sep_40_oracle::Asset;
+use soroban_fixed_point_math::SorobanFixedPoint;
+use soroban_sdk::token::TokenClient;
+use soroban_sdk::{panic_with_error, Address, Env};
+use crate::dependencies::VaultClient;
+use crate::trading::market::Market;
 
 /// Implementation of position-related methods
 impl Position {
@@ -16,8 +18,8 @@ impl Position {
         storage::get_position(e, position_id)
     }
 
-    pub fn store(&self, e: &Env, position_id: u32) {
-        storage::set_position(e, position_id, &self);
+    pub fn store(&self, e: &Env) {
+        storage::set_position(e, self.id, &self);
     }
 
     pub fn require_auth(&self) {
@@ -35,39 +37,45 @@ impl Position {
             RequestType::TakeProfit => self.status == PositionStatus::Open,
             RequestType::Liquidation => self.status == PositionStatus::Open,
             RequestType::Cancel => self.status == PositionStatus::Pending,
+            RequestType::WithdrawCollateral => self.status == PositionStatus::Open,
+            RequestType::DepositCollateral => self.status == PositionStatus::Open,
+            RequestType::SetTakeProfit => self.status == PositionStatus::Open,
+            RequestType::SetStopLoss => self.status == PositionStatus::Open,
         }
     }
 
-    /// Set stop loss and take profit levels
-    pub fn set_risk_params(&mut self, stop_loss: i128, take_profit: i128) {
-        self.stop_loss = stop_loss;
-        self.take_profit = take_profit;
+    pub fn calculate_fee(&self, e: &Env, market: &Market) -> i128 {
+        let base_fee = self.collateral.fixed_mul_ceil(e, &market.config.base_fee, &SCALAR_7);
+        let price_impact_scalar = self.notional_size.fixed_div_ceil(e, &market.config.price_impact_scalar, &SCALAR_7);
+
+        let index_difference = if self.is_long {
+            market.data.long_interest_index - self.interest_index
+        } else {
+            market.data.short_interest_index - self.interest_index
+        };
+
+        // TODO: Does this work??
+        let virtual_amount = self.notional_size - self.collateral;
+        let interest_fee = virtual_amount.fixed_mul_floor(e, &index_difference, &SCALAR_18);
+
+        base_fee + price_impact_scalar * interest_fee
     }
 
-    pub fn set_status(&mut self, status: PositionStatus) {
-        self.status = status;
-    }
-
-    /// Calculate profit/loss for a position
-    pub fn calculate_pnl(&self, e: &Env, current_price: i128) -> (i128, i128) {
+    pub fn calculate_pnl(&self, e: &Env, current_price: i128) -> i128 {
         let price_diff = if self.is_long {
             current_price - self.entry_price
         } else {
             self.entry_price - current_price
         };
 
-        let pnl = if price_diff == 0 {
+        if price_diff == 0 {
             0
         } else {
-            // Calculate percentage change
-            let percent_change = price_diff.fixed_div_floor(e, &self.entry_price, &SCALAR_7);
-            let leveraged_percent = percent_change.fixed_mul_floor(e, &(self.leverage as i128), &100);
-            self.collateral.fixed_mul_floor(e, &leveraged_percent, &SCALAR_7)
-        };
-
-        // #TODO: Calculate total fee based on market conditions
-        let total_fee = 0;
-        (pnl, total_fee)
+            // PnL = notional_size * (price_change / entry_price)
+            let price_change_ratio = price_diff.fixed_div_floor(e, &self.entry_price, &SCALAR_7);
+            self.notional_size
+                .fixed_mul_floor(e, &price_change_ratio, &SCALAR_7)
+        }
     }
 
     pub fn check_take_profit(&self, current_price: i128) -> bool {
@@ -100,16 +108,15 @@ pub fn execute_create_position(
     user: &Address,
     asset: &Asset,
     collateral: i128,
-    leverage: u32,
+    notional_size: i128,
     is_long: bool,
-    entry_price: i128
+    entry_price: i128,
 ) -> u32 {
     user.require_auth();
     let mut trading = Trading::load(e);
-    let mut market = trading.load_market(e, asset, true);
+    let mut market = trading.load_market(e, asset);
 
-    // Validate parameters
-    if !market.is_collateral_valid(collateral) || !market.is_leverage_valid(leverage) || entry_price < 0 {
+    if collateral < 0 || notional_size < 0 || entry_price < 0 {
         panic_with_error!(e, TradingError::BadRequest);
     }
 
@@ -119,41 +126,37 @@ pub fn execute_create_position(
         panic_with_error!(e, TradingError::MaxPositions)
     }
 
-    // Transfer tokens from user to contract
-    let token_client = TokenClient::new(e, &storage::get_token(e));
-    token_client.transfer(user, &e.current_contract_address(), &collateral);
-    
-    
     let current_price = trading.load_price(e, asset);
-    let mut status = PositionStatus::Open;
-    let actual_entry_price = if entry_price == 0 {
-        current_price
-    } else if (is_long && entry_price < current_price) || (!is_long && entry_price > current_price) {
-        status = PositionStatus::Pending;
-        entry_price
+    let market_order = entry_price == 0;
+    let status = if market_order {
+        PositionStatus::Open
     } else {
+        PositionStatus::Pending
+    };
+
+    let actual_entry_price = if market_order {
         current_price
+    } else {
+        // Check if entry price is valid
+        if (is_long && entry_price < current_price) || (!is_long && entry_price > current_price) {
+            panic_with_error!(e, TradingError::BadRequest);
+        }
+        entry_price
     };
 
     // If market order, update market stats immediately
-    if status == PositionStatus::Open {
-        let size = collateral.fixed_mul_floor(e, &(leverage as i128), &100);
-        let borrowed = size - collateral;
-        market.update_stats(e, collateral, borrowed, is_long);
-
-        // Update market in storage
+    if market_order {
+        market.update_stats(e, collateral, notional_size, is_long);
         trading.cache_market(&market);
-        trading.store_cached_markets(e);
     }
 
-    let position_index = if is_long {
+    let interest_index = if is_long {
         market.data.long_interest_index
     } else {
         market.data.short_interest_index
     };
-    
-    let id = storage::bump_position_id(e);
 
+    let id = storage::bump_position_id(e);
     let position = Position {
         id,
         user: user.clone(),
@@ -163,42 +166,32 @@ pub fn execute_create_position(
         stop_loss: 0,
         take_profit: 0,
         entry_price: actual_entry_price,
-        leverage,
+        close_price: 0,
         collateral,
-        position_index,
-        timestamp: e.ledger().timestamp(),
+        notional_size,
+        interest_index,
+        created_at: e.ledger().timestamp(),
     };
-    position.store(e, id);
+
+    let open_fee = collateral.fixed_mul_ceil(e, &market.config.base_fee, &SCALAR_7);
+
+    // Transfer tokens from user to contract
+    let token_client = TokenClient::new(e, &storage::get_token(e));
+    token_client.transfer(user, &e.current_contract_address(), &(collateral + open_fee));
+
+    // Only pay fee to vault when the position fills
+    if market_order {
+        let vault_client = VaultClient::new(e, &storage::get_vault(e));
+        vault_client.transfer_to(&e.current_contract_address(), &open_fee);
+    }
+
+    trading.cache_position(&position);
+    trading.store_cached_markets(e);
+    trading.store_cached_positions(e);
+
     storage::add_user_position(e, user, id);
 
-    TradingEvents::open_position(e, user.clone(), asset.clone(), id, collateral, leverage.clone(), is_long, actual_entry_price);
+    TradingEvents::open_position(e, user.clone(), asset.clone(), id);
+
     id
-}
-
-pub fn execute_modify_risk(e: &Env, position_id: u32, stop_loss: i128, take_profit: i128) {
-    let mut position = Position::load(e, position_id);
-    position.require_auth();
-
-    let mut trading = Trading::load(e);
-    let current_price = trading.load_price(e, &position.asset);
-
-    // Validate stop_loss if it's set (non-zero)
-    if stop_loss != 0 {
-        if (position.is_long && stop_loss > current_price) ||
-            (!position.is_long && stop_loss < current_price) {
-            panic_with_error!(e, TradingError::BadRequest);
-        }
-    }
-
-    // Validate take_profit if it's set (non-zero)
-    if take_profit != 0 {
-        if (position.is_long && take_profit < current_price) ||
-            (!position.is_long && take_profit > current_price) {
-            panic_with_error!(e, TradingError::BadRequest);
-        }
-    }
-
-    position.set_risk_params(stop_loss, take_profit);
-    position.store(e, position_id);
-    TradingEvents::modify_risk(e, position.user.clone(), position_id, stop_loss, take_profit);
 }

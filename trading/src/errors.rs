@@ -8,12 +8,14 @@ pub enum TradingError {
     //Related to oracle
     StalePrice = 10,
     NoPrice = 11,
-    
+
     //Setting up markets
     NotUnlocked = 66,
     InvalidConfig = 67,
 
     MaxPositions = 68,
+
+    InvalidAction = 69,
 
     BadRequest = 20, // General error if the call is invalid
 }

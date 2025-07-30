@@ -1,43 +1,40 @@
-use sep_40_oracle::Asset;
-use soroban_sdk::{contract, contractclient, contractimpl, Address, Env, Vec, BytesN, String};
-use crate::{storage, trading};
 use crate::events::TradingEvents;
 use crate::trading::Request;
 use crate::types::MarketConfig;
+use crate::{storage, trading, TradingConfig};
+use sep_40_oracle::Asset;
+use soroban_sdk::{
+    contract, contractclient, contractimpl, unwrap::UnwrapOptimized, Address, BytesN, Env, String,
+    Symbol, Vec,
+};
+use stellar_access::ownable::{self as ownable, Ownable};
+use stellar_macros::{default_impl, only_owner};
+use stellar_contract_utils::upgradeable::UpgradeableInternal;
 
 #[contract]
 pub struct TradingContract;
 
 #[contractclient(name = "TradingClient")]
 pub trait Trading {
-    /// (Admin only) Set a new address to become the admin of the pool. This
-    /// must be accepted by the new admin w/ `accept_admin` to take effect.
+
+    /// (Owner only) Initialize the trading contract
     ///
     /// ### Arguments
-    /// * `new_admin` - The new admin address
-    ///
+    /// * `name` - Name of the trading contract
+    /// * `vault` - Address of the vault contract
+    /// * `config` - Initial trading configuration
     /// ### Panics
-    /// If the caller is not the admin
-    fn propose_admin(e: Env, new_admin: Address);
+    /// If the caller is not the owner
+    /// If the contract is already initialized
+    /// If the configuration is invalid
+    fn initialize(
+        e: Env,
+        name: String,
+        vault: Address,
+        config: TradingConfig,
+    );
 
-    /// (Proposed admin only) Accept the admin role. Ensures the new admin
-    /// can safely submit transactions before taking over the pool admin role.
-    ///
-    /// ### Panics
-    /// If the caller is not the proposed admin
-    fn accept_admin(e: Env);
-
-    /// (Admin only) Set the vault address for the trading contract
-    /// can only be called during initialization when status is 0.
-    ///
-    /// ### Arguments
-    /// * `vault` - The vault address
-    ///
-    /// ### Panics
-    /// If the caller is not the admin
-    fn set_vault(e: Env, vault: Address);
-
-    /// (Admin only) update the trading configuration
+    /// (Owner only) Update the trading configuration
     ///
     /// ### Arguments
     /// * `oracle` - The oracle address
@@ -45,18 +42,28 @@ pub trait Trading {
     /// * `max_positions` - The maximum number of positions
     ///
     /// ### Panics
-    /// If the caller is not the admin
-    fn update_config(e: Env, oracle: Address, caller_take_rate: i128, max_positions: u32);
+    /// If the caller is not the owner
+    fn set_config(e: Env, config: TradingConfig);
 
-    /// (Admin only) Queues setting data for a market
+    /// (Owner only) Queue setting data for a market
     ///
     /// ### Arguments
     /// * `asset` - The underlying asset to add as a market
     /// * `config` - The MarketConfig for the market
     ///
     /// ### Panics
-    /// If the caller is not the admin
+    /// If the caller is not the owner
     fn queue_set_market(e: Env, asset: Asset, config: MarketConfig);
+
+    /// (Owner only) Cancels a queued market initialization
+    ///
+    /// ### Arguments
+    /// * `asset` - The underlying asset to cancel the market for
+    ///
+    /// ### Panics
+    /// If the caller is not the owner
+    /// If the market is not queued for initialization
+    fn cancel_set_market(e: Env, asset: Asset);
 
     /// Executes the queued set of a market
     ///
@@ -69,16 +76,16 @@ pub trait Trading {
     /// or has invalid metadata
     fn set_market(e: Env, asset: Asset);
 
-    /// (Admin only) Sets the status of the trading contract
+    /// (Owner only) Sets the status of the trading contract
     ///
     /// ### Arguments
     /// * `status` - The new status code (0: Normal, 1: Paused, etc.)
     ///
     /// ### Panics
-    /// If the caller is not the admin
+    /// If the caller is not the owner
     fn set_status(e: Env, status: u32);
 
-    /// Opens a position (long or short)
+    /// Create a position (long or short)
     ///
     /// # Arguments
     /// * `user` - User address opening position
@@ -90,98 +97,72 @@ pub trait Trading {
     ///
     /// # Returns
     /// Position ID of the newly opened position
-    fn open_position(
+    fn create_position(
         e: Env,
         user: Address,
         asset: Asset,
         collateral: i128,
-        leverage: u32,
+        notional_size: i128,
         is_long: bool,
         entry_price: i128,
     ) -> u32;
-
-    /// Modifies position risk parameters (stop loss and/or take profit)
-    ///
-    /// # Arguments
-    /// * `position_id` - Position ID
-    /// * `stop_loss` - Stop loss price level (0 to keep current value, -1 to remove)
-    /// * `take_profit` - Take profit price level (0 to keep current value, -1 to remove)
-    fn modify_risk(e: Env, position_id: u32, stop_loss: i128, take_profit: i128);
 
     /// Executes a batch of trading actions
     ///
     /// # Arguments
     /// * `caller` - Address of the caller executing the actions
-    /// * `request` - Vector of requests to process
+    /// * `requests` - Vector of requests to process
     ///
     /// # Returns
-    /// Amount of fees earned by the caller
-    fn submit(e: Env, caller: Address, request: Vec<Request>) -> i128;
-
-    /// (Admin only) Upgrade the contract to a new WASM binary
-    ///
-    /// This function allows the contract admin to update the contract's code while
-    /// preserving its state. The upgrade is performed by providing the hash of a
-    /// pre-deployed WASM binary.
-    ///
-    /// ### Arguments
-    /// * `wasm_hash` - The hash of the new WASM binary
-    ///
-    /// ### Panics
-    /// If the caller is not the admin
-    fn upgrade_wasm(e: Env, wasm_hash: BytesN<32>);
+    /// Results of the requests processed
+    fn submit(e: Env, caller: Address, requests: Vec<Request>) -> Vec<u32>;
 }
 
 #[contractimpl]
 impl TradingContract {
-    /// Constructor for initializing the contract when deployed
-    pub fn __constructor(e: Env, name: String, admin: Address, oracle: Address, caller_take_rate: i128, max_positions: u32) {
-        admin.require_auth();
-        trading::execute_initialize(&e, &name, &admin, &oracle, caller_take_rate, max_positions);
+    pub fn __constructor(
+        e: Env,
+        owner: Address,
+    ) {
+        ownable::set_owner(&e, &owner);
     }
 }
 
 #[contractimpl]
 impl Trading for TradingContract {
-    fn propose_admin(e: Env, new_admin: Address) {
-        storage::extend_instance(&e);
-        let admin = storage::get_admin(&e);
-        admin.require_auth();
 
-        storage::set_proposed_admin(&e, &new_admin);
-        TradingEvents::propose_admin(&e, admin.clone(), new_admin.clone());
+    #[only_owner]
+    fn initialize(
+        e: Env,
+        name: String,
+        vault: Address,
+        config: TradingConfig,
+    ) {
+        storage::extend_instance(&e);
+        trading::execute_initialize(
+            &e,
+            &name,
+            &vault,
+            &config,
+        );
     }
 
-    fn accept_admin(e: Env) {
+    #[only_owner]
+    fn set_config(e: Env, config: TradingConfig) {
         storage::extend_instance(&e);
-        let proposed_admin = storage::get_proposed_admin(&e).unwrap();
-        proposed_admin.require_auth();
-        storage::set_admin(&e, &proposed_admin);
-        TradingEvents::accept_admin(&e, proposed_admin.clone());
+        trading::execute_set_config(&e, &config: TradingConfig);
     }
 
-    fn set_vault(e: Env, vault: Address) {
-        storage::extend_instance(&e);
-        let admin = storage::get_admin(&e);
-        admin.require_auth();
-
-        trading::execute_set_vault(&e, &admin, &vault);
-    }
-
-    fn update_config(e: Env, oracle: Address, caller_take_rate: i128, max_positions: u32) {
-        storage::extend_instance(&e);
-        let admin = storage::get_admin(&e);
-        admin.require_auth();
-
-        trading::execute_update_config(&e, &admin, &oracle, caller_take_rate, max_positions);
-    }
-
+    #[only_owner]
     fn queue_set_market(e: Env, asset: Asset, config: MarketConfig) {
         storage::extend_instance(&e);
-        let admin = storage::get_admin(&e);
-        admin.require_auth();
+        trading::execute_queue_set_market(&e, &asset, &config);
+    }
 
-        trading::execute_queue_set_market(&e, &admin, &asset, &config);
+    #[only_owner]
+    fn cancel_set_market(e: Env, asset: Asset) {
+        storage::extend_instance(&e);
+        trading::execute_cancel_queued_market(&e, &asset);
     }
 
     fn set_market(e: Env, asset: Asset) {
@@ -189,43 +170,44 @@ impl Trading for TradingContract {
         trading::execute_set_market(&e, &asset);
     }
 
+    #[only_owner]
     fn set_status(e: Env, status: u32) {
         storage::extend_instance(&e);
-        let admin = storage::get_admin(&e);
-        admin.require_auth();
-        
-        trading::execute_set_status(&e, &admin, status);
+        let caller = e.current_contract_address();
+        trading::execute_set_status(&e, &caller, status);
     }
 
-    fn open_position(
+    fn create_position(
         e: Env,
         user: Address,
         asset: Asset,
         collateral: i128,
-        leverage: u32,
+        notional_size: i128,
         is_long: bool,
         entry_price: i128,
     ) -> u32 {
         storage::extend_instance(&e);
-        trading::execute_create_position(&e, &user, &asset, collateral, leverage, is_long, entry_price)
+        trading::execute_create_position(
+            &e,
+            &user,
+            &asset,
+            collateral,
+            notional_size,
+            is_long,
+            entry_price,
+        )
     }
 
-    fn modify_risk(e: Env, position_id: u32, stop_loss: i128, take_profit: i128) {
-        storage::extend_instance(&e);
-        trading::execute_modify_risk(&e, position_id, stop_loss, take_profit);
-    }
-
-    fn submit(e: Env, caller: Address, requests: Vec<Request>) -> i128 {
+    fn submit(e: Env, caller: Address, requests: Vec<Request>) -> Vec<u32> {
         storage::extend_instance(&e);
         trading::execute_submit(&e, &caller, requests)
     }
-
-    fn upgrade_wasm(e: Env, wasm_hash: BytesN<32>) {
-        storage::extend_instance(&e);
-        let admin = storage::get_admin(&e);
-        admin.require_auth();
-
-        e.deployer().update_current_contract_wasm(wasm_hash.clone());
-        TradingEvents::upgrade_wasm(&e, admin.clone(), wasm_hash);
-    }
 }
+
+#[default_impl]
+#[contractimpl]
+impl Ownable for TradingContract {}
+
+#[default_impl]
+#[contractimpl]
+impl UpgradeableInternal for TradingContract {}

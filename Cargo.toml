@@ -1,9 +1,7 @@
 [workspace]
 resolver = "2"
 members = [ "test-suites",
-  "trading",
-  "vault",
-  "test-suites"
+  "trading"
 ]
 
 [workspace.dependencies.soroban-sdk]
@@ -17,6 +15,15 @@ version = "1.2.0"
 
 [workspace.dependencies.sep-41-token]
 version = "1.2.0"
+
+[workspace.dependencies.stellar-access]
+version = "0.4.1"
+
+[workspace.dependencies.stellar-macros]
+version = "0.4.1"
+
+[workspace.dependencies.stellar-contract-utils]
+version = "0.4.1"
 
 [profile.release]
 opt-level = "z"

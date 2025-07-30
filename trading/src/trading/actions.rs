@@ -1,17 +1,19 @@
-use soroban_fixed_point_math::SorobanFixedPoint;
-use soroban_sdk::{contracttype, panic_with_error, Address, Env, Map, Vec};
 use crate::errors::TradingError;
 use crate::events::TradingEvents;
 use crate::storage;
-use crate::trading::trading::Trading;
 use crate::trading::position::Position;
+use crate::trading::trading::Trading;
 use crate::types::PositionStatus;
+use soroban_fixed_point_math::SorobanFixedPoint;
+use soroban_sdk::{contracttype, panic_with_error, Address, Env, Map, Vec};
+use crate::constants::SCALAR_7;
 
 #[derive(Clone)]
 #[contracttype]
 pub struct Request {
     pub action: RequestType,
     pub position: u32,
+    pub data: Option<i128>,
 }
 
 /// The type of request to be made against the pool
@@ -25,155 +27,100 @@ pub enum RequestType {
     TakeProfit = 3,
     Liquidation = 4,
     Cancel = 5,
+    DepositCollateral = 6,
+    WithdrawCollateral = 7,
+    SetTakeProfit = 8,
+    SetStopLoss = 9,
 }
 
-impl RequestType {
-    /// Convert a u32 to a RequestType
-    ///
-    /// ### Panics
-    /// If the value is not a valid RequestType
-    pub fn from_u32(e: &Env, value: u32) -> Self {
-        match value {
-            0 => RequestType::Close,
-            1 => RequestType::Fill,
-            2 => RequestType::StopLoss,
-            3 => RequestType::TakeProfit,
-            4 => RequestType::Liquidation,
-            5 => RequestType::Cancel,
-            _ => panic_with_error!(e, TradingError::BadRequest),
-        }
-    }
+pub struct SubmitResult {
+    pub transfers: Map<Address, i128>,
+    pub results: Vec<u32>,
 }
 
-pub struct Actions {
-    pub spender_transfer: i128,
-    pub vault_transfer: i128,
-    pub owner_transfers: Map<Address, i128>,
-    pub caller: Address,
-}
-
-impl Actions {
+impl SubmitResult {
     /// Create an empty set of actions
-    pub fn new(e: &Env, caller: Address) -> Self {
-        Actions {
-            spender_transfer: 0,
-            vault_transfer: 0,
-            owner_transfers: Map::new(e),
-            caller,
+    pub fn new(e: &Env) -> Self {
+        SubmitResult {
+            transfers: Map::new(e),
+            results: Vec::new(e),
         }
     }
 
-    /// Add tokens the sender needs to transfer to the pool
-    pub fn add_for_spender_transfer(&mut self, amount: i128) {
-        self.spender_transfer += amount;
-    }
-
-    pub fn add_vault_transfer(&mut self, amount: i128) {
-        self.vault_transfer += amount;
-    }
-
-    pub fn add_for_owner_transfer(&mut self, owner: &Address, amount: i128) {
-        self.owner_transfers.set(owner.clone(), amount + self.owner_transfers.get(owner.clone()).unwrap_or(0));
+    pub fn add_transfer(&mut self, address: &Address, amount: i128) {
+        self.transfers.set(
+            address.clone(),
+            amount + self.transfers.get(address.clone()).unwrap_or(0),
+        );
     }
 }
 
-pub fn build_actions_from_request(e: &Env, trading: &mut Trading, requests: Vec<Request>, caller: Address) -> Actions {
-    let mut actions = Actions::new(e, caller);
-    let mut updated_positions: Map<u32, Position> = Map::new(e);
+pub fn process_requests(e: &Env, trading: &mut Trading, requests: Vec<Request>) -> SubmitResult {
+    let mut result = SubmitResult::new(e);
 
     for request in requests.iter() {
-        let mut position = Position::load(e, request.position);
-
-        // Skip if position already processed in this batch or action not allowed
-        // #TODO: Check if double update is possible
-        if !position.validate_action(&request.action) || updated_positions.contains_key(request.position) {
-            panic_with_error!(e, TradingError::BadRequest);
+        let mut position = trading.load_position(e, request.position);
+        if !position.validate_action(&request.action) {
+            // If the action is not valid for this position, we return an error and not panic
+            // This can happen when submitting multiple liquidations and one has already been closed
+            // in that case we don't want to panic, just return an error acknowledging the invalid action
+            result.results.push_back(TradingError::InvalidAction as u32);
+            continue;
         }
-        match request.action {
-            RequestType::Close => {
-                apply_close(e, &mut actions, trading, &mut position);
-            },
-            RequestType::Fill => {
-                apply_fill(e, &mut actions, trading, &mut position);
-            },
-            RequestType::StopLoss => {
-                apply_stop_loss(e, &mut actions, trading, &mut position);
-            },
-            RequestType::TakeProfit => {
-                apply_take_profit(e, &mut actions, trading, &mut position);
-            },
-            RequestType::Liquidation => {
-                apply_liquidation(e, &mut actions, trading, &mut position);
-            },
-            RequestType::Cancel => {
-                apply_cancel(e, &mut actions, &mut position);
-            },
-        }
-        updated_positions.set(request.position, position.clone());
+        let action_result = match request.action {
+            RequestType::Close => apply_close(e, &mut result, trading, &mut position),
+            RequestType::Fill => apply_fill(e, &mut result, trading, &mut position),
+            RequestType::StopLoss => apply_stop_loss(e, &mut result, trading, &mut position),
+            RequestType::TakeProfit => apply_take_profit(e, &mut result, trading, &mut position),
+            RequestType::Liquidation => apply_liquidation(e, &mut result, trading, &mut position),
+            RequestType::Cancel => apply_cancel(e, &mut result, &mut position),
+            // In the below cases we do panic with error
+            // This is an input error and should not happen
+            RequestType::WithdrawCollateral => {
+                let amount = request
+                    .data
+                    .unwrap_or_else(|| panic_with_error!(e, TradingError::BadRequest));
+                apply_withdraw_collateral(e, &mut result, trading, &mut position, amount)
+            }
+            RequestType::DepositCollateral => {
+                let amount = request
+                    .data
+                    .unwrap_or_else(|| panic_with_error!(e, TradingError::BadRequest));
+                apply_deposit_collateral(e, &mut result, trading, &mut position, amount)
+            }
+            RequestType::SetTakeProfit => {
+                let price = request
+                    .data
+                    .unwrap_or_else(|| panic_with_error!(e, TradingError::BadRequest));
+                apply_set_take_profit(e, trading, &mut position, price)
+            }
+            RequestType::SetStopLoss => {
+                let price = request
+                    .data
+                    .unwrap_or_else(|| panic_with_error!(e, TradingError::BadRequest));
+                apply_set_stop_loss(e, trading, &mut position, price)
+            }
+        };
+        result.results.push_back(action_result);
     }
 
-    // Store all updated positions
-    for (id, pos) in updated_positions.iter() {
-        pos.store(e, id);
-    }
-
-    // Store updated markets
     trading.store_cached_markets(e);
+    trading.store_cached_positions(e);
 
-    actions
+    result
 }
 
 fn handle_close(
     e: &Env,
-    actions: &mut Actions,
+    result: &mut SubmitResult,
     trading: &mut Trading,
     position: &mut Position,
-    status: PositionStatus,
-) {
-    // Get current price
+) -> u32 {
     let price = trading.load_price(e, &position.asset);
-    let (pnl, fee) = position.calculate_pnl(e, price);
+    let market = trading.load_market(e, &position.asset);
+    let pnl = position.calculate_pnl(e, price);
+    let fee = position.calculate_fee(e, &market);
     let net_pnl = pnl - fee;
-
-    // Emit the appropriate event based on status
-    match status {
-        PositionStatus::UserClosed => {
-            TradingEvents::close_position(
-                e,
-                position.user.clone(),
-                position.asset.clone(),
-                position.id,
-                pnl,
-                fee,
-                price,
-            );
-        },
-        PositionStatus::StopLossClosed => {
-            TradingEvents::stop_loss_triggered(
-                e,
-                position.user.clone(),
-                position.asset.clone(),
-                actions.caller.clone(),
-                position.id,
-                pnl,
-                fee,
-                price,
-            );
-        },
-        PositionStatus::TakeProfitClosed => {
-            TradingEvents::take_profit_triggered(
-                e,
-                position.user.clone(),
-                position.asset.clone(),
-                actions.caller.clone(),
-                position.id,
-                pnl,
-                fee,
-                price,
-            );
-        },
-        _ => {} // No event for other statuses
-    }
 
     let payout = if net_pnl < 0 {
         // Loss scenario
@@ -190,55 +137,61 @@ fn handle_close(
         position.collateral + net_pnl
     };
 
-    // Calculate spender fee
-    let spender_fee = trading.calculate_spender_fee(e, fee);
-    actions.add_for_spender_transfer(spender_fee);
+    let caller_fee = trading.calculate_caller_fee(e, fee);
+    let vault_fee = fee - caller_fee;
 
-    // Calculate net vault transfer (single operation)
-    let vault_fee = fee - spender_fee;
-    if net_pnl > 0 {
-        // Profitable: need to borrow profit from vault
-        actions.add_vault_transfer(net_pnl - vault_fee);
-    } else if payout < position.collateral {
-        // Loss: repay remaining collateral to vault after payout
-        let amount_to_repay = position.collateral - payout - vault_fee;
-        if amount_to_repay > 0 {
-            actions.add_vault_transfer(-amount_to_repay);
-        }
+    result.add_transfer(&trading.caller, caller_fee);
+
+    if net_pnl < 0 {
+        // If net PnL is negative, we need to pay the vault
+        result.add_transfer(&trading.vault, -net_pnl + vault_fee);
+    } else if net_pnl > 0 {
+        // If net PnL is positive, we need to pay the user
+        result.add_transfer(&position.user, net_pnl + vault_fee);
     }
 
     if payout > 0 {
-        actions.add_for_owner_transfer(&position.user, payout);
+        // If payout is positive, we need to pay the user
+        result.add_transfer(&position.user, payout);
     }
 
-    // Update market data
-    let size = position.collateral.fixed_mul_floor(e, &(position.leverage as i128), &100);
-    let mut market = trading.load_market(e, &position.asset, true);
-    market.update_stats(e, -position.collateral, -(size - position.collateral), position.is_long);
-    trading.cache_market(&market);
     storage::remove_user_position(e, &position.user, position.id);
 
     // Update position status to the specified status
-    position.set_status(status);
+    position.set_status(PositionStatus::Closed);
+
+    let mut market = trading.load_market(e, &position.asset);
+    market.update_stats(
+        e,
+        -position.collateral,
+        -position.notional_size,
+        position.is_long,
+    );
+    trading.cache_market(&market);
+    trading.cache_position(&position);
+
+    0
 }
 
 fn apply_close(
     e: &Env,
-    actions: &mut Actions,
+    result: &mut SubmitResult,
     trading: &mut Trading,
-    position: &mut Position
-) {
+    position: &mut Position,
+) -> u32 {
     position.require_auth();
-    handle_close(e, actions, trading, position, PositionStatus::UserClosed);
+    handle_close(e, result, trading, position)
 }
 
 fn apply_fill(
     e: &Env,
-    actions: &mut Actions,
+    result: &mut SubmitResult,
     trading: &mut Trading,
     position: &mut Position,
-) {
+) -> u32 {
     let current_price = trading.load_price(e, &position.asset);
+    let mut market = trading.load_market(e, &position.asset);
+
     let can_fill = if position.is_long {
         current_price <= position.entry_price
     } else {
@@ -246,117 +199,279 @@ fn apply_fill(
     };
 
     if !can_fill {
-        panic_with_error!(e, TradingError::BadRequest);
+        return TradingError::BadRequest as u32;
     }
 
-    position.set_status(PositionStatus::Open);
-    position.entry_price = current_price; // Use actual fill price
+    position.status = PositionStatus::Open;
+    position.entry_price = current_price;
 
-    let size = position.collateral.fixed_mul_floor(e, &(position.leverage as i128), &100);
-    let mut market = trading.load_market(e, &position.asset, true);
-    market.update_stats(e, position.collateral, size - position.collateral, position.is_long);
+    let mut market = trading.load_market(e, &position.asset);
+    market.update_stats(
+        e,
+        position.collateral,
+        position.notional_size,
+        position.is_long,
+    );
+
+    // The base fee is in the current contract address, so we need to transfer it to the vault
+    // and give the caller their fee
+    let base_fee = position.collateral.fixed_mul_ceil(e, &market.config.base_fee, &SCALAR_7);
+    let caller_fee = trading.calculate_caller_fee(e, base_fee); // 1% of collateral for now
+    result.add_transfer(&trading.caller, caller_fee);
+    result.add_transfer(&trading.vault, base_fee - caller_fee);
+
     trading.cache_market(&market);
-
-    let caller_fee = trading.calculate_spender_fee(e, position.collateral / 100); // 1% of collateral for now
-    actions.add_for_spender_transfer(caller_fee);
+    trading.cache_position(&position);
 
     TradingEvents::fill_position(
         e,
         position.user.clone(),
         position.asset.clone(),
-        actions.caller.clone(),
         position.id,
-        current_price,
-        caller_fee,
     );
+    0
 }
 
 fn apply_stop_loss(
     e: &Env,
-    actions: &mut Actions,
+    result: &mut SubmitResult,
     trading: &mut Trading,
-    position: &mut Position
-) {
+    position: &mut Position,
+) -> u32 {
     let current_price = trading.load_price(e, &position.asset);
     if !position.check_stop_loss(current_price) {
-        panic_with_error!(e, TradingError::BadRequest);
+        return TradingError::BadRequest as u32;
     }
 
-    handle_close(e, actions, trading, position, PositionStatus::StopLossClosed);
+    handle_close(e, result, trading, position)
 }
 
 fn apply_take_profit(
     e: &Env,
-    actions: &mut Actions,
+    result: &mut SubmitResult,
     trading: &mut Trading,
-    position: &mut Position
-) {
+    position: &mut Position,
+) -> u32 {
     let current_price = trading.load_price(e, &position.asset);
     if !position.check_take_profit(current_price) {
-        panic_with_error!(e, TradingError::BadRequest);
+        return TradingError::BadRequest as u32;
     }
 
-    handle_close(e, actions, trading, position, PositionStatus::TakeProfitClosed);
+    handle_close(e, result, trading, position)
 }
 
 fn apply_liquidation(
     e: &Env,
-    actions: &mut Actions,
+    result: &mut SubmitResult,
     trading: &mut Trading,
     position: &mut Position,
-) {
+) -> u32 {
     let current_price = trading.load_price(e, &position.asset);
-    let market = trading.load_market(e, &position.asset, false);
-    let (pnl, fee) = position.calculate_pnl(e, current_price);
+    let mut market = trading.load_market(e, &position.asset);
 
-    let net_pnl = pnl - fee;
-    if !market.can_liquidate(e, position.collateral, net_pnl) {
-        panic_with_error!(e, TradingError::BadRequest);
+    let pnl = position.calculate_pnl(e, current_price);
+    let fee = position.calculate_fee(e, &market);
+
+    let equity = position.collateral + pnl - fee;
+    let required_margin = position.notional_size.fixed_mul_floor(e, &market.config.maintenance_margin, &SCALAR_7);
+
+    if equity >= required_margin {
+        return TradingError::BadRequest as u32; // Not eligible for liquidation
     }
 
-    let spender_fee = trading.calculate_spender_fee(e, fee);
-    actions.add_for_spender_transfer(spender_fee);
 
-    let vault_amount = position.collateral - spender_fee;
-    actions.add_vault_transfer(vault_amount);
+    let caller_fee = trading.calculate_spender_fee(e, fee);
+    result.add_transfer(&trading.caller, caller_fee);
 
-    let loss = if net_pnl < 0 { net_pnl.abs() } else { 0 };
+    let vault_amount = position.collateral - caller_fee;
+    result.add_transfer(&trading.vault, vault_amount);
+
     TradingEvents::liquidation(
         e,
         position.user.clone(),
         position.asset.clone(),
-        actions.caller.clone(),
         position.id,
-        position.collateral,
-        loss,
-        spender_fee,
     );
 
-    let size = position.collateral.fixed_mul_floor(e, &(position.leverage as i128), &100);
-    let mut market = trading.load_market(e, &position.asset, true);
-    market.update_stats(e, -position.collateral, -(size - position.collateral), position.is_long);
-    trading.cache_market(&market);
-    storage::remove_user_position(e, &position.user, position.id);
+    market.update_stats(
+        e,
+        -position.collateral,
+        -position.notional_size,
+        position.is_long,
+    );
 
-    position.set_status(PositionStatus::Liquidated);
+    position.set_status(PositionStatus::Closed);
+    position.close_price = current_price;
+
+    storage::remove_user_position(e, &position.user, position.id);
+    trading.cache_market(&market);
+    trading.cache_position(&position);
+    0
 }
 
-fn apply_cancel(
-    e: &Env,
-    actions: &mut Actions,
-    position: &mut Position
-) {
+fn apply_cancel(e: &Env, result: &mut SubmitResult, position: &mut Position) -> u32 {
     position.require_auth();
-    actions.add_for_owner_transfer(&position.user, position.collateral);
+    result.add_transfer(&position.user, position.collateral);
 
-    position.set_status(PositionStatus::Cancelled);
+    position.set_status(PositionStatus::Closed);
     storage::remove_user_position(e, &position.user, position.id);
     TradingEvents::cancel_position(
         e,
         position.user.clone(),
         position.asset.clone(),
-        position.id,
-        position.collateral,
+        position.id
     );
+    0
+}
 
+fn apply_set_take_profit(
+    e: &Env,
+    trading: &mut Trading,
+    position: &mut Position,
+    price: i128,
+) -> u32 {
+    position.require_auth();
+    let current_price = trading.load_price(e, &position.asset);
+
+    if position.is_long {
+        // For long positions, take profit must be above current price
+        if price <= current_price {
+            return TradingError::BadRequest as u32;
+        }
+    } else {
+        // For short positions, take profit must be below current price
+        if price >= current_price {
+            return TradingError::BadRequest as u32;
+        }
+    }
+
+    position.take_profit = price;
+
+    TradingEvents::set_take_profit(
+        e,
+        position.user.clone(),
+        position.asset.clone(),
+        position.id,
+    );
+    0
+}
+
+fn apply_set_stop_loss(
+    e: &Env,
+    trading: &mut Trading,
+    position: &mut Position,
+    price: i128,
+) -> u32 {
+    position.require_auth();
+
+    let current_price = trading.load_price(e, &position.asset);
+
+    if position.is_long {
+        // For long positions, stop loss must be below current price
+        if price >= current_price {
+            return TradingError::BadRequest as u32;
+        }
+    } else {
+        // For short positions, stop loss must be above current price
+        if price <= current_price {
+            return TradingError::BadRequest as u32;
+        }
+    }
+
+    position.stop_loss = price;
+
+    TradingEvents::set_stop_loss(
+        e,
+        position.user.clone(),
+        position.asset.clone(),
+        position.id,
+    );
+    0
+}
+
+fn apply_withdraw_collateral(
+    e: &Env,
+    result: &mut SubmitResult,
+    trading: &mut Trading,
+    position: &mut Position,
+    amount: i128,
+) -> u32 {
+    position.require_auth();
+    if amount <= 0 {
+        return TradingError::BadRequest as u32;
+    }
+    if amount > position.collateral {
+        return TradingError::BadRequest as u32;
+    }
+
+    let current_price = trading.load_price(e, &position.asset);
+    let mut market = trading.load_market(e, &position.asset);
+
+    let pnl = position.calculate_pnl(e, current_price);
+    let fee = position.calculate_fee(e, &market);
+
+    // Substract the withdrawal amount from collateral
+    let equity = position.collateral - amount + pnl - fee;
+    let required_margin = position.notional_size.fixed_mul_floor(e, &market.config.init_margin, &SCALAR_7);
+
+    if equity < required_margin {
+        return TradingError::BadRequest as u32; // Not eligible for liquidation
+    }
+
+    position.collateral -= amount;
+    result.add_transfer(&position.user, amount);
+
+    market.update_stats(
+        e,
+        -amount,
+        0, // No change in notional size
+        position.is_long,
+    );
+    trading.cache_market(&market);
+    trading.cache_position(&position);
+    TradingEvents::withdraw_collateral(
+        e,
+        position.user.clone(),
+        position.asset.clone(),
+        position.id,
+        amount,
+    );
+    0
+}
+
+fn apply_deposit_collateral(
+    e: &Env,
+    result: &mut SubmitResult,
+    trading: &mut Trading,
+    position: &mut Position,
+    amount: i128,
+) -> u32 {
+    position.require_auth();
+    let mut market = trading.load_market(e, &position.asset);
+    if amount <= 0 {
+        return TradingError::BadRequest as u32;
+    }
+
+    //TODO: Adjust interest index since deposit amount changes.
+
+    position.collateral += amount;
+    result.add_transfer(&position.user, -amount);
+
+    market.update_stats(
+        e,
+        amount,
+        0, // No change in notional size
+        position.is_long,
+    );
+    trading.cache_market(&market);
+    trading.cache_position(&position);
+
+    TradingEvents::deposit_collateral(
+        e,
+        position.user.clone(),
+        position.asset.clone(),
+        position.id,
+        amount,
+    );
+    0
 }

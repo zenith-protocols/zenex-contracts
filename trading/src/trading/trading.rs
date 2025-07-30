@@ -4,43 +4,53 @@ use soroban_fixed_point_math::SorobanFixedPoint;
 use crate::trading::market::Market;
 use crate::constants::{MAX_PRICE_AGE, SCALAR_7};
 use crate::errors::TradingError;
-use crate::events::TradingEvents;
-use crate::storage;
+use crate::{storage, Position};
 use crate::types::TradingConfig;
 
 pub struct Trading {
     pub config: TradingConfig,
+    pub vault: Address,
+    pub token: Address,
+    pub caller: Address,
     pub markets: Map<Asset, Market>,
+    pub positions: Map<u32, Position>,
+    pub positions_to_update: Vec<u32>,
     pub markets_to_update: Vec<Asset>,
     prices: Map<Asset, i128>,
 }
 
 impl Trading {
 
-    pub fn load(e: &Env) -> Self {
+    pub fn load(e: &Env, caller: Address) -> Self {
         let config = storage::get_config(e);
+        let vault = storage::get_vault(e);
+        let token = storage::get_token(e);
         Trading {
             config,
+            vault,
+            token,
+            caller,
             markets: map![e],
+            positions: map![e],
+            positions_to_update: vec![e],
             markets_to_update: vec![e],
             prices: map![e],
         }
     }
-    
-    pub fn update_status(&mut self, e: &Env, status: u32) {
-        self.config.status = status;
-        storage::set_config(e, &self.config);
-    }
 
-    pub fn load_market(&mut self, e: &Env, asset: &Asset, store: bool) -> Market {
-        if store && !self.markets_to_update.contains(asset) {
-            self.markets_to_update.push_back(asset.clone());
-        }
-
+    pub fn load_market(&mut self, e: &Env, asset: &Asset) -> Market {
         if let Some(market) = self.markets.get(asset.clone()) {
             market
         } else {
             Market::load(e, asset)
+        }
+    }
+
+    pub fn load_position(&mut self, e: &Env, position_id: u32) -> Position {
+        if let Some(position) = self.positions.get(position_id) {
+            position
+        } else {
+            Position::load(e, position_id)
         }
     }
 
@@ -51,6 +61,14 @@ impl Trading {
         }
     }
 
+    pub fn cache_position(&mut self, position: &Position) {
+        self.positions.set(position.id, position.clone());
+        if !self.positions_to_update.contains(&position.id) {
+            self.positions_to_update.push_back(position.id);
+        }
+    }
+
+
     pub fn store_cached_markets(&mut self, e: &Env) {
         for asset in self.markets_to_update.iter() {
             let reserve = self
@@ -58,6 +76,16 @@ impl Trading {
                 .get(asset)
                 .unwrap();
             reserve.store(e);
+        }
+    }
+
+    pub fn store_cached_positions(&mut self, e: &Env) {
+        for position_id in self.positions_to_update.iter() {
+            let position = self
+                .positions
+                .get(*position_id)
+                .unwrap();
+            position.store(e);
         }
     }
 
@@ -77,10 +105,10 @@ impl Trading {
         price_data.price
     }
 
-    pub fn calculate_spender_fee(&self, e: &Env, fee: i128) -> i128 {
-        let spender_fee = fee.fixed_mul_floor(e, &self.config.caller_take_rate, &SCALAR_7);
-        if spender_fee > 0 {
-            spender_fee
+    pub fn calculate_caller_fee(&self, e: &Env, fee: i128) -> i128 {
+        let caller_fee = fee.fixed_mul_floor(e, &self.config.caller_take_rate, &SCALAR_7);
+        if caller_fee > 0 {
+            caller_fee
         } else {
             0
         }
@@ -89,15 +117,4 @@ impl Trading {
     pub fn check_max_positions(&self, positions: Vec<u32>) -> bool {
         positions.len() < self.config.max_positions
     }
-}
-
-pub fn execute_set_status(
-    e: &Env,
-    admin: &Address, // Admin is not used in this function, but can be used for authorization if needed
-    status: u32,
-) {
-    let mut trading = Trading::load(e);
-    //TODO: Implement status update logic to check if status is allowed
-    trading.update_status(e, status);
-    TradingEvents::set_status(e, admin.clone(), status);
 }
