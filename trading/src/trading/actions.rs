@@ -6,6 +6,7 @@ use crate::trading::trading::Trading;
 use crate::types::PositionStatus;
 use soroban_fixed_point_math::SorobanFixedPoint;
 use soroban_sdk::{contracttype, panic_with_error, Address, Env, Map, Vec};
+use soroban_sdk::testutils::arbitrary::std::println;
 use crate::constants::SCALAR_7;
 
 #[derive(Clone)]
@@ -123,6 +124,8 @@ fn handle_close(
     let pnl = position.calculate_pnl(e, price);
     let fee = position.calculate_fee(e, &market);
     let fee_caller = trading.calculate_caller_fee(e, fee).abs(); // Caller fee is always positive
+
+    println!("[Trading] Closing position {}: pnl={}, fee={}, fee_caller={}", position.id, pnl, fee, fee_caller);
 
     let net_pnl = if fee >= 0 {
         // Fee is positive, we subtract it from pnl

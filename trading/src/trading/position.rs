@@ -9,6 +9,7 @@ use sep_40_oracle::Asset;
 use soroban_fixed_point_math::SorobanFixedPoint;
 use soroban_sdk::token::TokenClient;
 use soroban_sdk::{panic_with_error, Address, Env};
+use soroban_sdk::testutils::arbitrary::std::println;
 use crate::dependencies::VaultClient;
 use crate::trading::market::Market;
 
@@ -48,6 +49,8 @@ impl Position {
         let base_fee = self.collateral.fixed_mul_ceil(e, &market.config.base_fee, &SCALAR_7);
         let price_impact_scalar = self.notional_size.fixed_div_ceil(e, &market.config.price_impact_scalar, &SCALAR_7);
 
+        println!("[Trading] Calculating fee for position {}: base_fee={}, price_impact_scalar={}", self.id, base_fee, price_impact_scalar);
+
         let index_difference = if self.is_long {
             market.data.long_interest_index - self.interest_index
         } else {
@@ -58,7 +61,7 @@ impl Position {
         let virtual_amount = self.notional_size - self.collateral;
         let interest_fee = virtual_amount.fixed_mul_floor(e, &index_difference, &SCALAR_18);
 
-        base_fee + price_impact_scalar * interest_fee
+        base_fee + price_impact_scalar + interest_fee
     }
 
     pub fn calculate_pnl(&self, e: &Env, current_price: i128) -> i128 {

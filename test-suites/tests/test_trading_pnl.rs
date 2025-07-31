@@ -32,12 +32,16 @@ fn test_profitable_long_position_small_gain() {
 
     let balance_after_open = fixture.token.balance(&user);
     let market = default_market();
-    let open_fee = (1_000 * SCALAR_7)
+    let base_fee = (1_000 * SCALAR_7)
         .fixed_mul_ceil(market.base_fee, SCALAR_7)
         .unwrap();
+    let price_impact = (2_000 * SCALAR_7)
+        .fixed_div_ceil(market.price_impact_scalar, SCALAR_7)
+        .unwrap();
+
     assert_eq!(
         balance_after_open,
-        initial_balance - (1_000 * SCALAR_7) - open_fee
+        initial_balance - (1_000 * SCALAR_7) - base_fee
     );
 
     // Price goes up 5% to 105K
@@ -70,8 +74,9 @@ fn test_profitable_long_position_small_gain() {
     // Profit = 1000 * 0.10 = 100 tokens
     // User should receive: 1000 (collateral) + 100 (profit) = 1100 tokens
     let final_balance = fixture.token.balance(&user);
-    let expected_balance = initial_balance + (2_100 * SCALAR_7);
-    assert_eq!(final_balance, expected_balance);
+    let expected_profit = (100 * SCALAR_7) - base_fee - base_fee - price_impact; // 10% gain on collateral
+
+    assert_eq!(final_balance, initial_balance + expected_profit);
 }
 
 #[test]
