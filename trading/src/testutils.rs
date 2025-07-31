@@ -2,6 +2,7 @@
 
 use crate::{MarketConfig, TradingContract};
 use soroban_sdk::{testutils::Address as _, Address, Env};
+use crate::constants::SCALAR_7;
 
 pub(crate) fn create_trading(e: &Env) -> Address {
     e.register(
@@ -29,16 +30,18 @@ pub(crate) fn create_trading(e: &Env) -> Address {
 pub fn default_market() -> MarketConfig {
     MarketConfig {
         enabled: true,
-        max_leverage: 1000,              // 10x leverage (keep as integer)
-        max_payout: 10_0000000,          // 10.0 (1000% max payout)
-        min_collateral: 10_0000000,      // 10 tokens minimum
-        max_collateral: 100_000_0000000, // 100,000 tokens maximum
-        liquidation_threshold: 0_0500000, // 5% (0.05 in SCALAR_7)
-        total_available: 1_0000000, // 10M tokens
+        max_payout: 10 * SCALAR_7,          // 10.0 (1000% max payout)
+        min_collateral: SCALAR_7,      // 10 tokens minimum
+        max_collateral: 1000000 * SCALAR_7, // 1M tokens maximum
 
-        base_fee: 0,              // 0.05% = 5_000 (in SCALAR_7)
-        price_impact_scalar: 0,   // BTC: 8_000_000_000, XLM: 700_000_000
-        min_hourly_rate: 0,       // 0.0003% = 30
+        total_available: SCALAR_7, // 100% of the vault's balance
+
+        init_margin: 0_0100000,         // 1% = 1_00_000 (in SCALAR_7)
+        maintenance_margin: 0_0050000,   // 0.5% = 50_000 (in SCALAR_7)
+
+        base_fee: 0_0050000,              // 0.5% = 50_000 (in SCALAR_7)
+        price_impact_scalar: 8_000_000_000 * SCALAR_7,   // BTC: 8_000_000_000, XLM: 700_000_000
+        min_hourly_rate: 30,       // 0.0003% = 30
         max_hourly_rate: 0,       // BTC: 0.009% = 900, XLM: 0.016% = 1_600
         target_hourly_rate: 0,    // BTC: 0.001% = 100, XLM: 0.002% = 200
         target_utilization: 0_8000000,    // 80% = 8_000_000

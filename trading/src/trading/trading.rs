@@ -83,7 +83,7 @@ impl Trading {
         for position_id in self.positions_to_update.iter() {
             let position = self
                 .positions
-                .get(*position_id)
+                .get(position_id)
                 .unwrap();
             position.store(e);
         }

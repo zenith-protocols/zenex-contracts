@@ -6,7 +6,7 @@ pub mod storage;
 mod contract;
 mod trading;
 
-pub use trading::{Request, RequestType};
+pub use trading::{Request, RequestType, SubmitResult};
 
 mod types;
 mod dependencies;

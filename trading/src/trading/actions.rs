@@ -33,6 +33,8 @@ pub enum RequestType {
     SetStopLoss = 9,
 }
 
+#[derive(Clone, Debug)]
+#[contracttype]
 pub struct SubmitResult {
     pub transfers: Map<Address, i128>,
     pub results: Vec<u32>,
@@ -117,50 +119,39 @@ fn handle_close(
     position: &mut Position,
 ) -> u32 {
     let price = trading.load_price(e, &position.asset);
-    let market = trading.load_market(e, &position.asset);
+    let mut market = trading.load_market(e, &position.asset);
     let pnl = position.calculate_pnl(e, price);
     let fee = position.calculate_fee(e, &market);
-    let net_pnl = pnl - fee;
+    let fee_caller = trading.calculate_caller_fee(e, fee).abs(); // Caller fee is always positive
 
-    let payout = if net_pnl < 0 {
-        // Loss scenario
-        let loss = net_pnl.abs();
-        if loss >= position.collateral {
-            // Loss exceeds collateral, user gets nothing
-            0
-        } else {
-            // User gets collateral minus loss
-            position.collateral - loss
-        }
+    let net_pnl = if fee >= 0 {
+        // Fee is positive, we subtract it from pnl
+        pnl - fee
     } else {
-        // Profit scenario - add profit to collateral
-        position.collateral + net_pnl
+        // fee is negative we add the absolute value of fee to pnl but subtract the caller fee
+        pnl + fee.abs() - fee_caller
     };
 
-    let caller_fee = trading.calculate_caller_fee(e, fee);
-    let vault_fee = fee - caller_fee;
-
-    result.add_transfer(&trading.caller, caller_fee);
-
-    if net_pnl < 0 {
-        // If net PnL is negative, we need to pay the vault
-        result.add_transfer(&trading.vault, -net_pnl + vault_fee);
-    } else if net_pnl > 0 {
-        // If net PnL is positive, we need to pay the user
-        result.add_transfer(&position.user, net_pnl + vault_fee);
-    }
-
+    let payout = position.collateral + net_pnl; // Total payout to user
     if payout > 0 {
-        // If payout is positive, we need to pay the user
         result.add_transfer(&position.user, payout);
     }
 
+    if pnl > 0 {
+        result.add_transfer(&trading.vault, -pnl);
+    }
+    if fee < 0 {
+        // If the fee is negative, it means we need to transfer from the vault
+        result.add_transfer(&trading.vault, fee);
+    } else {
+        // If the fee is positive, we need to transfer to the vault
+        result.add_transfer(&trading.vault, fee - fee_caller);
+    }
+
     storage::remove_user_position(e, &position.user, position.id);
+    position.status = PositionStatus::Closed;
+    position.close_price = price;
 
-    // Update position status to the specified status
-    position.set_status(PositionStatus::Closed);
-
-    let mut market = trading.load_market(e, &position.asset);
     market.update_stats(
         e,
         -position.collateral,
@@ -280,7 +271,7 @@ fn apply_liquidation(
     }
 
 
-    let caller_fee = trading.calculate_spender_fee(e, fee);
+    let caller_fee = trading.calculate_caller_fee(e, fee);
     result.add_transfer(&trading.caller, caller_fee);
 
     let vault_amount = position.collateral - caller_fee;
@@ -300,7 +291,7 @@ fn apply_liquidation(
         position.is_long,
     );
 
-    position.set_status(PositionStatus::Closed);
+    position.status = PositionStatus::Closed;
     position.close_price = current_price;
 
     storage::remove_user_position(e, &position.user, position.id);
@@ -313,7 +304,7 @@ fn apply_cancel(e: &Env, result: &mut SubmitResult, position: &mut Position) -> 
     position.require_auth();
     result.add_transfer(&position.user, position.collateral);
 
-    position.set_status(PositionStatus::Closed);
+    position.status = PositionStatus::Closed;
     storage::remove_user_position(e, &position.user, position.id);
     TradingEvents::cancel_position(
         e,

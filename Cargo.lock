@@ -1346,15 +1346,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "stellar-contract-utils"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "391c5bab95c5cf64ad49e5e07fd4f1f555542cfa2fc8360d12bf7d8353986ab3"
-dependencies = [
- "soroban-sdk",
-]
-
-[[package]]
 name = "stellar-macros"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1493,11 +1484,9 @@ name = "trading"
 version = "0.0.0"
 dependencies = [
  "sep-40-oracle",
- "sep-41-token",
  "soroban-fixed-point-math",
  "soroban-sdk",
  "stellar-access",
- "stellar-contract-utils",
  "stellar-macros",
 ]
 

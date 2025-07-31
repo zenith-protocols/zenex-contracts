@@ -4,8 +4,8 @@ use trading::testutils::default_market;
 pub fn create_fixture_with_data<'a>(wasm: bool) -> TestFixture<'a> {
     let mut fixture = TestFixture::create(wasm);
 
-    fixture.token.mint(&fixture.admin, &100_000_000_0000000);
-    fixture.vault.deposit(&100_000_000_0000000, &fixture.admin);
+    fixture.token.mint(&fixture.owner, &100_000_000_0000000);
+    fixture.vault.deposit(&100_000_000_0000000, &fixture.owner, &fixture.owner);
 
     let mut market_config = default_market();
     market_config.total_available = 100_000_000_0000000; // 100M tokens available from vault

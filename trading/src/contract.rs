@@ -1,5 +1,5 @@
 use crate::events::TradingEvents;
-use crate::trading::Request;
+use crate::trading::{Request, SubmitResult};
 use crate::types::MarketConfig;
 use crate::{storage, trading, TradingConfig};
 use sep_40_oracle::Asset;
@@ -9,8 +9,6 @@ use soroban_sdk::{
 };
 use stellar_access::ownable::{self as ownable, Ownable};
 use stellar_macros::{default_impl, only_owner};
-use stellar_contract_utils::upgradeable::UpgradeableInternal;
-
 #[contract]
 pub struct TradingContract;
 
@@ -115,7 +113,9 @@ pub trait Trading {
     ///
     /// # Returns
     /// Results of the requests processed
-    fn submit(e: Env, caller: Address, requests: Vec<Request>) -> Vec<u32>;
+    fn submit(e: Env, caller: Address, requests: Vec<Request>) -> SubmitResult;
+
+    fn upgrade(e: Env, wasm_hash: BytesN<32>);
 }
 
 #[contractimpl]
@@ -150,7 +150,7 @@ impl Trading for TradingContract {
     #[only_owner]
     fn set_config(e: Env, config: TradingConfig) {
         storage::extend_instance(&e);
-        trading::execute_set_config(&e, &config: TradingConfig);
+        trading::execute_set_config(&e, &config);
     }
 
     #[only_owner]
@@ -173,8 +173,7 @@ impl Trading for TradingContract {
     #[only_owner]
     fn set_status(e: Env, status: u32) {
         storage::extend_instance(&e);
-        let caller = e.current_contract_address();
-        trading::execute_set_status(&e, &caller, status);
+        storage::set_status(&e, status);
     }
 
     fn create_position(
@@ -198,16 +197,18 @@ impl Trading for TradingContract {
         )
     }
 
-    fn submit(e: Env, caller: Address, requests: Vec<Request>) -> Vec<u32> {
+    fn submit(e: Env, caller: Address, requests: Vec<Request>) -> SubmitResult {
         storage::extend_instance(&e);
         trading::execute_submit(&e, &caller, requests)
+    }
+
+    #[only_owner]
+    fn upgrade(e: Env, wasm_hash: BytesN<32>) {
+        storage::extend_instance(&e);
+        e.deployer().update_current_contract_wasm(wasm_hash.clone());
     }
 }
 
 #[default_impl]
 #[contractimpl]
 impl Ownable for TradingContract {}
-
-#[default_impl]
-#[contractimpl]
-impl UpgradeableInternal for TradingContract {}

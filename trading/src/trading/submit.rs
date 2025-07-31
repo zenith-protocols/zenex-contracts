@@ -21,13 +21,13 @@ pub fn execute_submit(
     // STEP 1: Vault pays to contract (if needed)
     // This is done first to ensure the contract has enough balance to handle transfers
     let vault_transfer = result.transfers.get(trading.vault.clone()).unwrap_or(0);
-    if vault_transfer > 0 {
-        vault_client.transfer_to(&e.current_contract_address(), &vault_transfer);
+    if vault_transfer < 0 {
+        vault_client.transfer_to(&e.current_contract_address(), &vault_transfer.abs());
     }
 
     // STEP 2: Handle all other transfers (users)
     for (address, amount) in result.transfers.iter() {
-        if *address != trading.vault {
+        if address != trading.vault {
             if amount > 0 {
                 // Contract pays to user
                 token_client.transfer(&e.current_contract_address(), &address, &amount);
@@ -40,12 +40,12 @@ pub fn execute_submit(
 
     // STEP 3: Contract pays to vault if needed
     // This is done last to ensure the contract has enough balance
-    if vault_transfer < 0 {
+    if vault_transfer > 0 {
         let args: Vec<Val> = vec![
             e,
             e.current_contract_address().into_val(e),
             vault_client.address.into_val(e),
-            (-vault_transfer).into_val(e),
+            vault_transfer.into_val(e),
         ];
         e.authorize_as_current_contract(vec![
             e,
@@ -58,7 +58,7 @@ pub fn execute_submit(
                 sub_invocations: vec![e],
             })
         ]);
-        vault_client.transfer_from(&e.current_contract_address(), &(-vault_transfer));
+        vault_client.transfer_from(&e.current_contract_address(), &vault_transfer);
     }
 
     result

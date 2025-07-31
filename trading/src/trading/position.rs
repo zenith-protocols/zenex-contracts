@@ -113,7 +113,7 @@ pub fn execute_create_position(
     entry_price: i128,
 ) -> u32 {
     user.require_auth();
-    let mut trading = Trading::load(e);
+    let mut trading = Trading::load(e, user.clone());
     let mut market = trading.load_market(e, asset);
 
     if collateral < 0 || notional_size < 0 || entry_price < 0 {

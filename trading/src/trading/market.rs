@@ -1,14 +1,11 @@
-// Updated contracts/trading/src/trading/market.rs
 use sep_40_oracle::Asset;
 use soroban_fixed_point_math::SorobanFixedPoint;
 use soroban_sdk::{contracttype, Env};
-use soroban_sdk::token::TokenClient;
 use crate::constants::SCALAR_7;
 use crate::dependencies::VaultClient;
-use crate::{storage, Position};
+use crate::{storage};
+use crate::trading::interest::{calculate_long_short_hourly_rates, update_index_with_interest};
 use crate::types::{MarketConfig, MarketData};
-use crate::trading::fees::update_borrowing_indices;
-use crate::trading::interest::base_hourly_interest_rate;
 
 #[derive(Clone)]
 #[contracttype]
@@ -76,52 +73,33 @@ impl Market {
         // Calculate current utilization
         let utilization = self.utilization(e);
 
-        let base_hourly_rate = base_hourly_interest_rate(
+        // Get long and short hourly rates using the interest module
+        let (long_hourly_rate, short_hourly_rate) = calculate_long_short_hourly_rates(
             e,
             utilization,
             self.config.min_hourly_rate,
             self.config.target_hourly_rate,
             self.config.max_hourly_rate,
             self.config.target_utilization,
+            self.data.long_collateral,
+            self.data.long_notional_size,
+            self.data.short_collateral,
+            self.data.short_notional_size,
         );
 
-        let long_average_leverage = self.data.long_notional_size.fixed_div_floor(e, &self.data.long_collateral, &SCALAR_7);
-        let short_average_leverage = self.data.short_notional_size.fixed_div_floor(e, &self.data.short_collateral, &SCALAR_7);
-
-        let short_leverage_multiplier = if short_average_leverage > 0 {
-            pow_int(e, &I256::from_i128(e, 101), &short_average_leverage as u32)
-        } else {
-            I256::from_i128(e, 100) // 1.0 in SCALAR_18
-        };
-
-
-        let base_hourly_rate = 0;
-        let leveraage_multiplier = 1;
-        let short_ratio = 0;
-        let long_ratio = 1 - short_ratio;
-
-        let interest_base = base_hourly_rate * time_delta_seconds * leveraage_multiplier;
-        let long_interest = interest_base * long_ratio;
-        let short_interest = interest_base * short_ratio;
-
-
-
-
-        // Update indices using the main function
-        let (new_long_index, new_short_index) = update_borrowing_indices(
+        // Update indices with compound interest over the time period
+        let new_long_index = update_index_with_interest(
             e,
-            time_delta_seconds,
-            utilization,
-            self.data.long_collateral,
-            self.data.long_borrowed,
-            self.data.short_collateral,
-            self.data.short_borrowed,
             self.data.long_interest_index,
+            long_hourly_rate,
+            time_delta_seconds as i128,
+        );
+
+        let new_short_index = update_index_with_interest(
+            e,
             self.data.short_interest_index,
-            self.config.min_hourly_rate,
-            self.config.max_hourly_rate,
-            self.config.target_hourly_rate,
-            self.config.target_utilization,
+            short_hourly_rate,
+            time_delta_seconds as i128,
         );
 
         // Update market data

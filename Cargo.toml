@@ -22,9 +22,6 @@ version = "0.4.1"
 [workspace.dependencies.stellar-macros]
 version = "0.4.1"
 
-[workspace.dependencies.stellar-contract-utils]
-version = "0.4.1"
-
 [profile.release]
 opt-level = "z"
 overflow-checks = true
