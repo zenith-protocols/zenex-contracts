@@ -39,11 +39,11 @@ pub fn default_market() -> MarketConfig {
         init_margin: 0_0100000,         // 1% = 1_00_000 (in SCALAR_7)
         maintenance_margin: 0_0050000,   // 0.5% = 50_000 (in SCALAR_7)
 
-        base_fee: 0_0050000,              // 0.5% = 50_000 (in SCALAR_7)
+        base_fee: 0_0005000,              // 0.05% = 50_000 (in SCALAR_7)
         price_impact_scalar: 8_000_000_000 * SCALAR_7,   // BTC: 8_000_000_000, XLM: 700_000_000
         min_hourly_rate: 30,       // 0.0003% = 30
-        max_hourly_rate: 0,       // BTC: 0.009% = 900, XLM: 0.016% = 1_600
-        target_hourly_rate: 0,    // BTC: 0.001% = 100, XLM: 0.002% = 200
+        max_hourly_rate: 900,       // BTC: 0.009% = 900, XLM: 0.016% = 1_600
+        target_hourly_rate: 100,    // BTC: 0.001% = 100, XLM: 0.002% = 200
         target_utilization: 0_8000000,    // 80% = 8_000_000
     }
 }

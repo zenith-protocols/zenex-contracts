@@ -39,11 +39,13 @@ impl Trading {
     }
 
     pub fn load_market(&mut self, e: &Env, asset: &Asset) -> Market {
-        if let Some(market) = self.markets.get(asset.clone()) {
+        let mut market = if let Some(market) = self.markets.get(asset.clone()) {
             market
         } else {
             Market::load(e, asset)
-        }
+        };
+        market.update_borrowing_index(e);
+        market
     }
 
     pub fn load_position(&mut self, e: &Env, position_id: u32) -> Position {

@@ -9,7 +9,6 @@ use sep_40_oracle::Asset;
 use soroban_fixed_point_math::SorobanFixedPoint;
 use soroban_sdk::token::TokenClient;
 use soroban_sdk::{panic_with_error, Address, Env};
-use soroban_sdk::testutils::arbitrary::std::println;
 use crate::dependencies::VaultClient;
 use crate::trading::market::Market;
 
@@ -48,8 +47,6 @@ impl Position {
     pub fn calculate_fee(&self, e: &Env, market: &Market) -> i128 {
         let base_fee = self.collateral.fixed_mul_ceil(e, &market.config.base_fee, &SCALAR_7);
         let price_impact_scalar = self.notional_size.fixed_div_ceil(e, &market.config.price_impact_scalar, &SCALAR_7);
-
-        println!("[Trading] Calculating fee for position {}: base_fee={}, price_impact_scalar={}", self.id, base_fee, price_impact_scalar);
 
         let index_difference = if self.is_long {
             market.data.long_interest_index - self.interest_index
@@ -177,15 +174,16 @@ pub fn execute_create_position(
     };
 
     let open_fee = collateral.fixed_mul_ceil(e, &market.config.base_fee, &SCALAR_7);
+    let price_impact_scalar = notional_size.fixed_div_ceil(e, &market.config.price_impact_scalar, &SCALAR_7);
 
     // Transfer tokens from user to contract
     let token_client = TokenClient::new(e, &storage::get_token(e));
-    token_client.transfer(user, &e.current_contract_address(), &(collateral + open_fee));
+    token_client.transfer(user, &e.current_contract_address(), &(collateral + open_fee + price_impact_scalar));
 
     // Only pay fee to vault when the position fills
     if market_order {
         let vault_client = VaultClient::new(e, &storage::get_vault(e));
-        vault_client.transfer_to(&e.current_contract_address(), &open_fee);
+        vault_client.transfer_to(&e.current_contract_address(), &(open_fee + price_impact_scalar));
     }
 
     trading.cache_position(&position);

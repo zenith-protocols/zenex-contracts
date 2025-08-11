@@ -132,8 +132,6 @@ impl Market {
                 self.data.short_count -= 1;
             }
         }
-
-        self.update_borrowing_index(e);
     }
 
     /// Check if position size is within allowed range
