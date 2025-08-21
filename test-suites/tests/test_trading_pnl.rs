@@ -80,3 +80,97 @@ fn test_profitable_long_position_small_gain() {
 
     assert_eq!(final_balance, initial_balance + expected_profit);
 }
+
+#[test]
+fn test_long_short_week_5pct_move_print_balances() {
+    let fixture = setup_fixture();
+    let user1 = Address::generate(&fixture.env);
+    let user2 = Address::generate(&fixture.env);
+
+    // Fund users sufficiently for collateral and fees
+    fixture.token.mint(&user1, &(500_000 * SCALAR_7));
+    fixture.token.mint(&user2, &(500_000 * SCALAR_7));
+
+    // Record initial balances
+    let initial_user1_balance = fixture.token.balance(&user1);
+    let initial_user2_balance = fixture.token.balance(&user2);
+    let initial_vault_balance = fixture.token.balance(&fixture.vault.address);
+
+    // Set BTC price to 50K before opening positions
+    fixture.oracle.set_price_stable(&svec![
+        &fixture.env,
+        1_0000000,        // USD
+        100_000_0000000,   // BTC = 100K
+        2000_0000000,     // ETH
+        0_1000000,        // XLM
+    ]);
+
+    // User1 opens a long position at 100k with 2x leverage
+    // Choose collateral = 25k tokens -> notional size = 50k tokens (2x)
+    let user1_position_id = fixture.trading.create_position(
+        &user1,
+        &fixture.assets[AssetIndex::BTC],
+        &(25_000 * SCALAR_7),
+        &(50_000 * SCALAR_7),
+        &true,
+        &0, // market order at current price (100K)
+    );
+
+    // User2 opens a short position of 100k notional with 10x leverage -> collateral = 10k
+    let user2_position_id = fixture.trading.create_position(
+        &user2,
+        &fixture.assets[AssetIndex::BTC],
+        &(10_000 * SCALAR_7),
+        &(100_000 * SCALAR_7),
+        &false,
+        &0, // market order at current price (100K)
+    );
+
+    // A week passes
+    fixture.jump(604800);
+
+    // Price goes up 5%: 100K -> 105K
+    fixture.oracle.set_price_stable(&svec![
+        &fixture.env,
+        1_0000000,        // USD
+        105_000_0000000,   // BTC = 105K (+5%)
+        2000_0000000,     // ETH
+        0_1000000,        // XLM
+    ]);
+
+    // User1 closes the long
+    let result1 = fixture.trading.submit(&user1, &svec![
+        &fixture.env,
+        Request { action: RequestType::Close, position: user1_position_id, data: None }
+    ]);
+
+    // User2 closes the short
+    let result2 = fixture.trading.submit(&user2, &svec![
+        &fixture.env,
+        Request { action: RequestType::Close, position: user2_position_id, data: None }
+    ]);
+
+    // Ensure positions are closed
+    assert_eq!(fixture.read_position(user1_position_id).status, PositionStatus::Closed);
+    assert_eq!(fixture.read_position(user2_position_id).status, PositionStatus::Closed);
+
+    // Print transfers for visibility
+    fixture.print_transfers(&result1);
+    fixture.print_transfers(&result2);
+
+    // Print final balances of User1, User2 and the Vault (token balances)
+    let user1_balance = fixture.token.balance(&user1);
+    let user2_balance = fixture.token.balance(&user2);
+    let vault_balance = fixture.token.balance(&fixture.vault.address);
+
+    let delta_user1 = user1_balance - initial_user1_balance;
+    let delta_user2 = user2_balance - initial_user2_balance;
+    let delta_vault = vault_balance - initial_vault_balance;
+
+    println!(
+        "User1 balance: {} (Δ {})\nUser2 balance: {} (Δ {})\nVault balance: {} (Δ {})",
+        user1_balance, delta_user1,
+        user2_balance, delta_user2,
+        vault_balance, delta_vault
+    );
+}
