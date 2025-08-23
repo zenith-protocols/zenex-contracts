@@ -1,3 +1,4 @@
+use crate::constants::SCALAR_7;
 use crate::errors::TradingError;
 use crate::events::TradingEvents;
 use crate::storage;
@@ -6,7 +7,6 @@ use crate::trading::trading::Trading;
 use crate::types::PositionStatus;
 use soroban_fixed_point_math::SorobanFixedPoint;
 use soroban_sdk::{contracttype, panic_with_error, Address, Env, Map, Vec};
-use crate::constants::SCALAR_7;
 
 #[derive(Clone)]
 #[contracttype]
@@ -138,6 +138,10 @@ fn handle_close(
     }
 
     if pnl > 0 {
+        // User made profit, vault pays out
+        result.add_transfer(&trading.vault, -pnl);
+    } else if pnl < 0 {
+        // User made loss, vault receives the loss
         result.add_transfer(&trading.vault, -pnl);
     }
     if fee < 0 {
@@ -206,7 +210,9 @@ fn apply_fill(
 
     // The base fee is in the current contract address, so we need to transfer it to the vault
     // and give the caller their fee
-    let base_fee = position.collateral.fixed_mul_ceil(e, &market.config.base_fee, &SCALAR_7);
+    let base_fee = position
+        .collateral
+        .fixed_mul_ceil(e, &market.config.base_fee, &SCALAR_7);
     let caller_fee = trading.calculate_caller_fee(e, base_fee); // 1% of collateral for now
     result.add_transfer(&trading.caller, caller_fee);
     result.add_transfer(&trading.vault, base_fee - caller_fee);
@@ -264,12 +270,14 @@ fn apply_liquidation(
     let fee = position.calculate_fee(e, &market);
 
     let equity = position.collateral + pnl - fee;
-    let required_margin = position.notional_size.fixed_mul_floor(e, &market.config.maintenance_margin, &SCALAR_7);
+    let required_margin =
+        position
+            .notional_size
+            .fixed_mul_floor(e, &market.config.maintenance_margin, &SCALAR_7);
 
     if equity >= required_margin {
         return TradingError::BadRequest as u32; // Not eligible for liquidation
     }
-
 
     let caller_fee = trading.calculate_caller_fee(e, fee);
     result.add_transfer(&trading.caller, caller_fee);
@@ -310,7 +318,7 @@ fn apply_cancel(e: &Env, result: &mut SubmitResult, position: &mut Position) -> 
         e,
         position.user.clone(),
         position.asset.clone(),
-        position.id
+        position.id,
     );
     0
 }
@@ -403,7 +411,10 @@ fn apply_withdraw_collateral(
 
     // Substract the withdrawal amount from collateral
     let equity = position.collateral - amount + pnl - fee;
-    let required_margin = position.notional_size.fixed_mul_floor(e, &market.config.init_margin, &SCALAR_7);
+    let required_margin =
+        position
+            .notional_size
+            .fixed_mul_floor(e, &market.config.init_margin, &SCALAR_7);
 
     if equity < required_margin {
         return TradingError::BadRequest as u32; // Not eligible for liquidation
