@@ -137,11 +137,11 @@ fn handle_close(
         result.add_transfer(&position.user, payout);
     }
 
-    if pnl > 0 {
-        // User made profit, vault pays out
-        result.add_transfer(&trading.vault, -pnl);
-    } else if pnl < 0 {
-        // User made loss, vault receives the loss
+    // Handle PnL transfer to/from vault
+    // -pnl automatically handles both profit and loss cases:
+    // - When pnl > 0 (profit): -pnl < 0, so vault pays out
+    // - When pnl < 0 (loss): -pnl > 0, so vault receives
+    if pnl != 0 {
         result.add_transfer(&trading.vault, -pnl);
     }
     if fee < 0 {

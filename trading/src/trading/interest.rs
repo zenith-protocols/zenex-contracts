@@ -1,7 +1,6 @@
 use crate::constants::{ONE_HOUR_SECONDS, SCALAR_18, SCALAR_7};
 use soroban_fixed_point_math::SorobanFixedPoint;
 use soroban_sdk::{Env, I256};
-use soroban_sdk::testutils::arbitrary::std::println;
 
 /// Calculate the base hourly interest rate based on utilization.
 /// Below Target Utilization:
@@ -192,8 +191,6 @@ pub fn update_index_with_interest(
     hourly_rate: i128,     // Hourly interest rate (7 decimal precision)
     seconds_elapsed: i128, // Time elapsed in seconds
 ) -> i128 {
-    
-    println!("[update_index_with_interest] current_index: {}, hourly_rate: {}, seconds_elapsed: {}", current_index, hourly_rate, seconds_elapsed);
     if seconds_elapsed <= 0 {
         return current_index;
     }
@@ -212,6 +209,5 @@ pub fn update_index_with_interest(
 
     // Apply compound growth to index
     let index = current_index.fixed_mul_floor(e, &growth_factor, &SCALAR_18);
-    println!("[update_index_with_interest] new index: {}", index);
     index
 }

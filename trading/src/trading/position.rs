@@ -9,7 +9,6 @@ use sep_40_oracle::Asset;
 use soroban_fixed_point_math::SorobanFixedPoint;
 use soroban_sdk::token::TokenClient;
 use soroban_sdk::{panic_with_error, Address, Env};
-use soroban_sdk::testutils::arbitrary::std::println;
 use crate::dependencies::VaultClient;
 use crate::trading::market::Market;
 
@@ -112,10 +111,8 @@ pub fn execute_create_position(
     entry_price: i128,
 ) -> u32 {
     user.require_auth();
-    println!("Creating position");
     let mut trading = Trading::load(e, user.clone());
     let mut market = trading.load_market(e, asset);
-    println!("Loaded market");
 
     if collateral < 0 || notional_size < 0 || entry_price < 0 {
         panic_with_error!(e, TradingError::BadRequest);
