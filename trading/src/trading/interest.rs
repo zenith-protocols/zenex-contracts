@@ -1,6 +1,7 @@
-use soroban_sdk::{Env, I256};
-use soroban_fixed_point_math::SorobanFixedPoint;
 use crate::constants::{ONE_HOUR_SECONDS, SCALAR_18, SCALAR_7};
+use soroban_fixed_point_math::SorobanFixedPoint;
+use soroban_sdk::{Env, I256};
+use soroban_sdk::testutils::arbitrary::std::println;
 
 /// Calculate the base hourly interest rate based on utilization.
 /// Below Target Utilization:
@@ -9,11 +10,11 @@ use crate::constants::{ONE_HOUR_SECONDS, SCALAR_18, SCALAR_7};
 /// HourlyBorrowRate = TargetRate + ((MaxRate - TargetRate) / (1 - TargetUtil)) * (Utilization - TargetUtil)
 pub fn base_hourly_interest_rate(
     e: &Env,
-    utilization: i128,           // Current utilization (0 to SCALAR_7)
-    min_rate: i128,              // Minimum rate when utilization = 0%
-    target_rate: i128,           // Rate at target utilization
-    max_rate: i128,              // Maximum rate when utilization = 100%
-    target_utilization: i128,    // Kink point (e.g., 80% = 8_000_000)
+    utilization: i128,        // Current utilization (0 to SCALAR_7)
+    min_rate: i128,           // Minimum rate when utilization = 0%
+    target_rate: i128,        // Rate at target utilization
+    max_rate: i128,           // Maximum rate when utilization = 100%
+    target_utilization: i128, // Kink point (e.g., 80% = 8_000_000)
 ) -> i128 {
     if utilization <= target_utilization {
         // Below target utilization
@@ -25,17 +26,21 @@ pub fn base_hourly_interest_rate(
         let rate_range = max_rate - target_rate;
         let excess_utilization = utilization - target_utilization;
         let remaining_capacity = SCALAR_7 - target_utilization;
-        let utilization_ratio = excess_utilization.fixed_div_floor(e, &remaining_capacity, &SCALAR_7);
+        let utilization_ratio =
+            excess_utilization.fixed_div_floor(e, &remaining_capacity, &SCALAR_7);
         target_rate + rate_range.fixed_mul_floor(e, &utilization_ratio, &SCALAR_7)
     }
 }
-
 
 /// Calculate a^n where n is an integer using binary exponentiation
 /// Uses 18 decimal precision internally for accuracy
 pub fn pow_int(e: &Env, a: &I256, n: &u32) -> I256 {
     let scalar_18_i256 = I256::from_i128(e, SCALAR_18);
-    let mut z = if n % 2 != 0 { a.clone() } else { scalar_18_i256.clone() };
+    let mut z = if n % 2 != 0 {
+        a.clone()
+    } else {
+        scalar_18_i256.clone()
+    };
     let mut a = a.clone();
     let mut n = n / 2;
 
@@ -53,10 +58,9 @@ pub fn pow_int(e: &Env, a: &I256, n: &u32) -> I256 {
 /// Inputs are in SCALAR_7 format, but internally uses 18 decimals for precision
 fn leverage_multiplier(
     e: &Env,
-    collateral: i128, // Total collateral in SCALAR_7
+    collateral: i128,    // Total collateral in SCALAR_7
     notional_size: i128, // Total notional size in SCALAR_7
 ) -> i128 {
-
     // If no positions or no collateral, return 1.0
     if notional_size == 0 || collateral == 0 {
         return SCALAR_7;
@@ -122,42 +126,61 @@ pub fn calculate_long_short_ratios(
 /// Returns (long_hourly_rate, short_hourly_rate) in SCALAR_7 format
 pub fn calculate_long_short_hourly_rates(
     e: &Env,
-    utilization: i128,           // Current utilization (0 to SCALAR_7)
-    min_rate: i128,              // Minimum rate when utilization = 0%
-    target_rate: i128,           // Rate at target utilization
-    max_rate: i128,              // Maximum rate when utilization = 100%
-    target_utilization: i128,    // Kink point (e.g., 80% = 8_000_000)
-    long_collateral: i128,       // Total long collateral
-    long_notional: i128,         // Total long notional size
-    short_collateral: i128,      // Total short collateral
-    short_notional: i128,        // Total short notional size
+    base_hourly_rate: i128,          // Base hourly rate (in SCALAR_7)
+    long_notional: i128,      // Total long notional size
+    short_notional: i128,     // Total short notional size
 ) -> (i128, i128) {
-    // Step 1: Calculate base hourly rate using Jump Rate Model
-    let base_hourly_rate = base_hourly_interest_rate(
-        e,
-        utilization,
-        min_rate,
-        target_rate,
-        max_rate,
-        target_utilization,
-    );
-
-    // Step 2: Calculate leverage multiplier based on total market leverage
-    let total_collateral = long_collateral + short_collateral;
     let total_notional = long_notional + short_notional;
-    let leverage_mult = leverage_multiplier(e, total_collateral, total_notional);
+    let short_ratio = short_notional.fixed_div_floor(e, &total_notional, &SCALAR_7);
+    let long_ratio = long_notional.fixed_div_floor(e, &total_notional, &SCALAR_7);
 
-    // Step 3: Apply leverage multiplier to base rate
-    let leveraged_hourly_rate = base_hourly_rate.fixed_mul_floor(e, &leverage_mult, &SCALAR_7);
+    // If no positions, return zero rates
+    if total_notional == 0 {
+        return (0, 0);
+    }
 
-    // Step 4: Calculate long/short ratios for balancing
-    let (long_ratio, short_ratio) = calculate_long_short_ratios(e, long_notional, short_notional);
+    // Calculate the 0.8 multiplier in SCALAR_7 format
+    let discount_multiplier = 8000000; // 0.8 * 10^7
 
-    // Step 5: Apply ratios to get final rates
-    let long_hourly_rate = leveraged_hourly_rate.fixed_mul_floor(e, &long_ratio, &SCALAR_7);
-    let short_hourly_rate = leveraged_hourly_rate.fixed_mul_floor(e, &short_ratio, &SCALAR_7);
+    // Edge cases: one side empty → dominant pays base (optionally discounted), empty side "receives" base.
+    if short_notional == 0 && long_notional > 0 {
+        // Longs dominate; make longs pay the base (discounted) and shorts receive base.
+        let short_rate = -base_hourly_rate
+            .fixed_mul_floor(e, &discount_multiplier, &SCALAR_7);
+        let long_rate = base_hourly_rate;
+        return (long_rate, short_rate);
+    }
 
-    (long_hourly_rate, short_hourly_rate)
+    if long_notional == 0 && short_notional > 0 {
+        // Shorts dominate; make shorts pay the base (discounted) and longs receive base.
+        let long_rate = -base_hourly_rate
+            .fixed_mul_floor(e, &discount_multiplier, &SCALAR_7);
+        let short_rate = base_hourly_rate;
+        return (long_rate, short_rate);
+    }
+
+    // Calculate interest rates based on long/short dominance
+    let (long_rate, short_rate) = if long_notional >= short_notional {
+        // When longs ≥ shorts:
+        // hourlyRateLong = hourlyRate * (notionalShorts / totalNotional)
+        // hourlyRateShort = -0.8 * hourlyRate * (notionalLongs / totalNotional)
+        let long_rate = base_hourly_rate.fixed_mul_floor(e, &short_ratio, &SCALAR_7);
+        let short_rate = -base_hourly_rate
+            .fixed_mul_floor(e, &discount_multiplier, &SCALAR_7)
+            .fixed_mul_floor(e, &long_ratio, &SCALAR_7);
+        (long_rate, short_rate)
+    } else {
+        // When longs < shorts:
+        // hourlyRateLong = -0.8 * hourlyRate * (notionalShorts / totalNotional)
+        // hourlyRateShort = hourlyRate * (notionalLongs / totalNotional)
+        let long_rate = -base_hourly_rate
+            .fixed_mul_floor(e, &discount_multiplier, &SCALAR_7)
+            .fixed_mul_floor(e, &short_ratio, &SCALAR_7);
+        let short_rate = base_hourly_rate.fixed_mul_floor(e, &long_ratio, &SCALAR_7);
+        (long_rate, short_rate)
+    };
+
+    (long_rate, short_rate)
 }
 
 /// Update a single borrowing index with compound interest
@@ -165,10 +188,12 @@ pub fn calculate_long_short_hourly_rates(
 /// Takes hourly rate and converts it internally to per-second rate
 pub fn update_index_with_interest(
     e: &Env,
-    current_index: i128,         // Current index value (18 decimal precision)
-    hourly_rate: i128,           // Hourly interest rate (7 decimal precision)
-    seconds_elapsed: i128,       // Time elapsed in seconds
+    current_index: i128,   // Current index value (18 decimal precision)
+    hourly_rate: i128,     // Hourly interest rate (7 decimal precision)
+    seconds_elapsed: i128, // Time elapsed in seconds
 ) -> i128 {
+    
+    println!("[update_index_with_interest] current_index: {}, hourly_rate: {}, seconds_elapsed: {}", current_index, hourly_rate, seconds_elapsed);
     if seconds_elapsed <= 0 {
         return current_index;
     }
@@ -186,5 +211,7 @@ pub fn update_index_with_interest(
     let growth_factor = SCALAR_18 + period_rate_18;
 
     // Apply compound growth to index
-    current_index.fixed_mul_floor(e, &growth_factor, &SCALAR_18)
+    let index = current_index.fixed_mul_floor(e, &growth_factor, &SCALAR_18);
+    println!("[update_index_with_interest] new index: {}", index);
+    index
 }

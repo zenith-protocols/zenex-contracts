@@ -28,14 +28,9 @@ pub struct MarketConfig {
     pub init_margin: i128,         // Initial margin percentage (with 7 decimals)
     pub maintenance_margin: i128,  // Maintenance margin percentage (with 7 decimals)
 
-    pub total_available: i128,     // Total amount available from vault for this market percentage (with 7 decimals)
-
     pub base_fee: i128,              // 0.05% = 5_000 (in SCALAR_7)
     pub price_impact_scalar: i128,   // BTC: 8_000_000_000, XLM: 700_000_000
-    pub min_hourly_rate: i128,       // 0.0003% = 30
-    pub max_hourly_rate: i128,       // BTC: 0.009% = 900, XLM: 0.016% = 1_600
-    pub target_hourly_rate: i128,    // BTC: 0.001% = 100, XLM: 0.002% = 200
-    pub target_utilization: i128,    // 80% = 8_000_000
+    pub base_hourly_rate: i128,       // 0.001% = 100
 }
 
 #[derive(Clone)]
@@ -51,12 +46,10 @@ pub struct MarketData {
     // Long position data
     pub long_collateral: i128,     // Total collateral in long positions
     pub long_notional_size: i128,  // Total notional size of long positions
-    pub long_count: u32,           // Number of open long positions
 
     // Short position data
     pub short_collateral: i128,    // Total collateral in short positions
     pub short_notional_size: i128, // Total notional size of short positions
-    pub short_count: u32,          // Number of open short positions
 
     // Interest rate tracking
     pub long_interest_index: i128,      // Cumulative interest rate index for longs (with 18 decimals, starting at 10^18)

@@ -8,7 +8,6 @@ pub fn create_fixture_with_data<'a>(wasm: bool) -> TestFixture<'a> {
     fixture.vault.deposit(&100_000_000_0000000, &fixture.owner, &fixture.owner);
 
     let mut market_config = default_market();
-    market_config.total_available = 100_000_000_0000000; // 100M tokens available from vault
 
     // Extract the assets before the mutable borrows
     let btc_asset = fixture.assets[AssetIndex::BTC].clone();

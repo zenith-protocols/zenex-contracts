@@ -9,6 +9,7 @@ use sep_40_oracle::Asset;
 use soroban_fixed_point_math::SorobanFixedPoint;
 use soroban_sdk::token::TokenClient;
 use soroban_sdk::{panic_with_error, Address, Env};
+use soroban_sdk::testutils::arbitrary::std::println;
 use crate::dependencies::VaultClient;
 use crate::trading::market::Market;
 
@@ -54,9 +55,7 @@ impl Position {
             market.data.short_interest_index - self.interest_index
         };
 
-        // TODO: Does this work??
-        let virtual_amount = self.notional_size - self.collateral;
-        let interest_fee = virtual_amount.fixed_mul_floor(e, &index_difference, &SCALAR_18);
+        let interest_fee = self.notional_size.fixed_mul_floor(e, &index_difference, &SCALAR_18);
 
         base_fee + price_impact_scalar + interest_fee
     }
@@ -113,8 +112,10 @@ pub fn execute_create_position(
     entry_price: i128,
 ) -> u32 {
     user.require_auth();
+    println!("Creating position");
     let mut trading = Trading::load(e, user.clone());
     let mut market = trading.load_market(e, asset);
+    println!("Loaded market");
 
     if collateral < 0 || notional_size < 0 || entry_price < 0 {
         panic_with_error!(e, TradingError::BadRequest);
@@ -177,7 +178,7 @@ pub fn execute_create_position(
     let price_impact_scalar = notional_size.fixed_div_ceil(e, &market.config.price_impact_scalar, &SCALAR_7);
 
     // Transfer tokens from user to contract
-    let token_client = TokenClient::new(e, &storage::get_token(e));
+    let token_client = TokenClient::new(e, &trading.token);
     token_client.transfer(user, &e.current_contract_address(), &(collateral + open_fee + price_impact_scalar));
 
     // Only pay fee to vault when the position fills

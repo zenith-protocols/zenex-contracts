@@ -74,10 +74,10 @@ pub fn execute_set_market(e: &Env, asset: &Asset) {
     let initial_market_data = MarketData {
         long_collateral: 0,
         long_notional_size: 0,
-        long_count: 0,
+        
         short_collateral: 0,
         short_notional_size: 0,
-        short_count: 0,
+        
         long_interest_index: SCALAR_18,
         short_interest_index: SCALAR_18,
         last_update: e.ledger().timestamp(),
