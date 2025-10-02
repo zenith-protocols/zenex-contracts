@@ -167,11 +167,11 @@ fn test_long_short_week_5pct_move_print_balances() {
     let vault_balance = fixture.token.balance(&fixture.vault.address);
         
     let delta_user1 = user1_balance - initial_user1_balance;
-    // delta user1 should be 5% of 50k minus the fee
+    // delta user1 should be 2500 (5% of 50k) minus the fee. The fee should be 5.825 = 2 * (0.0005 * 50k + 50k / 8.000.000.000 * 50k) - 0.8 * 100 / 150 * 168 * 0.00001 * 50k
     let delta_user2 = user2_balance - initial_user2_balance;
-    // delta user2 should be minus 5% of 100k minus the fee
+    // delta user2 should be minus 5k (5% of 100k) minus the fee. Fee should be 157.25 = 2 * (0.0005 * 100k + 100k / 8.000.000.000 * 100k) + 50 / 150 * 168 * 0.00001 * 100k
     let delta_vault = vault_balance - initial_vault_balance;
-    // delta vault should be the fees minus the sum of the pnl of user1 and user2
+    // delta vault should be the fees minus the sum of the pnl of user1 and user2. The vault should receive 2.5k pnl and 163.075 fees.
 
 
    
@@ -185,7 +185,7 @@ fn test_long_short_week_5pct_move_print_balances() {
 
 
 #[test]
-fn test_short_long_week_10pct_drop_200k_notional_print_balances() {
+fn test_equal_short_long_notional() {
     let fixture = setup_fixture();
     let user1 = Address::generate(&fixture.env); // short
     let user2 = Address::generate(&fixture.env); // long
@@ -271,8 +271,11 @@ fn test_short_long_week_10pct_drop_200k_notional_print_balances() {
 
     // Important is that since the notional short = notional long, the long pays interest and the short receives. 
     let delta_user1 = user1_balance - initial_user1_balance; 
+    // This should be pnl minus the fee. Pnl is 10k. Fee should be 75.6 = 2 * (0.0005 * 200k + 200k / 8.000.000.000 * 200k) - 0.8 * 200 / 400 * 168 * 0.00001 * 200k
     let delta_user2 = user2_balance - initial_user2_balance; 
+    // This should be pnl minus the fee. Pnl is -10k. Fee should be 378 = 2 * (0.0005 * 200k + 200k / 8.000.000.000 * 200k) + 200 / 400 * 168 * 0.00001 * 200k
     let delta_vault = vault_balance - initial_vault_balance; 
+    // Total user pnl is 0, so this is only the fees: 378 + 75.6 = 453.6 
 
     println!(
         "User1 (short) balance: {} (Δ {})\nUser2 (long) balance: {} (Δ {})\nVault balance: {} (Δ {})",
@@ -284,7 +287,7 @@ fn test_short_long_week_10pct_drop_200k_notional_print_balances() {
 
 
 #[test]
-fn test_long_short_short_two_weeks_no_price_move_print_balances() {
+fn test_changing_long_short_ratio() {
 	let fixture = setup_fixture();
 	let user1 = Address::generate(&fixture.env); // long 100k
 	let user2 = Address::generate(&fixture.env); // short 50k
@@ -405,9 +408,13 @@ fn test_long_short_short_two_weeks_no_price_move_print_balances() {
 	let vault_balance = fixture.token.balance(&fixture.vault.address);
 
 	let delta_user1 = user1_balance - initial_user1_balance;
+    // This should be the fee: 77.86 = 2 * (0.0005 * 100k + 100k / 8.000.000.000 * 100k) + 0.00001 * 50/150 * 168 * 100k - 0.8 * 0.00001 * 150/250 * 168 * 100k
 	let delta_user2 = user2_balance - initial_user2_balance;
+    // This should be the fee: 39.425 = 2 * (0.0005 * 50k + 50k / 8.000.000.000 * 50k) - 0.8 * 0.00001 * 168 * 50k * 100/150 + 0.00001 * 168 * 50k * 100 / 250
 	let delta_user3 = user3_balance - initial_user3_balance;
+    // This should be the fee: 169.7 = 2 * (0.0005 * 100k + 100k / 8.000.000.000 * 100k) + 0.00001 * 168 * 100k * 100/250
 	let delta_vault = vault_balance - initial_vault_balance;
+    // This should be the total of the fees: 286.985 = 77.86 + 39.425 + 169.7
 
 	println!(
 		"User1 (long 100k) balance: {} (Δ {})\nUser2 (short 50k) balance: {} (Δ {})\nUser3 (short 100k) balance: {} (Δ {})\nVault balance: {} (Δ {})",
