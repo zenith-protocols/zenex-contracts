@@ -30,7 +30,7 @@ pub struct MarketConfig {
 
     pub base_fee: i128,              // 0.05% = 5_000 (in SCALAR_7)
     pub price_impact_scalar: i128,   // BTC: 8_000_000_000, XLM: 700_000_000
-    pub base_hourly_rate: i128,       // 0.001% = 100
+    pub base_hourly_rate: i128,       // 0.001% = 10000000000000 (in SCALAR_18)
 }
 
 #[derive(Clone)]

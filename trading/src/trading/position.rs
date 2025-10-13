@@ -19,7 +19,7 @@ impl Position {
     }
 
     pub fn store(&self, e: &Env) {
-        storage::set_position(e, self.id, &self);
+        storage::set_position(e, self.id, self);
     }
 
     pub fn require_auth(&self) {
@@ -144,7 +144,7 @@ pub fn execute_create_position(
 
     // If market order, update market stats immediately
     if market_order {
-        market.update_stats(e, collateral, notional_size, is_long);
+        market.update_stats(collateral, notional_size, is_long);
         trading.cache_market(&market);
     }
 

@@ -7,12 +7,7 @@ use crate::{constants::SECONDS_PER_WEEK, storage, MarketData};
 use sep_40_oracle::Asset;
 use soroban_sdk::{panic_with_error, vec, Address, Env, String};
 
-pub fn execute_initialize(
-    e: &Env,
-    name: &String,
-    vault: &Address,
-    config: &TradingConfig,
-) {
+pub fn execute_initialize(e: &Env, name: &String, vault: &Address, config: &TradingConfig) {
     storage::set_name(e, name);
     let vault_client = VaultClient::new(e, vault);
     let token = vault_client.token();
@@ -24,18 +19,14 @@ pub fn execute_initialize(
     storage::set_status(e, 3u32) //TODO: Define constants for statuses
 }
 
-pub fn execute_set_config(
-    e: &Env,
-    config: &TradingConfig,
-) {
-
-    require_valid_config(e, &config);
-    storage::set_config(e, &config);
+pub fn execute_set_config(e: &Env, config: &TradingConfig) {
+    require_valid_config(e, config);
+    storage::set_config(e, config);
     TradingEvents::set_config(
         e,
         config.oracle.clone(),
-        config.caller_take_rate.clone(),
-        config.max_positions.clone(),
+        config.caller_take_rate,
+        config.max_positions,
     );
 }
 
@@ -43,7 +34,8 @@ pub fn execute_queue_set_market(e: &Env, asset: &Asset, config: &MarketConfig) {
     require_valid_market_config(e, config);
 
     let mut unlock_time = e.ledger().timestamp();
-    if storage::get_status(e) != 3 { //TODO: Constants for statuses
+    if storage::get_status(e) != 3 {
+        //TODO: Constants for statuses
         unlock_time += SECONDS_PER_WEEK
     }
 
@@ -68,16 +60,16 @@ pub fn execute_set_market(e: &Env, asset: &Asset) {
         panic_with_error!(e, TradingError::NotUnlocked);
     }
 
-    storage::set_market_config(e, &asset, &queued_market.config);
+    storage::set_market_config(e, asset, &queued_market.config);
 
     // Initialize MarketData with default values
     let initial_market_data = MarketData {
         long_collateral: 0,
         long_notional_size: 0,
-        
+
         short_collateral: 0,
         short_notional_size: 0,
-        
+
         long_interest_index: SCALAR_18,
         short_interest_index: SCALAR_18,
         last_update: e.ledger().timestamp(),
@@ -89,13 +81,13 @@ pub fn execute_set_market(e: &Env, asset: &Asset) {
 
 fn require_valid_market_config(e: &Env, config: &MarketConfig) {
     //TODO: Validate the market config
+    if config.min_collateral < SCALAR_7 {
+        panic_with_error!(e, TradingError::InvalidConfig);
+    }
 }
 
 fn require_valid_config(e: &Env, config: &TradingConfig) {
     if config.caller_take_rate < 0 || config.caller_take_rate > SCALAR_7 {
-        panic_with_error!(e, TradingError::InvalidConfig);
-    }
-    if config.max_positions <= 0 {
         panic_with_error!(e, TradingError::InvalidConfig);
     }
 }

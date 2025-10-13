@@ -65,7 +65,7 @@ impl Trading {
 
     pub fn cache_position(&mut self, position: &Position) {
         self.positions.set(position.id, position.clone());
-        if !self.positions_to_update.contains(&position.id) {
+        if !self.positions_to_update.contains(position.id) {
             self.positions_to_update.push_back(position.id);
         }
     }

@@ -39,6 +39,6 @@ pub fn default_market() -> MarketConfig {
 
         base_fee: 0_0005000,              // 0.05% = 50_000 (in SCALAR_7)
         price_impact_scalar: 8_000_000_000 * SCALAR_7,   // BTC: 8_000_000_000, XLM: 700_000_000
-        base_hourly_rate: 100,       // 0.001% = 100 (in SCALAR_7)
+        base_hourly_rate: 10000000000000,       // 0.001% = 10000000000000 (in SCALAR_18)
     }
 }

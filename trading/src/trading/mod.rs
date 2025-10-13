@@ -5,6 +5,7 @@ mod actions;
 pub use actions::{Request, RequestType, SubmitResult};
 mod submit;
 pub use submit::execute_submit;
+#[allow(clippy::module_inception)]
 mod trading;
 mod config;
 mod interest;

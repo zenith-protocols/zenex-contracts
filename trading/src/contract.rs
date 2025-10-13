@@ -1,11 +1,9 @@
-use crate::events::TradingEvents;
 use crate::trading::{Request, SubmitResult};
 use crate::types::MarketConfig;
 use crate::{storage, trading, TradingConfig};
 use sep_40_oracle::Asset;
 use soroban_sdk::{
-    contract, contractclient, contractimpl, unwrap::UnwrapOptimized, Address, BytesN, Env, String,
-    Symbol, Vec,
+    contract, contractclient, contractimpl, Address, BytesN, Env, String,Vec,
 };
 use stellar_access::ownable::{self as ownable, Ownable};
 use stellar_macros::{default_impl, only_owner};

@@ -4,7 +4,6 @@ use soroban_sdk::{
     contracttype, unwrap::UnwrapOptimized, Address, Env, IntoVal, String, Symbol, TryFromVal, Val,
     Vec,
 };
-use stellar_access::ownable::{self as ownable, Ownable};
 
 /********** Ledger Thresholds **********/
 

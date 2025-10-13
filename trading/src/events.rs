@@ -21,7 +21,7 @@ impl TradingEvents {
         caller_take_rate: i128,
         max_positions: u32,
     ) {
-        let topics = (Symbol::new(&e, "set_config"),);
+        let topics = (Symbol::new(e, "set_config"),);
         e.events()
             .publish(topics, (oracle, caller_take_rate, max_positions));
     }
@@ -35,7 +35,7 @@ impl TradingEvents {
     /// * asset - The asset for the market
     /// * config - The market configuration
     pub fn queue_set_market(e: &Env, asset: Asset, config: MarketConfig) {
-        let topics = (Symbol::new(&e, "queue_set_market"),);
+        let topics = (Symbol::new(e, "queue_set_market"),);
         e.events().publish(topics, (asset, config));
     }
 
@@ -46,7 +46,7 @@ impl TradingEvents {
     /// ### Arguments
     /// * asset - The asset for the market
     pub fn cancel_set_market(e: &Env, asset: Asset) {
-        let topics = (Symbol::new(&e, "cancel_set_market"),);
+        let topics = (Symbol::new(e, "cancel_set_market"),);
         e.events().publish(topics, asset);
     }
 
@@ -58,7 +58,7 @@ impl TradingEvents {
     /// ### Arguments
     /// * asset - The asset for the market
     pub fn set_market(e: &Env, asset: Asset) {
-        let topics = (Symbol::new(&e, "set_market"),);
+        let topics = (Symbol::new(e, "set_market"),);
         e.events().publish(topics, asset);
     }
 
@@ -71,7 +71,7 @@ impl TradingEvents {
     /// * owner - The owner setting the status
     /// * status - The new trading status
     pub fn set_status(e: &Env, status: u32) {
-        let topics = (Symbol::new(&e, "set_status"),);
+        let topics = (Symbol::new(e, "set_status"),);
         e.events().publish(topics, status);
     }
 
@@ -90,7 +90,7 @@ impl TradingEvents {
         asset: Asset,
         position_id: u32,
     ) {
-        let topics = (Symbol::new(&e, "open_position"), user, asset);
+        let topics = (Symbol::new(e, "open_position"), user, asset);
         e.events().publish(
             topics,
             (position_id),
@@ -116,7 +116,7 @@ impl TradingEvents {
         pnl: i128,
         fee: i128,
     ) {
-        let topics = (Symbol::new(&e, "close_position"), user, asset);
+        let topics = (Symbol::new(e, "close_position"), user, asset);
         e.events()
             .publish(topics, (position_id, pnl, fee));
     }
@@ -137,7 +137,7 @@ impl TradingEvents {
         asset: Asset,
         position_id: u32,
     ) {
-        let topics = (Symbol::new(&e, "fill_position"), user, asset);
+        let topics = (Symbol::new(e, "fill_position"), user, asset);
         e.events()
             .publish(topics, (position_id));
     }
@@ -157,7 +157,7 @@ impl TradingEvents {
         asset: Asset,
         position_id: u32,
     ) {
-        let topics = (Symbol::new(&e, "liquidation"), user, asset);
+        let topics = (Symbol::new(e, "liquidation"), user, asset);
         e.events()
             .publish(topics, (position_id));
     }
@@ -178,7 +178,7 @@ impl TradingEvents {
         asset: Asset,
         position_id: u32,
     ) {
-        let topics = (Symbol::new(&e, "cancel_position"), user, asset);
+        let topics = (Symbol::new(e, "cancel_position"), user, asset);
         e.events()
             .publish(topics, (position_id));
     }
@@ -200,7 +200,7 @@ impl TradingEvents {
         position_id: u32,
         amount: i128,
     ) {
-        let topics = (Symbol::new(&e, "withdraw_collateral"), user, asset);
+        let topics = (Symbol::new(e, "withdraw_collateral"), user, asset);
         e.events()
             .publish(topics, (position_id, amount));
     }
@@ -222,7 +222,7 @@ impl TradingEvents {
         position_id: u32,
         amount: i128,
     ) {
-        let topics = (Symbol::new(&e, "deposit_collateral"), user, asset);
+        let topics = (Symbol::new(e, "deposit_collateral"), user, asset);
         e.events()
             .publish(topics, (position_id, amount));
     }
@@ -238,7 +238,7 @@ impl TradingEvents {
     /// * position_id - The position ID
     /// * price - The take profit price level
     pub fn set_take_profit(e: &Env, user: Address, asset: Asset, position_id: u32) {
-        let topics = (Symbol::new(&e, "set_take_profit"), user, asset);
+        let topics = (Symbol::new(e, "set_take_profit"), user, asset);
         e.events().publish(topics, (position_id));
     }
 
@@ -253,7 +253,7 @@ impl TradingEvents {
     /// * position_id - The position ID
     /// * price - The stop loss price level
     pub fn set_stop_loss(e: &Env, user: Address, asset: Asset, position_id: u32) {
-        let topics = (Symbol::new(&e, "set_stop_loss"), user, asset);
+        let topics = (Symbol::new(e, "set_stop_loss"), user, asset);
         e.events().publish(topics, (position_id));
     }
 }

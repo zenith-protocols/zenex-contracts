@@ -1,6 +1,6 @@
 use sep_40_oracle::Asset;
 use soroban_sdk::{contracttype, Env};
-use crate::{storage};
+use crate::storage;
 use crate::trading::interest::{calculate_long_short_hourly_rates, update_index_with_interest};
 use crate::types::{MarketConfig, MarketData};
 
@@ -70,7 +70,7 @@ impl Market {
 
     /// Updates open interest statistics for an asset
     /// Use positive values to add, negative values to subtract
-    pub fn update_stats(&mut self, e: &Env, collateral: i128, notional_size: i128, is_long: bool) {
+    pub fn update_stats(&mut self, collateral: i128, notional_size: i128, is_long: bool) {
         if is_long {
             self.data.long_notional_size += notional_size;
             self.data.long_collateral += collateral;

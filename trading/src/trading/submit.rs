@@ -3,7 +3,7 @@ use soroban_sdk::auth::{ContractContext, InvokerContractAuthEntry, SubContractIn
 use soroban_sdk::token::TokenClient;
 use crate::dependencies::VaultClient;
 use crate::storage;
-use crate::trading::{Request};
+use crate::trading::Request;
 use crate::trading::actions::{process_requests, SubmitResult};
 use crate::trading::trading::Trading;
 
@@ -15,8 +15,8 @@ pub fn execute_submit(
     let mut trading = Trading::load(e, caller.clone());
     let result = process_requests(e, &mut trading, requests);
 
-    let token_client = TokenClient::new(&e, &storage::get_token(e));
-    let vault_client = VaultClient::new(&e, &storage::get_vault(e));
+    let token_client = TokenClient::new(e, &storage::get_token(e));
+    let vault_client = VaultClient::new(e, &storage::get_vault(e));
 
     // STEP 1: Vault pays to contract (if needed)
     // This is done first to ensure the contract has enough balance to handle transfers

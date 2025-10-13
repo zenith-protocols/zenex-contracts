@@ -157,13 +157,12 @@ fn handle_close(
     position.close_price = price;
 
     market.update_stats(
-        e,
         -position.collateral,
         -position.notional_size,
         position.is_long,
     );
     trading.cache_market(&market);
-    trading.cache_position(&position);
+    trading.cache_position(position);
 
     0
 }
@@ -185,7 +184,7 @@ fn apply_fill(
     position: &mut Position,
 ) -> u32 {
     let current_price = trading.load_price(e, &position.asset);
-    let mut market = trading.load_market(e, &position.asset);
+    //let mut market = trading.load_market(e, &position.asset);
 
     let can_fill = if position.is_long {
         current_price <= position.entry_price
@@ -202,7 +201,6 @@ fn apply_fill(
 
     let mut market = trading.load_market(e, &position.asset);
     market.update_stats(
-        e,
         position.collateral,
         position.notional_size,
         position.is_long,
@@ -218,7 +216,7 @@ fn apply_fill(
     result.add_transfer(&trading.vault, base_fee - caller_fee);
 
     trading.cache_market(&market);
-    trading.cache_position(&position);
+    trading.cache_position(position);
 
     TradingEvents::fill_position(
         e,
@@ -293,7 +291,6 @@ fn apply_liquidation(
     );
 
     market.update_stats(
-        e,
         -position.collateral,
         -position.notional_size,
         position.is_long,
@@ -304,7 +301,7 @@ fn apply_liquidation(
 
     storage::remove_user_position(e, &position.user, position.id);
     trading.cache_market(&market);
-    trading.cache_position(&position);
+    trading.cache_position(position);
     0
 }
 
@@ -424,13 +421,12 @@ fn apply_withdraw_collateral(
     result.add_transfer(&position.user, amount);
 
     market.update_stats(
-        e,
         -amount,
         0, // No change in notional size
         position.is_long,
     );
     trading.cache_market(&market);
-    trading.cache_position(&position);
+    trading.cache_position(position);
     TradingEvents::withdraw_collateral(
         e,
         position.user.clone(),
@@ -460,13 +456,12 @@ fn apply_deposit_collateral(
     result.add_transfer(&position.user, -amount);
 
     market.update_stats(
-        e,
         amount,
         0, // No change in notional size
         position.is_long,
     );
     trading.cache_market(&market);
-    trading.cache_position(&position);
+    trading.cache_position(position);
 
     TradingEvents::deposit_collateral(
         e,
