@@ -195,11 +195,11 @@ fn test_long_short_week_5pct_move_print_balances() {
 
     println!(
         "User1 balance: {} (Δ {})\nUser2 balance: {} (Δ {})\nVault balance: {} (Δ {})",
-        user1_balance,
+        user1_balance / SCALAR_7,
         delta_user1 / SCALAR_7,
-        user2_balance,
+        user2_balance / SCALAR_7,
         delta_user2 / SCALAR_7,
-        vault_balance,
+        vault_balance / SCALAR_7,
         delta_vault / SCALAR_7
     );
 }

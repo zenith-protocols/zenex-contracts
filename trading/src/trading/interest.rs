@@ -1,15 +1,15 @@
 use crate::constants::{ONE_HOUR_SECONDS, SCALAR_18};
 use soroban_fixed_point_math::SorobanFixedPoint;
-use soroban_sdk::Env;
+use soroban_sdk::{log, Env};
 
 /// Calculate the adjusted hourly interest rates for long and short positions
 /// This combines the base rate, leverage multiplier, and long/short corrections
 /// Returns (long_hourly_rate, short_hourly_rate) in SCALAR_18 format
 pub fn calculate_long_short_hourly_rates(
     e: &Env,
-    base_hourly_rate: i128,          // Base hourly rate (in SCALAR_18)
-    long_notional: i128,      // Total long notional size
-    short_notional: i128,     // Total short notional size
+    base_hourly_rate: i128, // Base hourly rate (in SCALAR_18)
+    long_notional: i128,    // Total long notional size
+    short_notional: i128,   // Total short notional size
 ) -> (i128, i128) {
     let total_notional = long_notional + short_notional;
     let short_ratio = short_notional.fixed_div_floor(e, &total_notional, &SCALAR_18);
@@ -26,16 +26,14 @@ pub fn calculate_long_short_hourly_rates(
     // Edge cases: one side empty → dominant pays base (optionally discounted), empty side "receives" base.
     if short_notional == 0 && long_notional > 0 {
         // Longs dominate; make longs pay the base (discounted) and shorts receive base.
-        let short_rate = -base_hourly_rate
-            .fixed_mul_floor(e, &discount_multiplier, &SCALAR_18);
+        let short_rate = -base_hourly_rate.fixed_mul_floor(e, &discount_multiplier, &SCALAR_18);
         let long_rate = base_hourly_rate;
         return (long_rate, short_rate);
     }
 
     if long_notional == 0 && short_notional > 0 {
         // Shorts dominate; make shorts pay the base (discounted) and longs receive base.
-        let long_rate = -base_hourly_rate
-            .fixed_mul_floor(e, &discount_multiplier, &SCALAR_18);
+        let long_rate = -base_hourly_rate.fixed_mul_floor(e, &discount_multiplier, &SCALAR_18);
         let short_rate = base_hourly_rate;
         return (long_rate, short_rate);
     }
@@ -82,6 +80,13 @@ pub fn update_index_with_interest(
 
     // Calculate total growth over the period
     let period_rate = rate_per_second.fixed_mul_floor(e, &seconds_elapsed, &SCALAR_18);
+
+    // Debug print period_rate rate_per_second seconds_elapsed and hourly_rate
+    log!(e, "Debug Interest Calculation:");
+    log!(e, "Hourly Rate: {}", hourly_rate);
+    log!(e, "Rate per Second: {}", rate_per_second);
+    log!(e, "Seconds Elapsed: {}", seconds_elapsed);
+    log!(e, "Period Rate: {}", period_rate);
 
     // Growth factor = 1 + period_rate (both already in 18 decimal precision)
     let growth_factor = SCALAR_18 + period_rate;
