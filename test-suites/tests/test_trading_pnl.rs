@@ -24,13 +24,15 @@ fn test_profitable_long_position_small_gain() {
     let initial_balance = fixture.token.balance(&user);
 
     // Open long position at 100K
-    let position_id = fixture.trading.create_position(
+    let position_id = fixture.trading.open_position(
         &user,
         &fixture.assets[AssetIndex::BTC],
         &(1_000 * SCALAR_7), // 1000 tokens collateral
         &(2_000 * SCALAR_7), // 1000 tokens collateral, // 2x leverage
         &true,
         &0, // market order at 100K
+        &0, // take profit: 0 (not set)
+        &0, // stop loss: 0 (not set)
     );
 
     let balance_after_open = fixture.token.balance(&user);
@@ -52,10 +54,10 @@ fn test_profitable_long_position_small_gain() {
     // Price goes up 5% to 105K
     fixture.oracle.set_price_stable(&svec![
         &fixture.env,
-        1_0000000,       // USD
+        10000000,        // USD
         105_000_0000000, // BTC = 105K (+5%)
         2000_0000000,    // ETH
-        0_1000000,       // XLM
+        1000000,         // XLM
     ]);
 
     // Close position
@@ -102,31 +104,35 @@ fn test_long_short_week_5pct_move_print_balances() {
     // Set BTC price to 100K before opening positions
     fixture.oracle.set_price_stable(&svec![
         &fixture.env,
-        1_0000000,       // USD
+        10000000,        // USD
         100_000_0000000, // BTC = 100K
         2000_0000000,    // ETH
-        0_1000000,       // XLM
+        1000000,         // XLM
     ]);
 
     // User1 opens a long position at 100k with 2x leverage
     // Choose collateral = 25k -> notional size = 50k (2x)
-    let user1_position_id = fixture.trading.create_position(
+    let user1_position_id = fixture.trading.open_position(
         &user1,
         &fixture.assets[AssetIndex::BTC],
         &(25_000 * SCALAR_7),
         &(50_000 * SCALAR_7),
         &true,
         &0, // market order at current price (100K)
+        &0, // take profit: 0 (not set)
+        &0, // stop loss: 0 (not set)
     );
 
     // User2 opens a short position of 100k notional with 10x leverage -> collateral = 10k
-    let user2_position_id = fixture.trading.create_position(
+    let user2_position_id = fixture.trading.open_position(
         &user2,
         &fixture.assets[AssetIndex::BTC],
         &(10_000 * SCALAR_7),
         &(100_000 * SCALAR_7),
         &false,
         &0, // market order at current price (100K)
+        &0, // take profit: 0 (not set)
+        &0, // stop loss: 0 (not set)
     );
 
     // A week passes
@@ -135,10 +141,10 @@ fn test_long_short_week_5pct_move_print_balances() {
     // Price goes up 5%: 100K -> 105K
     fixture.oracle.set_price_stable(&svec![
         &fixture.env,
-        1_0000000,       // USD
+        10000000,        // USD
         105_000_0000000, // BTC = 105K (+5%)
         2000_0000000,    // ETH
-        0_1000000,       // XLM
+        1000000,         // XLM
     ]);
 
     // User1 closes the long
@@ -234,23 +240,27 @@ fn test_equal_short_long_notional() {
     let notional = 200_000 * SCALAR_7;
 
     // User1 opens a SHORT at 100k
-    let user1_position_id = fixture.trading.create_position(
+    let user1_position_id = fixture.trading.open_position(
         &user1,
         &fixture.assets[AssetIndex::BTC],
         &collateral,
         &notional,
         &false,
         &0,
+        &0, // take profit: 0 (not set)
+        &0, // stop loss: 0 (not set)
     );
 
     // User2 opens a LONG at 100k
-    let user2_position_id = fixture.trading.create_position(
+    let user2_position_id = fixture.trading.open_position(
         &user2,
         &fixture.assets[AssetIndex::BTC],
         &collateral,
         &notional,
         &true,
         &0,
+        &0, // take profit: 0 (not set)
+        &0, // stop loss: 0 (not set)
     );
 
     // A week passes
@@ -361,23 +371,27 @@ fn test_changing_long_short_ratio() {
     let collateral_50k = 10_000 * SCALAR_7; // 5x leverage
 
     // User1 opens LONG 100k
-    let user1_position_id = fixture.trading.create_position(
+    let user1_position_id = fixture.trading.open_position(
         &user1,
         &fixture.assets[AssetIndex::BTC],
         &collateral_100k,
         &notional_100k,
         &true,
         &0,
+        &0, // take profit: 0 (not set)
+        &0, // stop loss: 0 (not set)
     );
 
     // User2 opens SHORT 50k
-    let user2_position_id = fixture.trading.create_position(
+    let user2_position_id = fixture.trading.open_position(
         &user2,
         &fixture.assets[AssetIndex::BTC],
         &collateral_50k,
         &notional_50k,
         &false,
         &0,
+        &0, // take profit: 0 (not set)
+        &0, // stop loss: 0 (not set)
     );
 
     // A week passes
@@ -393,13 +407,15 @@ fn test_changing_long_short_ratio() {
     ]);
 
     // User3 opens SHORT 100k
-    let user3_position_id = fixture.trading.create_position(
+    let user3_position_id = fixture.trading.open_position(
         &user3,
         &fixture.assets[AssetIndex::BTC],
         &collateral_100k,
         &notional_100k,
         &false,
         &0,
+        &0, // take profit: 0 (not set)
+        &0, // stop loss: 0 (not set)
     );
 
     // Another week passes

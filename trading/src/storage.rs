@@ -1,4 +1,7 @@
-use crate::types::{MarketConfig, MarketData, Position, QueuedMarketInit, TradingConfig};
+use crate::{
+    types::{MarketConfig, MarketData, Position, QueuedMarketInit, TradingConfig},
+    ConfigUpdate,
+};
 use sep_40_oracle::Asset;
 use soroban_sdk::{
     contracttype, unwrap::UnwrapOptimized, Address, Env, IntoVal, String, Symbol, TryFromVal, Val,
@@ -24,6 +27,8 @@ const TOKEN_KEY: &str = "Token";
 const CONFIG_KEY: &str = "Config";
 const MARKET_LIST_KEY: &str = "MarketList";
 const POSITION_COUNTER_KEY: &str = "PosCtr";
+const CONFIG_UPDATE_KEY: &str = "ConfigUpdate";
+
 #[derive(Clone)]
 #[contracttype]
 pub enum TradingDataKey {
@@ -138,9 +143,7 @@ pub fn set_name(e: &Env, name: &String) {
 }
 
 pub fn has_name(e: &Env) -> bool {
-    e.storage()
-        .instance()
-        .has(&Symbol::new(e, NAME_KEY))
+    e.storage().instance().has(&Symbol::new(e, NAME_KEY))
 }
 
 /********** Trading Config **********/
@@ -156,6 +159,37 @@ pub fn set_config(e: &Env, config: &TradingConfig) {
     e.storage()
         .instance()
         .set::<Symbol, TradingConfig>(&Symbol::new(e, CONFIG_KEY), config);
+}
+
+/********** Config Update **********/
+
+pub fn get_config_update(e: &Env) -> ConfigUpdate {
+    e.storage()
+        .temporary()
+        .get(&Symbol::new(e, CONFIG_UPDATE_KEY))
+        .unwrap_optimized()
+}
+
+pub fn set_config_update(e: &Env, update: &ConfigUpdate) {
+    let key = Symbol::new(e, CONFIG_UPDATE_KEY);
+    e.storage()
+        .temporary()
+        .set::<Symbol, ConfigUpdate>(&key, update);
+    e.storage()
+        .temporary()
+        .extend_ttl(&key, LEDGER_THRESHOLD_USER, LEDGER_BUMP_USER);
+}
+
+pub fn has_config_update(e: &Env) -> bool {
+    e.storage()
+        .temporary()
+        .has(&Symbol::new(e, CONFIG_UPDATE_KEY))
+}
+
+pub fn del_config_update(e: &Env) {
+    e.storage()
+        .temporary()
+        .remove(&Symbol::new(e, CONFIG_UPDATE_KEY));
 }
 
 /********** Market Config **********/

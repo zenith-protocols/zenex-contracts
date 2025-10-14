@@ -11,7 +11,7 @@ pub(crate) fn create_trading(e: &Env) -> Address {
             Address::generate(e),
             Address::generate(e),
             Address::generate(e),
-            0_1000000u32,
+            0u32,
             4u32,
         )
     )

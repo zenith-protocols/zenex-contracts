@@ -5,7 +5,7 @@ use crate::dependencies::VaultClient;
 use crate::storage;
 use crate::trading::Request;
 use crate::trading::actions::{process_requests, SubmitResult};
-use crate::trading::trading::Trading;
+use crate::trading::core::Trading;
 
 pub fn execute_submit(
     e: &Env,

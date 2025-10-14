@@ -1,10 +1,10 @@
+#![allow(clippy::too_many_arguments)]
+
 use crate::trading::{Request, SubmitResult};
 use crate::types::MarketConfig;
 use crate::{storage, trading, TradingConfig};
 use sep_40_oracle::Asset;
-use soroban_sdk::{
-    contract, contractclient, contractimpl, Address, BytesN, Env, String,Vec,
-};
+use soroban_sdk::{contract, contractclient, contractimpl, Address, BytesN, Env, String, Vec};
 use stellar_access::ownable::{self as ownable, Ownable};
 use stellar_macros::{default_impl, only_owner};
 #[contract]
@@ -12,7 +12,6 @@ pub struct TradingContract;
 
 #[contractclient(name = "TradingClient")]
 pub trait Trading {
-
     /// (Owner only) Initialize the trading contract
     ///
     /// ### Arguments
@@ -23,23 +22,30 @@ pub trait Trading {
     /// If the caller is not the owner
     /// If the contract is already initialized
     /// If the configuration is invalid
-    fn initialize(
-        e: Env,
-        name: String,
-        vault: Address,
-        config: TradingConfig,
-    );
+    fn initialize(e: Env, name: String, vault: Address, config: TradingConfig);
 
-    /// (Owner only) Update the trading configuration
+    /// (Owner only) Queues a mconfiguration update
     ///
     /// ### Arguments
-    /// * `oracle` - The oracle address
-    /// * `caller_take_rate` - The take rate for the caller
-    /// * `max_positions` - The maximum number of positions
+    /// * `config` - New trading configuration
     ///
     /// ### Panics
     /// If the caller is not the owner
-    fn set_config(e: Env, config: TradingConfig);
+    /// If the configuration is invalid
+    fn queue_set_config(e: Env, config: TradingConfig);
+
+    /// (Owner only) Cancels a queued configuration update
+    /// 
+    /// ### Panics
+    /// If the caller is not the owner
+    /// If there is no queued configuration update
+    fn cancel_set_config(e: Env);
+
+    /// Update the trading configuration
+    ///
+    /// ### Panics
+    /// If the caller is not the owner or the update is not queued
+    fn set_config(e: Env);
 
     /// (Owner only) Queue setting data for a market
     ///
@@ -81,7 +87,7 @@ pub trait Trading {
     /// If the caller is not the owner
     fn set_status(e: Env, status: u32);
 
-    /// Create a position (long or short)
+    /// Open a position (long or short)
     ///
     /// # Arguments
     /// * `user` - User address opening position
@@ -90,10 +96,12 @@ pub trait Trading {
     /// * `leverage` - Leverage multiplier
     /// * `is_long` - Whether position is long (true) or short (false)
     /// * `entry_price` - Price at which to open position 0 for market order
+    /// * `take_profit` - Take profit price level, 0 if not set
+    /// * `stop_loss` - Stop loss price level, 0 if not set
     ///
     /// # Returns
     /// Position ID of the newly opened position
-    fn create_position(
+    fn open_position(
         e: Env,
         user: Address,
         asset: Asset,
@@ -101,6 +109,8 @@ pub trait Trading {
         notional_size: i128,
         is_long: bool,
         entry_price: i128,
+        take_profit: i128,
+        stop_loss: i128,
     ) -> u32;
 
     /// Executes a batch of trading actions
@@ -118,37 +128,34 @@ pub trait Trading {
 
 #[contractimpl]
 impl TradingContract {
-    pub fn __constructor(
-        e: Env,
-        owner: Address,
-    ) {
+    pub fn __constructor(e: Env, owner: Address) {
         ownable::set_owner(&e, &owner);
     }
 }
 
 #[contractimpl]
 impl Trading for TradingContract {
-
     #[only_owner]
-    fn initialize(
-        e: Env,
-        name: String,
-        vault: Address,
-        config: TradingConfig,
-    ) {
+    fn initialize(e: Env, name: String, vault: Address, config: TradingConfig) {
         storage::extend_instance(&e);
-        trading::execute_initialize(
-            &e,
-            &name,
-            &vault,
-            &config,
-        );
+        trading::execute_initialize(&e, &name, &vault, &config);
     }
 
     #[only_owner]
-    fn set_config(e: Env, config: TradingConfig) {
+    fn queue_set_config(e: Env, config: TradingConfig) {
         storage::extend_instance(&e);
-        trading::execute_set_config(&e, &config);
+        trading::execute_queue_set_config(&e, &config);
+    }
+
+    #[only_owner]
+    fn cancel_set_config(e: Env) {
+        storage::extend_instance(&e);
+        trading::execute_cancel_set_config(&e);
+    }
+
+    fn set_config(e: Env) {
+        storage::extend_instance(&e);
+        trading::execute_set_config(&e);
     }
 
     #[only_owner]
@@ -174,7 +181,7 @@ impl Trading for TradingContract {
         storage::set_status(&e, status);
     }
 
-    fn create_position(
+    fn open_position(
         e: Env,
         user: Address,
         asset: Asset,
@@ -182,6 +189,8 @@ impl Trading for TradingContract {
         notional_size: i128,
         is_long: bool,
         entry_price: i128,
+        take_profit: i128,
+        stop_loss: i128,
     ) -> u32 {
         storage::extend_instance(&e);
         trading::execute_create_position(
@@ -192,6 +201,8 @@ impl Trading for TradingContract {
             notional_size,
             is_long,
             entry_price,
+            take_profit,
+            stop_loss,
         )
     }
 

@@ -3,7 +3,7 @@ use crate::errors::TradingError;
 use crate::events::TradingEvents;
 use crate::storage;
 use crate::trading::actions::RequestType;
-use crate::trading::trading::Trading;
+use crate::trading::core::Trading;
 pub(crate) use crate::types::{Position, PositionStatus};
 use sep_40_oracle::Asset;
 use soroban_fixed_point_math::SorobanFixedPoint;
@@ -101,6 +101,7 @@ impl Position {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn execute_create_position(
     e: &Env,
     user: &Address,
@@ -109,6 +110,8 @@ pub fn execute_create_position(
     notional_size: i128,
     is_long: bool,
     entry_price: i128,
+    take_profit: i128,
+    stop_loss: i128,
 ) -> u32 {
     user.require_auth();
     let mut trading = Trading::load(e, user.clone());
@@ -161,10 +164,9 @@ pub fn execute_create_position(
         status: status.clone(),
         asset: asset.clone(),
         is_long,
-        stop_loss: 0,
-        take_profit: 0,
+        stop_loss,
+        take_profit,
         entry_price: actual_entry_price,
-        close_price: 0,
         collateral,
         notional_size,
         interest_index,
