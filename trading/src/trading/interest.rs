@@ -11,15 +11,15 @@ pub fn calculate_long_short_hourly_rates(
     long_notional: i128,    // Total long notional size
     short_notional: i128,   // Total short notional size
 ) -> (i128, i128) {
-    let total_notional = long_notional + short_notional;
-
     // If no positions, return zero rates
-    if total_notional == 0 {
+    if long_notional == 0 && short_notional == 0 {
         return (0, 0);
     }
 
-    let short_ratio = short_notional.fixed_div_floor(e, &total_notional, &SCALAR_18);
-    let long_ratio = long_notional.fixed_div_floor(e, &total_notional, &SCALAR_18);
+    let short_ratio = short_notional.fixed_div_floor(e, &long_notional, &SCALAR_18);
+    let long_ratio = long_notional.fixed_div_floor(e, &short_notional, &SCALAR_18);
+    let squared_long_ratio = long_ratio.fixed_mul_floor(e, &long_ratio, &SCALAR_18);
+    let squared_short_ratio = short_ratio.fixed_mul_floor(e, &short_ratio, &SCALAR_18);
 
     // Calculate the 0.8 multiplier in SCALAR_18 format
     let discount_multiplier = 800000000000000000; // 0.8 * 10^18
@@ -42,21 +42,21 @@ pub fn calculate_long_short_hourly_rates(
     // Calculate interest rates based on long/short dominance
     let (long_rate, short_rate) = if long_notional >= short_notional {
         // When longs ≥ shorts:
-        // hourlyRateLong = hourlyRate * (notionalShorts / totalNotional)
-        // hourlyRateShort = -0.8 * hourlyRate * (notionalLongs / totalNotional)
-        let long_rate = base_hourly_rate.fixed_mul_floor(e, &short_ratio, &SCALAR_18);
+        // hourlyRateLong = hourlyRate * (notionalLongs / notionalShorts)
+        // hourlyRateShort = -0.8 * hourlyRate * (notionalLongs / notionalShorts)^2
+        let long_rate = base_hourly_rate.fixed_mul_floor(e, &long_ratio, &SCALAR_18);
         let short_rate = -base_hourly_rate
             .fixed_mul_floor(e, &discount_multiplier, &SCALAR_18)
-            .fixed_mul_floor(e, &long_ratio, &SCALAR_18);
+            .fixed_mul_floor(e, &squared_long_ratio, &SCALAR_18);
         (long_rate, short_rate)
     } else {
         // When longs < shorts:
-        // hourlyRateLong = -0.8 * hourlyRate * (notionalShorts / totalNotional)
-        // hourlyRateShort = hourlyRate * (notionalLongs / totalNotional)
+        // hourlyRateLong = -0.8 * hourlyRate * (notionalShorts / notionalLongs)^2
+        // hourlyRateShort = hourlyRate * (notionalShorts / notionalLongs)
         let long_rate = -base_hourly_rate
             .fixed_mul_floor(e, &discount_multiplier, &SCALAR_18)
-            .fixed_mul_floor(e, &short_ratio, &SCALAR_18);
-        let short_rate = base_hourly_rate.fixed_mul_floor(e, &long_ratio, &SCALAR_18);
+            .fixed_mul_floor(e, &squared_short_ratio, &SCALAR_18);
+        let short_rate = base_hourly_rate.fixed_mul_floor(e, &short_ratio, &SCALAR_18);
         (long_rate, short_rate)
     };
 
