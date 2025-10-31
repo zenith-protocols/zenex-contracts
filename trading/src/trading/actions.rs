@@ -59,6 +59,7 @@ impl SubmitResult {
 
 pub fn process_requests(e: &Env, trading: &mut Trading, requests: Vec<Request>) -> SubmitResult {
     let mut result = SubmitResult::new(e);
+    let mut authorized_users = Map::<Address, bool>::new(e);
 
     for request in requests.iter() {
         let mut position = trading.load_position(e, request.position);
@@ -69,6 +70,7 @@ pub fn process_requests(e: &Env, trading: &mut Trading, requests: Vec<Request>) 
             result.results.push_back(TradingError::InvalidAction as u32);
             continue;
         }
+
         let action_result = match request.action {
             RequestType::Close => apply_close(e, &mut result, trading, &mut position),
             RequestType::Fill => apply_fill(e, &mut result, trading, &mut position),
@@ -97,6 +99,27 @@ pub fn process_requests(e: &Env, trading: &mut Trading, requests: Vec<Request>) 
                 apply_set_stop_loss(e, trading, &mut position, price)
             }
         };
+
+        // Check if this action requires authorization
+        let requires_auth = matches!(
+            request.action,
+            RequestType::Close
+                | RequestType::Cancel
+                | RequestType::WithdrawCollateral
+                | RequestType::DepositCollateral
+                | RequestType::SetTakeProfit
+                | RequestType::SetStopLoss
+        );
+
+        // If action succeeded and requires auth, authorize the user (only once per user)
+        if action_result == 0
+            && requires_auth
+            && !authorized_users.contains_key(position.user.clone())
+        {
+            position.require_auth();
+            authorized_users.set(position.user.clone(), true);
+        }
+
         result.results.push_back(action_result);
     }
 
@@ -177,7 +200,6 @@ fn apply_close(
     trading: &mut Trading,
     position: &mut Position,
 ) -> u32 {
-    position.require_auth();
     handle_close(e, result, trading, position)
 }
 
@@ -313,7 +335,6 @@ fn apply_liquidation(
 }
 
 fn apply_cancel(e: &Env, result: &mut SubmitResult, position: &mut Position) -> u32 {
-    position.require_auth();
     result.add_transfer(&position.user, position.collateral);
 
     position.status = PositionStatus::Closed;
@@ -333,7 +354,6 @@ fn apply_set_take_profit(
     position: &mut Position,
     price: i128,
 ) -> u32 {
-    position.require_auth();
     let current_price = trading.load_price(e, &position.asset);
 
     if position.is_long {
@@ -350,6 +370,8 @@ fn apply_set_take_profit(
 
     position.take_profit = price;
 
+    trading.cache_position(position);
+
     TradingEvents::set_take_profit(
         e,
         position.user.clone(),
@@ -365,8 +387,6 @@ fn apply_set_stop_loss(
     position: &mut Position,
     price: i128,
 ) -> u32 {
-    position.require_auth();
-
     let current_price = trading.load_price(e, &position.asset);
 
     if position.is_long {
@@ -382,6 +402,8 @@ fn apply_set_stop_loss(
     }
 
     position.stop_loss = price;
+
+    trading.cache_position(position);
 
     TradingEvents::set_stop_loss(
         e,
@@ -399,7 +421,6 @@ fn apply_update_collateral(
     position: &mut Position,
     amount: i128,
 ) -> u32 {
-    position.require_auth();
     if amount == 0 {
         return TradingError::BadRequest as u32;
     }

@@ -12,13 +12,14 @@ pub fn calculate_long_short_hourly_rates(
     short_notional: i128,   // Total short notional size
 ) -> (i128, i128) {
     let total_notional = long_notional + short_notional;
-    let short_ratio = short_notional.fixed_div_floor(e, &total_notional, &SCALAR_18);
-    let long_ratio = long_notional.fixed_div_floor(e, &total_notional, &SCALAR_18);
 
     // If no positions, return zero rates
     if total_notional == 0 {
         return (0, 0);
     }
+
+    let short_ratio = short_notional.fixed_div_floor(e, &total_notional, &SCALAR_18);
+    let long_ratio = long_notional.fixed_div_floor(e, &total_notional, &SCALAR_18);
 
     // Calculate the 0.8 multiplier in SCALAR_18 format
     let discount_multiplier = 800000000000000000; // 0.8 * 10^18
