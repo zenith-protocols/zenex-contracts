@@ -10,7 +10,7 @@ pub(crate) use crate::types::{Position, PositionStatus};
 use sep_40_oracle::Asset;
 use soroban_fixed_point_math::SorobanFixedPoint;
 use soroban_sdk::token::TokenClient;
-use soroban_sdk::{panic_with_error, Address, Env};
+use soroban_sdk::{log, panic_with_error, Address, Env};
 
 /// Implementation of position-related methods
 impl Position {
@@ -57,7 +57,7 @@ impl Position {
         };
 
         let base_fee = if should_pay_base_fee {
-            self.collateral
+            self.notional_size
                 .fixed_mul_ceil(e, &market.config.base_fee, &SCALAR_7)
         } else {
             0 // No base fee when closing a balancing position
@@ -76,6 +76,12 @@ impl Position {
         let interest_fee = self
             .notional_size
             .fixed_mul_floor(e, &index_difference, &SCALAR_18);
+
+        //log position id and fee components
+        log!(e, "Position ID: {}", self.id);
+        log!(e, "Base Fee: {}", base_fee);
+        log!(e, "Price Impact Scalar: {}", price_impact_scalar);
+        log!(e, "Interest Fee: {}", interest_fee);
 
         base_fee + price_impact_scalar + interest_fee
     }
@@ -204,8 +210,10 @@ pub fn execute_create_position(
         market.data.short_notional_size >= market.data.long_notional_size
     };
 
+    log!(e, "Should pay base fee: {}", should_pay_base_fee);
+
     let open_fee = if should_pay_base_fee {
-        collateral.fixed_mul_ceil(e, &market.config.base_fee, &SCALAR_7)
+        notional_size.fixed_mul_ceil(e, &market.config.base_fee, &SCALAR_7)
     } else {
         0 // No base fee for balancing trades
     };

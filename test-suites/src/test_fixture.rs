@@ -1,14 +1,14 @@
-use std::ops::Index;
+use crate::dependencies::token::TOKEN_WASM;
+use crate::dependencies::vault::{VaultClient, VAULT_WASM};
+use crate::token::create_stellar_token;
+use crate::SCALAR_7;
 use sep_40_oracle::testutils::{Asset, MockPriceOracleClient, MockPriceOracleWASM};
 use sep_40_oracle::Asset as StellarAsset;
 use sep_41_token::testutils::MockTokenClient;
 use soroban_sdk::testutils::{Address as _, BytesN as _, Ledger, LedgerInfo};
 use soroban_sdk::{vec as svec, Address, BytesN, Env, Map, String, Symbol};
+use std::ops::Index;
 use trading::{MarketConfig, SubmitResult, TradingClient};
-use crate::dependencies::token::TOKEN_WASM;
-use crate::token::create_stellar_token;
-use crate::dependencies::vault::{VaultClient, VAULT_WASM};
-use crate::SCALAR_7;
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum AssetIndex {
@@ -51,9 +51,9 @@ impl TestFixture<'_> {
 
         // Create StellarAssets in order matching AssetIndex
         let assets = vec![
-            StellarAsset::Other(Symbol::new(&e, "BTC")),  // AssetIndex::BTC = 0
-            StellarAsset::Other(Symbol::new(&e, "ETH")),  // AssetIndex::ETH = 1
-            StellarAsset::Other(Symbol::new(&e, "XLM")),  // AssetIndex::XLM = 2
+            StellarAsset::Other(Symbol::new(&e, "BTC")), // AssetIndex::BTC = 0
+            StellarAsset::Other(Symbol::new(&e, "ETH")), // AssetIndex::ETH = 1
+            StellarAsset::Other(Symbol::new(&e, "XLM")), // AssetIndex::XLM = 2
         ];
 
         oracle_client.set_data(
@@ -72,17 +72,18 @@ impl TestFixture<'_> {
 
         oracle_client.set_price_stable(&svec![
             &e,
-            1_0000000,          // 1 USD
-            100_000_0000000,    // BTC = 100K
-            2000_0000000,       // ETH = 2K
-            0_1000000,          // XLM = 0.1
+            1_0000000,       // 1 USD
+            100_000_0000000, // BTC = 100K
+            2000_0000000,    // ETH = 2K
+            0_1000000,       // XLM = 0.1
         ]);
 
-        let trading_args = (
-            owner.clone(),
-        );
+        let trading_args = (owner.clone(),);
         let trading_id = if wasm {
-            e.register(crate::dependencies::trading::trading_contract_wasm::WASM, trading_args)
+            e.register(
+                crate::dependencies::trading::trading_contract_wasm::WASM,
+                trading_args,
+            )
         } else {
             e.register(trading::TradingContract {}, trading_args)
         };
@@ -92,30 +93,25 @@ impl TestFixture<'_> {
 
         let strategies = soroban_sdk::Vec::from_array(&e, [trading_id.clone(), owner.clone()]);
         let vault_args = (
-            token_id.clone(),                                     // token: Address
-            token_wasm_hash,                              // token_wasm_hash: BytesN<32>
-            String::from_str(&e, "Vault Shares"),      // name: String
-            String::from_str(&e, "VSHR"),             // symbol: String
-            strategies,                                  // strategies: Vec<Address>
-            300u64,                                       // lock_time: u64 (5 minutes)
-            1_000_000i128,                                // penalty_rate: i128 (10% in SCALAR_7)
-            0_1000000i128,                                  // min liquidity percentage: u64 (10% in SCALAR_7)
+            token_id.clone(),                     // token: Address
+            token_wasm_hash,                      // token_wasm_hash: BytesN<32>
+            String::from_str(&e, "Vault Shares"), // name: String
+            String::from_str(&e, "VSHR"),         // symbol: String
+            strategies,                           // strategies: Vec<Address>
+            300u64,                               // lock_time: u64 (5 minutes)
+            1_000_000i128,                        // penalty_rate: i128 (10% in SCALAR_7)
+            0_1000000i128,                        // min liquidity percentage: u64 (10% in SCALAR_7)
         );
         let vault_id = e.register(VAULT_WASM, vault_args);
         let vault_client = VaultClient::new(&e, &vault_id);
 
         let config = trading::TradingConfig {
             oracle: oracle_id.clone(),
-            caller_take_rate: 0_0100000, // 1% in SCALAR_7
+            caller_take_rate: 0, // 1% in SCALAR_7
             max_positions: 10,
         };
         // Set the vault in trading contract
-        trading_client.initialize(
-            &String::from_str(&e, "Zenex"),
-            &vault_id,
-            &config,
-        );
-
+        trading_client.initialize(&String::from_str(&e, "Zenex"), &vault_id, &config);
 
         let fixture = TestFixture {
             env: e,
@@ -137,25 +133,41 @@ impl TestFixture<'_> {
 
     pub fn read_config(&self) -> trading::TradingConfig {
         self.env.as_contract(&self.trading.address, || {
-            self.env.storage().instance().get(&Symbol::new(&self.env, "Config")).unwrap()
+            self.env
+                .storage()
+                .instance()
+                .get(&Symbol::new(&self.env, "Config"))
+                .unwrap()
         })
     }
 
     pub fn read_market_config(&self, asset: StellarAsset) -> MarketConfig {
-        self.env.as_contract(&self.trading.address ,|| {
-            self.env.storage().persistent().get(&trading::storage::TradingDataKey::MarketConfig(asset)).unwrap()
+        self.env.as_contract(&self.trading.address, || {
+            self.env
+                .storage()
+                .persistent()
+                .get(&trading::storage::TradingDataKey::MarketConfig(asset))
+                .unwrap()
         })
     }
 
     pub fn read_market_data(&self, asset: StellarAsset) -> trading::MarketData {
         self.env.as_contract(&self.trading.address, || {
-            self.env.storage().persistent().get(&trading::storage::TradingDataKey::MarketData(asset)).unwrap()
+            self.env
+                .storage()
+                .persistent()
+                .get(&trading::storage::TradingDataKey::MarketData(asset))
+                .unwrap()
         })
     }
 
     pub fn read_position(&self, position_id: u32) -> trading::Position {
         self.env.as_contract(&self.trading.address, || {
-            self.env.storage().persistent().get(&trading::storage::TradingDataKey::Position(position_id)).unwrap()
+            self.env
+                .storage()
+                .persistent()
+                .get(&trading::storage::TradingDataKey::Position(position_id))
+                .unwrap()
         })
     }
 
@@ -189,7 +201,7 @@ impl TestFixture<'_> {
     }
 
     /// Pretty print submit result transfers showing the flow of funds
-    pub fn print_transfers(&self, result: &SubmitResult,) {
+    pub fn print_transfers(&self, result: &SubmitResult) {
         println!("\n=== Transfers ===");
         if result.transfers.is_empty() {
             println!("No transfers");
@@ -219,7 +231,8 @@ impl TestFixture<'_> {
 
             // Extract last 4 characters from address for user identification
             let address_str = format!("{:?}", address);
-            let last_chars = &address_str[address_str.len().saturating_sub(6)..address_str.len().saturating_sub(2)];
+            let last_chars = &address_str
+                [address_str.len().saturating_sub(6)..address_str.len().saturating_sub(2)];
             let user_name = format!("User_{}", last_chars);
 
             if amount > 0 {

@@ -161,6 +161,12 @@ fn handle_close(
     if pnl != 0 {
         result.add_transfer(&trading.vault, -pnl);
     }
+
+    // Transfer caller fee
+    if fee >= 0 && fee_caller > 0 {
+        result.add_transfer(&trading.caller, fee_caller);
+    }
+
     if fee < 0 {
         // If the fee is negative, it means we need to transfer from the vault
         result.add_transfer(&trading.vault, fee);
