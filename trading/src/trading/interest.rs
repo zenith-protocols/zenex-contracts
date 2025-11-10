@@ -82,13 +82,6 @@ pub fn update_index_with_interest(
     // Calculate total growth over the period
     let period_rate = rate_per_second.fixed_mul_floor(e, &seconds_elapsed, &SCALAR_18);
 
-    // Debug print period_rate rate_per_second seconds_elapsed and hourly_rate
-    log!(e, "Debug Interest Calculation:");
-    log!(e, "Hourly Rate: {}", hourly_rate);
-    log!(e, "Rate per Second: {}", rate_per_second);
-    log!(e, "Seconds Elapsed: {}", seconds_elapsed);
-    log!(e, "Period Rate: {}", period_rate);
-
     // Growth factor = 1 + period_rate (both already in 18 decimal precision)
     let growth_factor = SCALAR_18 + period_rate;
 

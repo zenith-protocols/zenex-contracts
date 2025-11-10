@@ -8,7 +8,7 @@ pub struct TradingEvents {}
 impl TradingEvents {
     /// Emitted when trading configuration is updated
     ///
-    /// - topics - `["update_config"]`
+    /// - topics - `["set_config"]`
     /// - data - `[oracle: Address, caller_take_rate: i128, max_positions: u32]`
     ///
     /// ### Arguments
@@ -90,7 +90,6 @@ impl TradingEvents {
     /// - data - `status: u32`
     ///
     /// ### Arguments
-    /// * owner - The owner setting the status
     /// * status - The new trading status
     pub fn set_status(e: &Env, status: u32) {
         let topics = (Symbol::new(e, "set_status"),);
@@ -114,80 +113,103 @@ impl TradingEvents {
     /// Emitted when a position is closed
     ///
     /// - topics - `["close_position", asset: Asset, user: Address]`
-    /// - data - `[position_id: u32, price: i128, pnl: i128, payout: i128, fee: i128]`
+    /// - data - `[position_id: u32, price: i128, fee: i128]`
     ///
     /// ### Arguments
     /// * user - The position owner
     /// * asset - The traded asset
     /// * position_id - The position ID
-    /// * price - The fill price
-    /// * pnl - The raw PnL excluding fees
-    /// * payout - The total payout to the user (collateral +/- pnl - fees)
-    /// * fee - The protocol fee component at close (can be negative)
-    #[allow(clippy::too_many_arguments)]
+    /// * price - The closing price
+    /// * fee - The protocol fee at close (includes base fee, price impact, and interest)
     pub fn close_position(
         e: &Env,
         user: Address,
         asset: Asset,
         position_id: u32,
         price: i128,
-        pnl: i128,
-        payout: i128,
         fee: i128,
     ) {
         let topics = (Symbol::new(e, "close_position"), asset, user);
         e.events()
-            .publish(topics, (position_id, price, pnl, payout, fee));
+            .publish(topics, (position_id, price, fee));
     }
 
     /// Emitted when a limit order is filled
     ///
     /// - topics - `["fill_position", asset: Asset, user: Address]`
-    /// - data - `[position_id: u32, price: i128, caller_fee: i128]`
+    /// - data - `[position_id: u32]`
     ///
     /// ### Arguments
     /// * user - The position owner
     /// * asset - The traded asset
     /// * position_id - The position ID
-    /// * price - The fill price
-    /// * caller_fee - The fee paid to the caller
     pub fn fill_position(
         e: &Env,
         user: Address,
         asset: Asset,
         position_id: u32,
-        price: i128,
-        caller_fee: i128,
     ) {
         let topics = (Symbol::new(e, "fill_position"), asset, user);
-        e.events().publish(topics, (position_id, price, caller_fee));
+        e.events().publish(topics, (position_id,));
     }
 
     /// Emitted when a position is liquidated
     ///
     /// - topics - `["liquidation", asset: Asset, user: Address]`
-    /// - data - `[position_id: u32, price: i128]`
+    /// - data - `[position_id: u32, price: i128, fee: i128]`
     ///
     /// ### Arguments
     /// * user - The position owner
     /// * asset - The traded asset
     /// * position_id - The position ID
     /// * price - The liquidation price
-    pub fn liquidation(e: &Env, user: Address, asset: Asset, position_id: u32, price: i128) {
+    /// * fee - The fee charged (includes base fee, price impact, and interest)
+    pub fn liquidation(e: &Env, user: Address, asset: Asset, position_id: u32, price: i128, fee: i128) {
         let topics = (Symbol::new(e, "liquidation"), asset, user);
-        e.events().publish(topics, (position_id, price));
+        e.events().publish(topics, (position_id, price, fee));
     }
 
-    /// Emitted when a pending position is cancelled
+    /// Emitted when a position's take profit is hit
     ///
-    /// - topics - `["cancel_position", asset: Asset, user: Address]`
-    /// - data - `[position_id: u32, collateral_returned: i128]`
+    /// - topics - `["take_profit", asset: Asset, user: Address]`
+    /// - data - `[position_id: u32, price: i128, fee: i128]`
     ///
     /// ### Arguments
     /// * user - The position owner
     /// * asset - The traded asset
     /// * position_id - The position ID
-    /// * collateral_returned - The collateral returned to the user
+    /// * price - The price when take profit was triggered
+    /// * fee - The fee charged (includes base fee, price impact, and interest)
+    pub fn take_profit(e: &Env, user: Address, asset: Asset, position_id: u32, price: i128, fee: i128) {
+        let topics = (Symbol::new(e, "take_profit"), asset, user);
+        e.events().publish(topics, (position_id, price, fee));
+    }
+
+    /// Emitted when a position's stop loss is hit
+    ///
+    /// - topics - `["stop_loss", asset: Asset, user: Address]`
+    /// - data - `[position_id: u32, price: i128, fee: i128]`
+    ///
+    /// ### Arguments
+    /// * user - The position owner
+    /// * asset - The traded asset
+    /// * position_id - The position ID
+    /// * price - The price when stop loss was triggered
+    /// * fee - The fee charged (includes base fee, price impact, and interest)
+    pub fn stop_loss(e: &Env, user: Address, asset: Asset, position_id: u32, price: i128, fee: i128) {
+        let topics = (Symbol::new(e, "stop_loss"), asset, user);
+        e.events().publish(topics, (position_id, price, fee));
+    }
+
+    /// Emitted when a pending position is cancelled
+    ///
+    /// - topics - `["cancel_position", asset: Asset, user: Address]`
+    /// - data - `[position_id: u32]`
+    ///
+    /// ### Arguments
+    /// * user - The position owner
+    /// * asset - The traded asset
+    /// * position_id - The position ID
     pub fn cancel_position(e: &Env, user: Address, asset: Asset, position_id: u32) {
         let topics = (Symbol::new(e, "cancel_position"), asset, user);
         e.events().publish(topics, (position_id,));
@@ -196,7 +218,7 @@ impl TradingEvents {
     /// Emitted when collateral is withdrawn from a position
     ///
     /// - topics - `["withdraw_collateral", asset: Asset, user: Address]`
-    /// - data - `[position_id: u32, amount: i128, remaining_collateral: i128]`
+    /// - data - `[position_id: u32, amount: i128]`
     ///
     /// ### Arguments
     /// * user - The user withdrawing collateral
@@ -245,9 +267,9 @@ impl TradingEvents {
     /// * asset - The asset being traded
     /// * position_id - The position ID
     /// * price - The take profit price level
-    pub fn set_take_profit(e: &Env, user: Address, asset: Asset, position_id: u32) {
+    pub fn set_take_profit(e: &Env, user: Address, asset: Asset, position_id: u32, price: i128) {
         let topics = (Symbol::new(e, "set_take_profit"), asset, user);
-        e.events().publish(topics, (position_id,));
+        e.events().publish(topics, (position_id, price));
     }
 
     /// Emitted when stop loss is set for a position
@@ -260,8 +282,8 @@ impl TradingEvents {
     /// * asset - The asset being traded
     /// * position_id - The position ID
     /// * price - The stop loss price level
-    pub fn set_stop_loss(e: &Env, user: Address, asset: Asset, position_id: u32) {
+    pub fn set_stop_loss(e: &Env, user: Address, asset: Asset, position_id: u32, price: i128) {
         let topics = (Symbol::new(e, "set_stop_loss"), asset, user);
-        e.events().publish(topics, (position_id,));
+        e.events().publish(topics, (position_id, price));
     }
 }

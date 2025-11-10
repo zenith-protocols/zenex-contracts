@@ -191,6 +191,7 @@ fn test_long_short_week_5pct_move_print_balances() {
     let user1_balance = fixture.token.balance(&user1);
     let user2_balance = fixture.token.balance(&user2);
     let vault_balance = fixture.token.balance(&fixture.vault.address);
+    let contract_balance = fixture.token.balance(&fixture.trading.address);
 
     let delta_user1 = user1_balance - initial_user1_balance;
     // delta user1 should be 2500 (5% of 50k) minus the fee. The fee should be 5.825 = 2 * (0.0005 * 50k + 50k / 8.000.000.000 * 50k) - 0.8 * 100 / 150 * 168 * 0.00001 * 50k
@@ -200,13 +201,18 @@ fn test_long_short_week_5pct_move_print_balances() {
     // delta vault should be the fees minus the sum of the pnl of user1 and user2. The vault should receive 2.5k pnl and 163.075 fees.
 
     println!(
-        "User1 balance: {} (Δ {})\nUser2 balance: {} (Δ {})\nVault balance: {} (Δ {})",
-        user1_balance / SCALAR_7,
-        delta_user1 / SCALAR_7,
-        user2_balance / SCALAR_7,
-        delta_user2 / SCALAR_7,
-        vault_balance / SCALAR_7,
-        delta_vault / SCALAR_7
+        "Contract balance (should be 0): {:.7}",
+        contract_balance as f64 / SCALAR_7 as f64
+    );
+
+    println!(
+        "User1 balance: {:.7} (Δ {:.7})\nUser2 balance: {:.7} (Δ {:.7})\nVault balance: {:.7} (Δ {:.7})",
+        user1_balance as f64 / SCALAR_7 as f64,
+        delta_user1 as f64 / SCALAR_7 as f64,
+        user2_balance as f64 / SCALAR_7 as f64,
+        delta_user2 as f64 / SCALAR_7 as f64,
+        vault_balance as f64 / SCALAR_7 as f64,
+        delta_vault as f64 / SCALAR_7 as f64
     );
 }
 
@@ -328,10 +334,10 @@ fn test_equal_short_long_notional() {
     // Total user pnl is 0, so this is only the fees: 378 + 75.6 = 453.6
 
     println!(
-        "User1 (short) balance: {} (Δ {})\nUser2 (long) balance: {} (Δ {})\nVault balance: {} (Δ {})",
-        user1_balance, delta_user1,
-        user2_balance, delta_user2,
-        vault_balance, delta_vault
+        "User1 (short) balance: {:.7} (Δ {:.7})\nUser2 (long) balance: {:.7} (Δ {:.7})\nVault balance: {:.7} (Δ {:.7})",
+        user1_balance as f64 / SCALAR_7 as f64, delta_user1 as f64 / SCALAR_7 as f64,
+        user2_balance as f64 / SCALAR_7 as f64, delta_user2 as f64 / SCALAR_7 as f64,
+        vault_balance as f64 / SCALAR_7 as f64, delta_vault as f64 / SCALAR_7 as f64
     );
 }
 
@@ -502,10 +508,10 @@ fn test_changing_long_short_ratio() {
     // This should be the total of the fees: 286.985 = 77.86 + 39.425 + 169.7
 
     println!(
-		"User1 (long 100k) balance: {} (Δ {})\nUser2 (short 50k) balance: {} (Δ {})\nUser3 (short 100k) balance: {} (Δ {})\nVault balance: {} (Δ {})",
-		user1_balance, delta_user1,
-		user2_balance, delta_user2,
-		user3_balance, delta_user3,
-		vault_balance, delta_vault
+		"User1 (long 100k) balance: {:.7} (Δ {:.7})\nUser2 (short 50k) balance: {:.7} (Δ {:.7})\nUser3 (short 100k) balance: {:.7} (Δ {:.7})\nVault balance: {:.7} (Δ {:.7})",
+		user1_balance as f64 / SCALAR_7 as f64, delta_user1 as f64 / SCALAR_7 as f64,
+		user2_balance as f64 / SCALAR_7 as f64, delta_user2 as f64 / SCALAR_7 as f64,
+		user3_balance as f64 / SCALAR_7 as f64, delta_user3 as f64 / SCALAR_7 as f64,
+		vault_balance as f64 / SCALAR_7 as f64, delta_vault as f64 / SCALAR_7 as f64
 	);
 }

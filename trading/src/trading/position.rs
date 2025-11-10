@@ -1,16 +1,16 @@
 use crate::constants::{SCALAR_18, SCALAR_7};
+use crate::dependencies::VaultClient;
 use crate::errors::TradingError;
 use crate::events::TradingEvents;
 use crate::storage;
 use crate::trading::actions::RequestType;
 use crate::trading::core::Trading;
+use crate::trading::market::Market;
 pub(crate) use crate::types::{Position, PositionStatus};
 use sep_40_oracle::Asset;
 use soroban_fixed_point_math::SorobanFixedPoint;
 use soroban_sdk::token::TokenClient;
-use soroban_sdk::{panic_with_error, Address, Env};
-use crate::dependencies::VaultClient;
-use crate::trading::market::Market;
+use soroban_sdk::{log, panic_with_error, Address, Env};
 
 /// Implementation of position-related methods
 impl Position {
@@ -45,8 +45,27 @@ impl Position {
     }
 
     pub fn calculate_fee(&self, e: &Env, market: &Market) -> i128 {
-        let base_fee = self.collateral.fixed_mul_ceil(e, &market.config.base_fee, &SCALAR_7);
-        let price_impact_scalar = self.notional_size.fixed_div_ceil(e, &market.config.price_impact_scalar, &SCALAR_7);
+        // Pay base fee only for the dominant side (side that increases market imbalance)
+        // When closing, we check if closing this position would REDUCE the dominant side's imbalance
+        // If closing reduces imbalance (i.e., this position is on the dominant side), charge base fee
+        let should_pay_base_fee = if self.is_long {
+            // Closing a long position reduces long dominance, so pay fee if long is currently dominant
+            market.data.long_notional_size >= market.data.short_notional_size
+        } else {
+            // Closing a short position reduces short dominance, so pay fee if short is currently dominant
+            market.data.short_notional_size >= market.data.long_notional_size
+        };
+
+        let base_fee = if should_pay_base_fee {
+            self.notional_size
+                .fixed_mul_ceil(e, &market.config.base_fee, &SCALAR_7)
+        } else {
+            0 // No base fee when closing a balancing position
+        };
+
+        let price_impact_scalar =
+            self.notional_size
+                .fixed_div_ceil(e, &market.config.price_impact_scalar, &SCALAR_7);
 
         let index_difference = if self.is_long {
             market.data.long_interest_index - self.interest_index
@@ -54,7 +73,9 @@ impl Position {
             market.data.short_interest_index - self.interest_index
         };
 
-        let interest_fee = self.notional_size.fixed_mul_floor(e, &index_difference, &SCALAR_18);
+        let interest_fee = self
+            .notional_size
+            .fixed_mul_floor(e, &index_difference, &SCALAR_18);
 
         base_fee + price_impact_scalar + interest_fee
     }
@@ -173,17 +194,40 @@ pub fn execute_create_position(
         created_at: e.ledger().timestamp(),
     };
 
-    let open_fee = collateral.fixed_mul_ceil(e, &market.config.base_fee, &SCALAR_7);
-    let price_impact_scalar = notional_size.fixed_div_ceil(e, &market.config.price_impact_scalar, &SCALAR_7);
+    // Pay base fee only for the dominant side (side that increases market imbalance)
+    // If the position balances the market, no base fee is charged
+    let should_pay_base_fee = if is_long {
+        // Long position pays fee if it increases long dominance
+        market.data.long_notional_size >= market.data.short_notional_size
+    } else {
+        // Short position pays fee if it increases short dominance
+        market.data.short_notional_size >= market.data.long_notional_size
+    };
+
+    let open_fee = if should_pay_base_fee {
+        notional_size.fixed_mul_ceil(e, &market.config.base_fee, &SCALAR_7)
+    } else {
+        0 // No base fee for balancing trades
+    };
+
+    let price_impact_scalar =
+        notional_size.fixed_div_ceil(e, &market.config.price_impact_scalar, &SCALAR_7);
 
     // Transfer tokens from user to contract
     let token_client = TokenClient::new(e, &trading.token);
-    token_client.transfer(user, &e.current_contract_address(), &(collateral + open_fee + price_impact_scalar));
+    token_client.transfer(
+        user,
+        &e.current_contract_address(),
+        &(collateral + open_fee + price_impact_scalar),
+    );
 
     // Only pay fee to vault when the position fills
     if market_order {
         let vault_client = VaultClient::new(e, &storage::get_vault(e));
-        vault_client.transfer_to(&e.current_contract_address(), &(open_fee + price_impact_scalar));
+        vault_client.transfer_to(
+            &e.current_contract_address(),
+            &(open_fee + price_impact_scalar),
+        );
     }
 
     trading.cache_position(&position);
