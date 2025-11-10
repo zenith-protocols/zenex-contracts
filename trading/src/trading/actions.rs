@@ -134,7 +134,7 @@ fn handle_close(
     result: &mut SubmitResult,
     trading: &mut Trading,
     position: &mut Position,
-) -> u32 {
+) -> (i128, i128) {
     let price = trading.load_price(e, &position.asset);
     let mut market = trading.load_market(e, &position.asset);
     let pnl = position.calculate_pnl(e, price);
@@ -186,18 +186,7 @@ fn handle_close(
     trading.cache_market(&market);
     trading.cache_position(position);
 
-    TradingEvents::close_position(
-        e,
-        position.user.clone(),
-        position.asset.clone(),
-        position.id,
-        price,
-        pnl,
-        payout,
-        fee,
-    );
-
-    0
+    (price, fee)
 }
 
 fn apply_close(
@@ -206,7 +195,18 @@ fn apply_close(
     trading: &mut Trading,
     position: &mut Position,
 ) -> u32 {
-    handle_close(e, result, trading, position)
+    let (price, fee) = handle_close(e, result, trading, position);
+
+    TradingEvents::close_position(
+        e,
+        position.user.clone(),
+        position.asset.clone(),
+        position.id,
+        price,
+        fee,
+    );
+
+    0
 }
 
 fn apply_fill(
@@ -255,9 +255,8 @@ fn apply_fill(
         position.user.clone(),
         position.asset.clone(),
         position.id,
-        current_price,
-        caller_fee,
     );
+
     0
 }
 
@@ -272,8 +271,20 @@ fn apply_stop_loss(
         return TradingError::BadRequest as u32;
     }
 
-    handle_close(e, result, trading, position)
+    let (price, fee) = handle_close(e, result, trading, position);
+
+    TradingEvents::stop_loss(
+        e,
+        position.user.clone(),
+        position.asset.clone(),
+        position.id,
+        price,
+        fee,
+    );
+
+    0
 }
+
 
 fn apply_take_profit(
     e: &Env,
@@ -286,7 +297,18 @@ fn apply_take_profit(
         return TradingError::BadRequest as u32;
     }
 
-    handle_close(e, result, trading, position)
+    let (price, fee) = handle_close(e, result, trading, position);
+
+    TradingEvents::take_profit(
+        e,
+        position.user.clone(),
+        position.asset.clone(),
+        position.id,
+        price,
+        fee,
+    );
+
+    0
 }
 
 fn apply_liquidation(
@@ -323,6 +345,7 @@ fn apply_liquidation(
         position.asset.clone(),
         position.id,
         current_price,
+        fee
     );
 
     market.update_stats(
@@ -332,7 +355,6 @@ fn apply_liquidation(
     );
 
     position.status = PositionStatus::Closed;
-    // close price is not stored on Position struct; price emitted via event
 
     storage::remove_user_position(e, &position.user, position.id);
     trading.cache_market(&market);
@@ -383,6 +405,7 @@ fn apply_set_take_profit(
         position.user.clone(),
         position.asset.clone(),
         position.id,
+        price,
     );
     0
 }
@@ -416,6 +439,7 @@ fn apply_set_stop_loss(
         position.user.clone(),
         position.asset.clone(),
         position.id,
+        price,
     );
     0
 }
