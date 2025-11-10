@@ -10,7 +10,8 @@ pub(crate) use crate::types::{Position, PositionStatus};
 use sep_40_oracle::Asset;
 use soroban_fixed_point_math::SorobanFixedPoint;
 use soroban_sdk::token::TokenClient;
-use soroban_sdk::{log, panic_with_error, Address, Env};
+use soroban_sdk::{log, panic_with_error, vec, Address, Env, IntoVal, Symbol, Val, Vec};
+use soroban_sdk::auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation};
 
 /// Implementation of position-related methods
 impl Position {
@@ -224,9 +225,28 @@ pub fn execute_create_position(
     // Only pay fee to vault when the position fills
     if market_order {
         let vault_client = VaultClient::new(e, &storage::get_vault(e));
-        vault_client.transfer_to(
+        let vault_transfer = open_fee + price_impact_scalar;
+        let args: Vec<Val> = vec![
+            e,
+            e.current_contract_address().into_val(e),
+            vault_client.address.into_val(e),
+            vault_transfer.into_val(e),
+        ];
+        e.authorize_as_current_contract(vec![
+            e,
+            InvokerContractAuthEntry::Contract(SubContractInvocation {
+                context: ContractContext {
+                    contract: token_client.address.clone(),
+                    fn_name: Symbol::new(e, "transfer"),
+                    args: args.clone(),
+                },
+                sub_invocations: vec![e],
+            })
+        ]);
+
+        vault_client.transfer_from(
             &e.current_contract_address(),
-            &(open_fee + price_impact_scalar),
+            &vault_transfer,
         );
     }
 

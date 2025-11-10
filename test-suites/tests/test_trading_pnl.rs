@@ -214,6 +214,9 @@ fn test_long_short_week_5pct_move_print_balances() {
         vault_balance as f64 / SCALAR_7 as f64,
         delta_vault as f64 / SCALAR_7 as f64
     );
+    
+    
+    assert_eq!(contract_balance, 0);
 }
 
 #[test]
