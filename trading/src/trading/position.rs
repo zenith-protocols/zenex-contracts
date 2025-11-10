@@ -77,12 +77,6 @@ impl Position {
             .notional_size
             .fixed_mul_floor(e, &index_difference, &SCALAR_18);
 
-        //log position id and fee components
-        log!(e, "Position ID: {}", self.id);
-        log!(e, "Base Fee: {}", base_fee);
-        log!(e, "Price Impact Scalar: {}", price_impact_scalar);
-        log!(e, "Interest Fee: {}", interest_fee);
-
         base_fee + price_impact_scalar + interest_fee
     }
 
@@ -209,8 +203,6 @@ pub fn execute_create_position(
         // Short position pays fee if it increases short dominance
         market.data.short_notional_size >= market.data.long_notional_size
     };
-
-    log!(e, "Should pay base fee: {}", should_pay_base_fee);
 
     let open_fee = if should_pay_base_fee {
         notional_size.fixed_mul_ceil(e, &market.config.base_fee, &SCALAR_7)
