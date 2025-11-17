@@ -194,11 +194,47 @@ fn test_long_short_week_5pct_move_print_balances() {
     let contract_balance = fixture.token.balance(&fixture.trading.address);
 
     let delta_user1 = user1_balance - initial_user1_balance;
-    // delta user1 should be 2500 (5% of 50k) minus the fee. The fee should be 5.825 = 2 * (0.0005 * 50k + 50k / 8.000.000.000 * 50k) - 0.8 * 100 / 150 * 168 * 0.00001 * 50k
+    // delta user1 should be 2500 (5% of 50k) minus the fee. The fee should be -243.8 = 25 + 0.0000125 - 268.8
     let delta_user2 = user2_balance - initial_user2_balance;
-    // delta user2 should be minus 5k (5% of 100k) minus the fee. Fee should be 157.25 = 2 * (0.0005 * 100k + 100k / 8.000.000.000 * 100k) + 50 / 150 * 168 * 0.00001 * 100k
+    // delta user2 should be minus 5k (5% of 100k) minus the fee. Fee should be 436 = 100 + 0.000025 + 336
     let delta_vault = vault_balance - initial_vault_balance;
-    // delta vault should be the fees minus the sum of the pnl of user1 and user2. The vault should receive 2.5k pnl and 163.075 fees.
+    // delta vault should be the fees minus the sum of the pnl of user1 and user2. The vault should receive 2.5k pnl and 192.2 fees (total 2692.2).
+
+    // Assert user deltas are close to the expected values.
+    let expected_delta_user1 = (27438 * (SCALAR_7 / 10)); // 2718.8 tokens
+    let expected_delta_user2 = -5436 * SCALAR_7;
+    let expected_delta_vault = (26922 * (SCALAR_7 / 10)); // 2692.2 tokens
+    let tolerance_user1 = 5 * (SCALAR_7 / 10); // 0.5 tokens
+    let tolerance_user2 = 5 * SCALAR_7; // 5 tokens
+    let tolerance_vault = 5 * (SCALAR_7 / 10); // 0.5 tokens
+
+    let delta_user1_diff = (delta_user1 - expected_delta_user1).abs();
+    let delta_user2_diff = (delta_user2 - expected_delta_user2).abs();
+
+    assert!(
+        delta_user1_diff <= tolerance_user1,
+        "delta_user1 off by {:.7} tokens (expected {:.7}, got {:.7})",
+        delta_user1_diff as f64 / SCALAR_7 as f64,
+        expected_delta_user1 as f64 / SCALAR_7 as f64,
+        delta_user1 as f64 / SCALAR_7 as f64
+    );
+
+    assert!(
+        delta_user2_diff <= tolerance_user2,
+        "delta_user2 off by {:.7} tokens (expected {:.7}, got {:.7})",
+        delta_user2_diff as f64 / SCALAR_7 as f64,
+        expected_delta_user2 as f64 / SCALAR_7 as f64,
+        delta_user2 as f64 / SCALAR_7 as f64
+    );
+
+    let delta_vault_diff = (delta_vault - expected_delta_vault).abs();
+    assert!(
+        delta_vault_diff <= tolerance_vault,
+        "delta_vault off by {:.7} tokens (expected {:.7}, got {:.7})",
+        delta_vault_diff as f64 / SCALAR_7 as f64,
+        expected_delta_vault as f64 / SCALAR_7 as f64,
+        delta_vault as f64 / SCALAR_7 as f64
+    );
 
     println!(
         "Contract balance (should be 0): {:.7}",
@@ -335,6 +371,30 @@ fn test_equal_short_long_notional() {
     // This should be pnl minus the fee. Pnl is -10k. Fee should be 378 = 2 * (0.0005 * 200k + 200k / 8.000.000.000 * 200k) + 200 / 400 * 168 * 0.00001 * 200k
     let delta_vault = vault_balance - initial_vault_balance;
     // Total user pnl is 0, so this is only the fees: 378 + 75.6 = 453.6
+
+    // Assert user deltas are close to expected values.
+    let expected_delta_user1 = 19_464 * SCALAR_7;
+    let expected_delta_user2 = -20_536 * SCALAR_7;
+    let tolerance = SCALAR_7 / 2; // 0.5 tokens
+
+    let delta_user1_diff = (delta_user1 - expected_delta_user1).abs();
+    let delta_user2_diff = (delta_user2 - expected_delta_user2).abs();
+
+    assert!(
+        delta_user1_diff <= tolerance,
+        "delta_user1 off by {:.7} tokens (expected {:.7}, got {:.7})",
+        delta_user1_diff as f64 / SCALAR_7 as f64,
+        expected_delta_user1 as f64 / SCALAR_7 as f64,
+        delta_user1 as f64 / SCALAR_7 as f64
+    );
+
+    assert!(
+        delta_user2_diff <= tolerance,
+        "delta_user2 off by {:.7} tokens (expected {:.7}, got {:.7})",
+        delta_user2_diff as f64 / SCALAR_7 as f64,
+        expected_delta_user2 as f64 / SCALAR_7 as f64,
+        delta_user2 as f64 / SCALAR_7 as f64
+    );
 
     println!(
         "User1 (short) balance: {:.7} (Δ {:.7})\nUser2 (long) balance: {:.7} (Δ {:.7})\nVault balance: {:.7} (Δ {:.7})",
