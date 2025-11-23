@@ -88,6 +88,7 @@ fn test_profitable_long_position_small_gain() {
 
 #[test]
 fn test_long_short_week_5pct_move_print_balances() {
+    // This test tests whether the dominant side pays interest while the short side receives, and whether the dominant side pays a base fee and the other side doesn't.
     let fixture = setup_fixture();
     let user1 = Address::generate(&fixture.env);
     let user2 = Address::generate(&fixture.env);
@@ -257,6 +258,7 @@ fn test_long_short_week_5pct_move_print_balances() {
 
 #[test]
 fn test_equal_short_long_notional() {
+    // This test tests whether when long/short notional are equal, both sides pay a base fee and the base hourly rate. 
     let fixture = setup_fixture();
     let user1 = Address::generate(&fixture.env); // short
     let user2 = Address::generate(&fixture.env); // long
@@ -406,6 +408,7 @@ fn test_equal_short_long_notional() {
 
 #[test]
 fn test_changing_long_short_ratio() {
+    // This test tests whether the interest accrues as it should through a changing of dominant sides.
     let fixture = setup_fixture();
     let user1 = Address::generate(&fixture.env); // long 100k
     let user2 = Address::generate(&fixture.env); // short 50k
@@ -562,13 +565,13 @@ fn test_changing_long_short_ratio() {
     let vault_balance = fixture.token.balance(&fixture.vault.address);
 
     let delta_user1 = user1_balance - initial_user1_balance;
-    // This should be the fee: 77.86 = 2 * (0.0005 * 100k + 100k / 8.000.000.000 * 100k) + 0.00001 * 50/150 * 168 * 100k - 0.8 * 0.00001 * 150/250 * 168 * 100k
+    // This should be the fee: -83.6 = -50 - 336 + 302.4
     let delta_user2 = user2_balance - initial_user2_balance;
-    // This should be the fee: 39.425 = 2 * (0.0005 * 50k + 50k / 8.000.000.000 * 50k) - 0.8 * 0.00001 * 168 * 50k * 100/150 + 0.00001 * 168 * 50k * 100 / 250
+    // This should be the fee: 117.8 = -25 + 268.8 - 126
     let delta_user3 = user3_balance - initial_user3_balance;
-    // This should be the fee: 169.7 = 2 * (0.0005 * 100k + 100k / 8.000.000.000 * 100k) + 0.00001 * 168 * 100k * 100/250
+    // This should be the fee: -352.4 = -50 - 302.4
     let delta_vault = vault_balance - initial_vault_balance;
-    // This should be the total of the fees: 286.985 = 77.86 + 39.425 + 169.7
+    // This should be the total of the fees
 
     println!(
 		"User1 (long 100k) balance: {:.7} (Δ {:.7})\nUser2 (short 50k) balance: {:.7} (Δ {:.7})\nUser3 (short 100k) balance: {:.7} (Δ {:.7})\nVault balance: {:.7} (Δ {:.7})",
@@ -577,4 +580,342 @@ fn test_changing_long_short_ratio() {
 		user3_balance as f64 / SCALAR_7 as f64, delta_user3 as f64 / SCALAR_7 as f64,
 		vault_balance as f64 / SCALAR_7 as f64, delta_vault as f64 / SCALAR_7 as f64
 	);
+
+    // Assert user deltas are close to the expected values
+    let expected_delta_user1 = -(836 * (SCALAR_7 / 10)); // -83.6 tokens
+    let expected_delta_user2 = 1178 * (SCALAR_7 / 10); // 117.8 tokens
+    let expected_delta_user3 = -(3524 * (SCALAR_7 / 10)); // -352.4 tokens
+    let tolerance = 5 * (SCALAR_7 / 10); // 0.5 tokens
+
+    let delta_user1_diff = (delta_user1 - expected_delta_user1).abs();
+    assert!(
+        delta_user1_diff <= tolerance,
+        "delta_user1 ({:.7}) is not approximately -83.6 (difference: {:.7})",
+        delta_user1 as f64 / SCALAR_7 as f64,
+        delta_user1_diff as f64 / SCALAR_7 as f64
+    );
+
+    let delta_user2_diff = (delta_user2 - expected_delta_user2).abs();
+    assert!(
+        delta_user2_diff <= tolerance,
+        "delta_user2 ({:.7}) is not approximately 117.8 (difference: {:.7})",
+        delta_user2 as f64 / SCALAR_7 as f64,
+        delta_user2_diff as f64 / SCALAR_7 as f64
+    );
+
+    let delta_user3_diff = (delta_user3 - expected_delta_user3).abs();
+    assert!(
+        delta_user3_diff <= tolerance,
+        "delta_user3 ({:.7}) is not approximately -352.4 (difference: {:.7})",
+        delta_user3 as f64 / SCALAR_7 as f64,
+        delta_user3_diff as f64 / SCALAR_7 as f64
+    );
+}
+
+#[test]
+fn test_long_then_short_sequential_weeks() {
+    // This test tests whether user1 pays a base fee and the base hourly rate, while there is no other side. 
+    let fixture = setup_fixture();
+    let user1 = Address::generate(&fixture.env);
+    let user2 = Address::generate(&fixture.env);
+
+    // Fund users sufficiently for collateral, fees and funding
+    fixture.token.mint(&user1, &(500_000 * SCALAR_7));
+    fixture.token.mint(&user2, &(500_000 * SCALAR_7));
+
+    // Record initial balances
+    let initial_user1_balance = fixture.token.balance(&user1);
+    let initial_user2_balance = fixture.token.balance(&user2);
+    let initial_vault_balance = fixture.token.balance(&fixture.vault.address);
+
+    // Ensure BTC price is 100K before opening positions
+    fixture.oracle.set_price_stable(&svec![
+        &fixture.env,
+        1_0000000,       // USD
+        100_000_0000000, // BTC = 100K
+        2000_0000000,    // ETH
+        0_1000000,       // XLM
+    ]);
+
+    // User1 opens a long position with 50k collateral and 2x leverage (100k notional)
+    let user1_position_id = fixture.trading.open_position(
+        &user1,
+        &fixture.assets[AssetIndex::BTC],
+        &(50_000 * SCALAR_7), // 50k collateral
+        &(100_000 * SCALAR_7), // 100k notional (2x leverage)
+        &true, // long
+        &0, // market order
+        &0, // take profit: 0 (not set)
+        &0, // stop loss: 0 (not set)
+    );
+
+    // A week passes
+    fixture.jump(SECONDS_IN_WEEK);
+
+    // Ensure price is still at 100K before User2 opens position
+    fixture.oracle.set_price_stable(&svec![
+        &fixture.env,
+        1_0000000,       // USD
+        100_000_0000000, // BTC = 100K
+        2000_0000000,    // ETH
+        0_1000000,       // XLM
+    ]);
+
+    // User2 opens a short position with 50k collateral and 2x leverage (100k notional)
+    let user2_position_id = fixture.trading.open_position(
+        &user2,
+        &fixture.assets[AssetIndex::BTC],
+        &(50_000 * SCALAR_7), // 50k collateral
+        &(100_000 * SCALAR_7), // 100k notional (2x leverage)
+        &false, // short
+        &0, // market order
+        &0, // take profit: 0 (not set)
+        &0, // stop loss: 0 (not set)
+    );
+
+    // Another week passes
+    fixture.jump(SECONDS_IN_WEEK);
+
+    // Ensure price is still at 100K (no price movement)
+    fixture.oracle.set_price_stable(&svec![
+        &fixture.env,
+        1_0000000,       // USD
+        100_000_0000000, // BTC = 100K
+        2000_0000000,    // ETH
+        0_1000000,       // XLM
+    ]);
+
+    // User1 closes the long position
+    let result1 = fixture.trading.submit(
+        &user1,
+        &svec![
+            &fixture.env,
+            Request {
+                action: RequestType::Close,
+                position: user1_position_id,
+                data: None
+            }
+        ],
+    );
+
+    // User2 closes the short position
+    let result2 = fixture.trading.submit(
+        &user2,
+        &svec![
+            &fixture.env,
+            Request {
+                action: RequestType::Close,
+                position: user2_position_id,
+                data: None
+            }
+        ],
+    );
+
+    // Ensure positions are closed
+    assert_eq!(
+        fixture.read_position(user1_position_id).status,
+        PositionStatus::Closed
+    );
+    assert_eq!(
+        fixture.read_position(user2_position_id).status,
+        PositionStatus::Closed
+    );
+
+    // Print transfers for visibility
+    fixture.print_transfers(&result1);
+    fixture.print_transfers(&result2);
+
+    // Calculate deltas
+    let user1_balance = fixture.token.balance(&user1);
+    let user2_balance = fixture.token.balance(&user2);
+    let vault_balance = fixture.token.balance(&fixture.vault.address);
+
+    let delta_user1 = user1_balance - initial_user1_balance;
+    let delta_user2 = user2_balance - initial_user2_balance;
+    let delta_vault = vault_balance - initial_vault_balance;
+
+    // Assert user deltas are close to the expected values
+    let expected_delta_user1 = -(436 * SCALAR_7); // -436 tokens = -100 - 336
+    let expected_delta_user2 = -(218 * SCALAR_7); // -218 tokens = -50 - 168
+    let tolerance = 5 * (SCALAR_7 / 10); // 0.5 tokens
+
+    let delta_user1_diff = (delta_user1 - expected_delta_user1).abs();
+    assert!(
+        delta_user1_diff <= tolerance,
+        "delta_user1 ({:.7}) is not approximately -436 (difference: {:.7})",
+        delta_user1 as f64 / SCALAR_7 as f64,
+        delta_user1_diff as f64 / SCALAR_7 as f64
+    );
+
+    let delta_user2_diff = (delta_user2 - expected_delta_user2).abs();
+    assert!(
+        delta_user2_diff <= tolerance,
+        "delta_user2 ({:.7}) is not approximately -218 (difference: {:.7})",
+        delta_user2 as f64 / SCALAR_7 as f64,
+        delta_user2_diff as f64 / SCALAR_7 as f64
+    );
+
+    println!(
+        "User1 (long) balance: {:.7} (Δ {:.7})\nUser2 (short) balance: {:.7} (Δ {:.7})\nVault balance: {:.7} (Δ {:.7})",
+        user1_balance as f64 / SCALAR_7 as f64,
+        delta_user1 as f64 / SCALAR_7 as f64,
+        user2_balance as f64 / SCALAR_7 as f64,
+        delta_user2 as f64 / SCALAR_7 as f64,
+        vault_balance as f64 / SCALAR_7 as f64,
+        delta_vault as f64 / SCALAR_7 as f64
+    );
+}
+
+#[test]
+fn test_long_short_sequential_closes() {
+    // This test tests whether user2 still pays interest and base fee after the other side is closed. 
+    let fixture = setup_fixture();
+    let user1 = Address::generate(&fixture.env);
+    let user2 = Address::generate(&fixture.env);
+
+    // Fund users sufficiently for collateral, fees and funding
+    fixture.token.mint(&user1, &(500_000 * SCALAR_7));
+    fixture.token.mint(&user2, &(500_000 * SCALAR_7));
+
+    // Record initial balances
+    let initial_user1_balance = fixture.token.balance(&user1);
+    let initial_user2_balance = fixture.token.balance(&user2);
+    let initial_vault_balance = fixture.token.balance(&fixture.vault.address);
+
+    // Ensure BTC price is 100K before opening positions
+    fixture.oracle.set_price_stable(&svec![
+        &fixture.env,
+        1_0000000,       // USD
+        100_000_0000000, // BTC = 100K
+        2000_0000000,    // ETH
+        0_1000000,       // XLM
+    ]);
+
+    // User1 opens a long position with 10k collateral and 10x leverage (100k notional)
+    let user1_position_id = fixture.trading.open_position(
+        &user1,
+        &fixture.assets[AssetIndex::BTC],
+        &(10_000 * SCALAR_7), // 10k collateral
+        &(100_000 * SCALAR_7), // 100k notional (10x leverage)
+        &true, // long
+        &0, // market order
+        &0, // take profit: 0 (not set)
+        &0, // stop loss: 0 (not set)
+    );
+
+    // User2 opens a short position with 10k collateral and 10x leverage (100k notional)
+    let user2_position_id = fixture.trading.open_position(
+        &user2,
+        &fixture.assets[AssetIndex::BTC],
+        &(10_000 * SCALAR_7), // 10k collateral
+        &(100_000 * SCALAR_7), // 100k notional (10x leverage)
+        &false, // short
+        &0, // market order
+        &0, // take profit: 0 (not set)
+        &0, // stop loss: 0 (not set)
+    );
+
+    // A week passes
+    fixture.jump(SECONDS_IN_WEEK);
+
+    // Ensure price is still at 100K (no price movement)
+    fixture.oracle.set_price_stable(&svec![
+        &fixture.env,
+        1_0000000,       // USD
+        100_000_0000000, // BTC = 100K
+        2000_0000000,    // ETH
+        0_1000000,       // XLM
+    ]);
+
+    // User1 closes the long position
+    let result1 = fixture.trading.submit(
+        &user1,
+        &svec![
+            &fixture.env,
+            Request {
+                action: RequestType::Close,
+                position: user1_position_id,
+                data: None
+            }
+        ],
+    );
+
+    // Another week passes
+    fixture.jump(SECONDS_IN_WEEK);
+
+    // Ensure price is still at 100K (no price movement)
+    fixture.oracle.set_price_stable(&svec![
+        &fixture.env,
+        1_0000000,       // USD
+        100_000_0000000, // BTC = 100K
+        2000_0000000,    // ETH
+        0_1000000,       // XLM
+    ]);
+
+    // User2 closes the short position
+    let result2 = fixture.trading.submit(
+        &user2,
+        &svec![
+            &fixture.env,
+            Request {
+                action: RequestType::Close,
+                position: user2_position_id,
+                data: None
+            }
+        ],
+    );
+
+    // Ensure positions are closed
+    assert_eq!(
+        fixture.read_position(user1_position_id).status,
+        PositionStatus::Closed
+    );
+    assert_eq!(
+        fixture.read_position(user2_position_id).status,
+        PositionStatus::Closed
+    );
+
+    // Print transfers for visibility
+    fixture.print_transfers(&result1);
+    fixture.print_transfers(&result2);
+
+    // Calculate deltas
+    let user1_balance = fixture.token.balance(&user1);
+    let user2_balance = fixture.token.balance(&user2);
+    let vault_balance = fixture.token.balance(&fixture.vault.address);
+
+    let delta_user1 = user1_balance - initial_user1_balance;
+    let delta_user2 = user2_balance - initial_user2_balance;
+    let delta_vault = vault_balance - initial_vault_balance;
+
+    // Assert user deltas are close to the expected values
+    let expected_delta_user1 = -(268 * SCALAR_7); // -268 tokens = -100 - 168
+    let expected_delta_user2 = -(436 * SCALAR_7); // -436 tokens = -100 - 336
+    let tolerance = 5 * (SCALAR_7 / 10); // 0.5 tokens
+
+    let delta_user1_diff = (delta_user1 - expected_delta_user1).abs();
+    assert!(
+        delta_user1_diff <= tolerance,
+        "delta_user1 ({:.7}) is not approximately -268 (difference: {:.7})",
+        delta_user1 as f64 / SCALAR_7 as f64,
+        delta_user1_diff as f64 / SCALAR_7 as f64
+    );
+
+    let delta_user2_diff = (delta_user2 - expected_delta_user2).abs();
+    assert!(
+        delta_user2_diff <= tolerance,
+        "delta_user2 ({:.7}) is not approximately -436 (difference: {:.7})",
+        delta_user2 as f64 / SCALAR_7 as f64,
+        delta_user2_diff as f64 / SCALAR_7 as f64
+    );
+
+    println!(
+        "User1 (long) balance: {:.7} (Δ {:.7})\nUser2 (short) balance: {:.7} (Δ {:.7})\nVault balance: {:.7} (Δ {:.7})",
+        user1_balance as f64 / SCALAR_7 as f64,
+        delta_user1 as f64 / SCALAR_7 as f64,
+        user2_balance as f64 / SCALAR_7 as f64,
+        delta_user2 as f64 / SCALAR_7 as f64,
+        vault_balance as f64 / SCALAR_7 as f64,
+        delta_vault as f64 / SCALAR_7 as f64
+    );
 }
