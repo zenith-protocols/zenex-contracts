@@ -197,14 +197,14 @@ fn test_long_short_week_5pct_move_print_balances() {
     let delta_user1 = user1_balance - initial_user1_balance;
     // delta user1 should be 2500 (5% of 50k) minus the fee. The fee should be -243.8 = 25 + 0.0000125 - 268.8
     let delta_user2 = user2_balance - initial_user2_balance;
-    // delta user2 should be minus 5k (5% of 100k) minus the fee. Fee should be 436 = 100 + 0.000025 + 336
+    // delta user2 should be minus 5k (5% of 100k) minus the fee. Fee should be 386 = 50 + 0.000025 + 336
     let delta_vault = vault_balance - initial_vault_balance;
-    // delta vault should be the fees minus the sum of the pnl of user1 and user2. The vault should receive 2.5k pnl and 192.2 fees (total 2692.2).
+    // delta vault should be the fees minus the sum of the pnl of user1 and user2. The vault should receive 2.5k pnl and 142.2 fees (total 2642.2).
 
     // Assert user deltas are close to the expected values.
     let expected_delta_user1 = (27438 * (SCALAR_7 / 10)); // 2718.8 tokens
-    let expected_delta_user2 = -5436 * SCALAR_7;
-    let expected_delta_vault = (26922 * (SCALAR_7 / 10)); // 2692.2 tokens
+    let expected_delta_user2 = -5386 * SCALAR_7;
+    let expected_delta_vault = (26422 * (SCALAR_7 / 10)); // 2642.2 tokens
     let tolerance_user1 = 5 * (SCALAR_7 / 10); // 0.5 tokens
     let tolerance_user2 = 5 * SCALAR_7; // 5 tokens
     let tolerance_vault = 5 * (SCALAR_7 / 10); // 0.5 tokens
@@ -366,17 +366,17 @@ fn test_equal_short_long_notional() {
     let user2_balance = fixture.token.balance(&user2);
     let vault_balance = fixture.token.balance(&fixture.vault.address);
 
-    // Important is that since the notional short = notional long, the long pays interest and the short receives.
+    
     let delta_user1 = user1_balance - initial_user1_balance;
-    // This should be pnl minus the fee. Pnl is 10k. Fee should be 75.6 = 2 * (0.0005 * 200k + 200k / 8.000.000.000 * 200k) - 0.8 * 200 / 400 * 168 * 0.00001 * 200k
+    // This should be pnl minus the fee. Pnl is 20k. Fee should be 536 = 200 + 336
     let delta_user2 = user2_balance - initial_user2_balance;
-    // This should be pnl minus the fee. Pnl is -10k. Fee should be 378 = 2 * (0.0005 * 200k + 200k / 8.000.000.000 * 200k) + 200 / 400 * 168 * 0.00001 * 200k
+    // This should be pnl minus the fee. Pnl is -20k. Fee should be 436 = 100 + 336
     let delta_vault = vault_balance - initial_vault_balance;
-    // Total user pnl is 0, so this is only the fees: 378 + 75.6 = 453.6
+    // Total user pnl is 0, so this is only the fees: 536 + 436 = 972
 
     // Assert user deltas are close to expected values.
     let expected_delta_user1 = 19_464 * SCALAR_7;
-    let expected_delta_user2 = -20_536 * SCALAR_7;
+    let expected_delta_user2 = -20_436 * SCALAR_7;
     let tolerance = SCALAR_7 / 2; // 0.5 tokens
 
     let delta_user1_diff = (delta_user1 - expected_delta_user1).abs();
@@ -558,6 +558,8 @@ fn test_changing_long_short_ratio() {
     fixture.print_transfers(&result_user2);
     fixture.print_transfers(&result_user3);
 
+ 
+
     // Balances and deltas
     let user1_balance = fixture.token.balance(&user1);
     let user2_balance = fixture.token.balance(&user2);
@@ -570,6 +572,7 @@ fn test_changing_long_short_ratio() {
     // This should be the fee: 117.8 = -25 + 268.8 - 126
     let delta_user3 = user3_balance - initial_user3_balance;
     // This should be the fee: -352.4 = -50 - 302.4
+    // User3 closes short when short is dominant (100k > 0), so should pay base fee on close.
     let delta_vault = vault_balance - initial_vault_balance;
     // This should be the total of the fees
 
@@ -890,7 +893,7 @@ fn test_long_short_sequential_closes() {
 
     // Assert user deltas are close to the expected values
     let expected_delta_user1 = -(268 * SCALAR_7); // -268 tokens = -100 - 168
-    let expected_delta_user2 = -(436 * SCALAR_7); // -436 tokens = -100 - 336
+    let expected_delta_user2 = -(386 * SCALAR_7); // -386 tokens = -50 - 336
     let tolerance = 5 * (SCALAR_7 / 10); // 0.5 tokens
 
     let delta_user1_diff = (delta_user1 - expected_delta_user1).abs();
