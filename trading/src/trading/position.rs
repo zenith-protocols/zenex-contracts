@@ -167,6 +167,21 @@ pub fn execute_create_position(
         entry_price
     };
 
+    // Pay base fee only for the dominant side (side that increases market imbalance)
+    // If the position balances the market, no base fee is charged
+    // Check BEFORE updating market stats to see if this position would balance the market
+    let should_pay_base_fee = if is_long {
+        // Long position pays fee if it increases long dominance
+        // Check if after adding this position, longs would still be >= shorts
+        let new_long_notional = market.data.long_notional_size + notional_size;
+        new_long_notional > market.data.short_notional_size
+    } else {
+        // Short position pays fee if it increases short dominance
+        // Check if after adding this position, shorts would still be >= longs
+        let new_short_notional = market.data.short_notional_size + notional_size;
+        new_short_notional > market.data.long_notional_size
+    };
+
     // If market order, update market stats immediately
     if market_order {
         market.update_stats(collateral, notional_size, is_long);
@@ -193,16 +208,6 @@ pub fn execute_create_position(
         notional_size,
         interest_index,
         created_at: e.ledger().timestamp(),
-    };
-
-    // Pay base fee only for the dominant side (side that increases market imbalance)
-    // If the position balances the market, no base fee is charged
-    let should_pay_base_fee = if is_long {
-        // Long position pays fee if it increases long dominance
-        market.data.long_notional_size >= market.data.short_notional_size
-    } else {
-        // Short position pays fee if it increases short dominance
-        market.data.short_notional_size >= market.data.long_notional_size
     };
 
     let open_fee = if should_pay_base_fee {
