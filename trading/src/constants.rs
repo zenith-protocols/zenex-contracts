@@ -10,7 +10,7 @@ pub const SECONDS_PER_WEEK: u64 = ONE_DAY_SECONDS * 7; // 7 days
 // Limits
 pub const MAX_ACTIONABLE_POSITIONS: u32 = 50; // Max positions to track for keeper actions
 // Oracle
-pub const MAX_PRICE_AGE: u64 = 300; // Max price age in seconds (5 minutes)
+pub const MAX_PRICE_AGE: u64 = 900; // Max price age in seconds (5 minutes)
 
 // Status codes
 pub const STATUS_UNINITIALIZED: u32 = 0;
