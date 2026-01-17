@@ -1,6 +1,6 @@
 use crate::constants::{ONE_HOUR_SECONDS, SCALAR_18};
 use soroban_fixed_point_math::SorobanFixedPoint;
-use soroban_sdk::{log, Env};
+use soroban_sdk::Env;
 
 /// Calculate the adjusted hourly interest rates for long and short positions
 /// This combines the base rate, leverage multiplier, and long/short corrections
@@ -74,7 +74,7 @@ pub fn calculate_long_short_hourly_rates(
 /// Uses per-second compound growth for precision
 /// Takes hourly rate and converts it internally to per-second rate
 pub fn update_index_with_interest(
-    e: &Env,
+    _e: &Env,
     current_index: i128,   // Current index value (18 decimal precision)
     hourly_rate: i128,     // Hourly interest rate (18 decimal precision)
     seconds_elapsed: i128, // Time elapsed in seconds
@@ -83,16 +83,19 @@ pub fn update_index_with_interest(
         return current_index;
     }
 
-    // Convert hourly rate to per-second rate
-    let rate_per_second = hourly_rate.fixed_div_floor(e, &(ONE_HOUR_SECONDS as i128), &SCALAR_18);
+    // Convert hourly rate to per-second rate by simple division
+    // hourly_rate is in SCALAR_18, result is also in SCALAR_18
+    let rate_per_second = hourly_rate / (ONE_HOUR_SECONDS as i128);
 
     // Calculate total growth over the period
-    let period_rate = rate_per_second.fixed_mul_floor(e, &seconds_elapsed, &SCALAR_18);
+    // rate_per_second is in SCALAR_18, seconds_elapsed is a plain number
+    // Result is in SCALAR_18 (the accumulated rate over the period)
+    let period_rate = rate_per_second * seconds_elapsed;
 
-    // Growth factor = 1 + period_rate (both already in 18 decimal precision)
+    // Growth factor = 1 + period_rate (both in SCALAR_18)
     let growth_factor = SCALAR_18 + period_rate;
 
-    // Apply compound growth to index
-
-    current_index.fixed_mul_floor(e, &growth_factor, &SCALAR_18)
+    // Apply growth to index: new_index = current_index * growth_factor / SCALAR_18
+    // This maintains the SCALAR_18 precision
+    (current_index * growth_factor) / SCALAR_18
 }

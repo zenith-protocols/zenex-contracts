@@ -10,7 +10,7 @@ pub(crate) use crate::types::{Position, PositionStatus};
 use sep_40_oracle::Asset;
 use soroban_fixed_point_math::SorobanFixedPoint;
 use soroban_sdk::token::TokenClient;
-use soroban_sdk::{log, panic_with_error, vec, Address, Env, IntoVal, Symbol, Val, Vec};
+use soroban_sdk::{panic_with_error, vec, Address, Env, IntoVal, Symbol, Val, Vec};
 use soroban_sdk::auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation};
 
 /// Implementation of position-related methods
