@@ -13,6 +13,7 @@ pub const MAX_ACTIONABLE_POSITIONS: u32 = 50; // Max positions to track for keep
 pub const MAX_PRICE_AGE: u64 = 900; // Max price age in seconds (5 minutes)
 
 // Status codes
-pub const STATUS_UNINITIALIZED: u32 = 0;
-pub const STATUS_BOOTSTRAPPING: u32 = 1;
-pub const STATUS_ACTIVE: u32 = 2;
+pub const STATUS_ACTIVE: u32 = 0;
+pub const STATUS_ON_ICE: u32 = 1;
+pub const STATUS_FROZEN: u32 = 2;
+pub const STATUS_SETUP: u32 = 99;

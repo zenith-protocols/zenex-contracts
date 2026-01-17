@@ -341,6 +341,11 @@ pub fn set_position(e: &Env, position_id: u32, position: &Position) {
         .extend_ttl(&key, LEDGER_THRESHOLD_SHARED, LEDGER_BUMP_SHARED);
 }
 
+pub fn has_position(e: &Env, position_id: u32) -> bool {
+    let key = TradingDataKey::Position(position_id);
+    e.storage().persistent().has(&key)
+}
+
 /********** Vault Storage **********/
 
 pub fn get_vault(e: &Env) -> Address {
@@ -375,7 +380,7 @@ pub fn get_status(e: &Env) -> u32 {
     e.storage()
         .instance()
         .get::<Symbol, u32>(&Symbol::new(e, STATUS_KEY))
-        .unwrap_optimized()
+        .unwrap_or(0)
 }
 
 pub fn set_status(e: &Env, status: u32) {

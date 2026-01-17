@@ -1,17 +1,28 @@
-use crate::constants::{SCALAR_18, SCALAR_7};
+use crate::constants::{SCALAR_18, SCALAR_7, STATUS_ACTIVE};
 use crate::dependencies::VaultClient;
 use crate::errors::TradingError;
 use crate::events::TradingEvents;
 use crate::storage;
-use crate::trading::actions::RequestType;
 use crate::trading::core::Trading;
 use crate::trading::market::Market;
+use crate::types::ExecuteRequestType;
 pub(crate) use crate::types::{Position, PositionStatus};
 use sep_40_oracle::Asset;
 use soroban_fixed_point_math::SorobanFixedPoint;
-use soroban_sdk::token::TokenClient;
-use soroban_sdk::{log, panic_with_error, vec, Address, Env, IntoVal, Symbol, Val, Vec};
 use soroban_sdk::auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation};
+use soroban_sdk::token::TokenClient;
+use soroban_sdk::{panic_with_error, vec, Address, Env, IntoVal, Symbol, Val, Vec};
+
+/// Calculated values for closing a position
+/// Used by both user-initiated close and keeper actions
+pub struct CloseCalculation {
+    pub price: i128,
+    pub pnl: i128,
+    pub fee: i128,
+    pub user_payout: i128,    // Amount to pay user (0 if loss > collateral)
+    pub caller_fee: i128,     // Amount to pay caller/keeper
+    pub vault_transfer: i128, // Positive = vault receives, negative = vault pays
+}
 
 /// Implementation of position-related methods
 impl Position {
@@ -27,22 +38,29 @@ impl Position {
         self.user.require_auth();
     }
 
-    /// Check if the requested action is allowed based on this position's status
+    /// Check if the requested keeper action is allowed based on this position's status
     ///
     /// Returns true if the action is allowed, false otherwise
-    pub fn validate_action(&self, action: &RequestType) -> bool {
+    pub fn validate_keeper_action(&self, action: &ExecuteRequestType) -> bool {
         match action {
-            RequestType::Close => self.status == PositionStatus::Open,
-            RequestType::Fill => self.status == PositionStatus::Pending,
-            RequestType::StopLoss => self.status == PositionStatus::Open,
-            RequestType::TakeProfit => self.status == PositionStatus::Open,
-            RequestType::Liquidation => self.status == PositionStatus::Open,
-            RequestType::Cancel => self.status == PositionStatus::Pending,
-            RequestType::WithdrawCollateral => self.status == PositionStatus::Open,
-            RequestType::DepositCollateral => self.status == PositionStatus::Open,
-            RequestType::SetTakeProfit => self.status == PositionStatus::Open,
-            RequestType::SetStopLoss => self.status == PositionStatus::Open,
+            ExecuteRequestType::Fill => self.status == PositionStatus::Pending,
+            ExecuteRequestType::StopLoss => self.status == PositionStatus::Open,
+            ExecuteRequestType::TakeProfit => self.status == PositionStatus::Open,
+            ExecuteRequestType::Liquidate => self.status == PositionStatus::Open,
         }
+    }
+
+    /// Calculate accrued interest since the position was opened or last settled
+    /// Returns positive value if interest is owed, negative if rebate is due
+    pub fn calculate_accrued_interest(&self, e: &Env, market: &Market) -> i128 {
+        let index_difference = if self.is_long {
+            market.data.long_interest_index - self.interest_index
+        } else {
+            market.data.short_interest_index - self.interest_index
+        };
+
+        self.notional_size
+            .fixed_mul_floor(e, &index_difference, &SCALAR_18)
     }
 
     pub fn calculate_fee(&self, e: &Env, market: &Market) -> i128 {
@@ -68,15 +86,7 @@ impl Position {
             self.notional_size
                 .fixed_div_ceil(e, &market.config.price_impact_scalar, &SCALAR_7);
 
-        let index_difference = if self.is_long {
-            market.data.long_interest_index - self.interest_index
-        } else {
-            market.data.short_interest_index - self.interest_index
-        };
-
-        let interest_fee = self
-            .notional_size
-            .fixed_mul_floor(e, &index_difference, &SCALAR_18);
+        let interest_fee = self.calculate_accrued_interest(e, market);
 
         base_fee + price_impact_scalar + interest_fee
     }
@@ -121,6 +131,47 @@ impl Position {
             current_price >= self.stop_loss
         }
     }
+
+    /// Calculate all values needed to close this position
+    /// Returns a CloseCalculation struct with all transfer amounts
+    pub fn calculate_close(&self, e: &Env, trading: &mut Trading, market: &Market) -> CloseCalculation {
+        let price = trading.load_price(e, &self.asset);
+        let pnl = self.calculate_pnl(e, price);
+        let fee = self.calculate_fee(e, market);
+        let raw_caller_fee = trading.calculate_caller_fee(e, fee).abs();
+
+        let net_pnl = if fee >= 0 {
+            pnl - fee
+        } else {
+            pnl + fee.abs() - raw_caller_fee
+        };
+
+        let payout = self.collateral + net_pnl;
+        let user_payout = payout.max(0);
+
+        // Calculate remaining funds after paying user
+        let remaining = (self.collateral - user_payout).max(0);
+
+        // Caller fee capped to remaining funds (only when fee >= 0)
+        let caller_fee = if fee >= 0 { raw_caller_fee.min(remaining) } else { 0 };
+
+        // Vault transfer: positive = receives, negative = pays
+        // Vault receives remaining collateral, but pays if user profit exceeds collateral
+        let vault_transfer = if user_payout > self.collateral {
+            -(user_payout - self.collateral) // Vault pays the excess
+        } else {
+            remaining - caller_fee // Vault receives the remainder
+        };
+
+        CloseCalculation {
+            price,
+            pnl,
+            fee,
+            user_payout,
+            caller_fee,
+            vault_transfer,
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -134,19 +185,48 @@ pub fn execute_create_position(
     entry_price: i128,
     take_profit: i128,
     stop_loss: i128,
-) -> u32 {
+) -> (u32, i128) {
     user.require_auth();
+
+    // Only allow opening new positions when contract is Active (0)
+    if storage::get_status(e) != STATUS_ACTIVE {
+        panic_with_error!(e, TradingError::ContractPaused);
+    }
+
     let mut trading = Trading::load(e, user.clone());
     let mut market = trading.load_market(e, asset);
 
     if collateral < 0 || notional_size < 0 || entry_price < 0 {
-        panic_with_error!(e, TradingError::BadRequest);
+        panic_with_error!(e, TradingError::InvalidCollateral);
+    }
+
+    // Check utilization limit: total_notional must not exceed vault_assets * max_utilization
+    let config = storage::get_config(e);
+    if config.max_utilization > 0 {
+        let vault_client = VaultClient::new(e, &storage::get_vault(e));
+        let vault_assets = vault_client.total_assets();
+        let current_total_notional = market.data.long_notional_size + market.data.short_notional_size;
+        let new_total_notional = current_total_notional + notional_size;
+
+        // Check: new_total_notional * SCALAR_7 <= vault_assets * max_utilization
+        let max_allowed_notional = vault_assets.fixed_mul_floor(e, &config.max_utilization, &SCALAR_7);
+        if new_total_notional > max_allowed_notional {
+            panic_with_error!(e, TradingError::UtilizationLimitExceeded);
+        }
+    }
+
+    // Check collateral bounds
+    if collateral < market.config.min_collateral {
+        panic_with_error!(e, TradingError::InvalidCollateral);
+    }
+    if collateral > market.config.max_collateral {
+        panic_with_error!(e, TradingError::InvalidCollateral);
     }
 
     // Check user position count limit
     let positions = storage::get_user_positions(e, user);
     if !trading.check_max_positions(positions) {
-        panic_with_error!(e, TradingError::MaxPositions)
+        panic_with_error!(e, TradingError::MaxPositionsReached)
     }
 
     let current_price = trading.load_price(e, asset);
@@ -162,7 +242,7 @@ pub fn execute_create_position(
     } else {
         // Check if entry price is valid
         if (is_long && entry_price < current_price) || (!is_long && entry_price > current_price) {
-            panic_with_error!(e, TradingError::BadRequest);
+            panic_with_error!(e, TradingError::InvalidEntryPrice);
         }
         entry_price
     };
@@ -231,6 +311,8 @@ pub fn execute_create_position(
     if market_order {
         let vault_client = VaultClient::new(e, &storage::get_vault(e));
         let vault_transfer = open_fee + price_impact_scalar;
+
+        // Authorize the token transfer that happens inside strategy_deposit
         let args: Vec<Val> = vec![
             e,
             e.current_contract_address().into_val(e),
@@ -249,10 +331,7 @@ pub fn execute_create_position(
             })
         ]);
 
-        vault_client.transfer_from(
-            &e.current_contract_address(),
-            &vault_transfer,
-        );
+        vault_client.strategy_deposit(&e.current_contract_address(), &vault_transfer);
     }
 
     trading.cache_position(&position);
@@ -263,5 +342,5 @@ pub fn execute_create_position(
 
     TradingEvents::open_position(e, user.clone(), asset.clone(), id);
 
-    id
+    (id, open_fee + price_impact_scalar)
 }

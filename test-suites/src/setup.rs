@@ -5,7 +5,8 @@ pub fn create_fixture_with_data<'a>(wasm: bool) -> TestFixture<'a> {
     let mut fixture = TestFixture::create(wasm);
 
     fixture.token.mint(&fixture.owner, &100_000_000_0000000);
-    fixture.vault.deposit(&100_000_000_0000000, &fixture.owner, &fixture.owner);
+    // ERC-4626 deposit(assets, receiver, from, operator)
+    fixture.vault.deposit(&100_000_000_0000000, &fixture.owner, &fixture.owner, &fixture.owner);
 
     let mut market_config = default_market();
 
@@ -18,6 +19,8 @@ pub fn create_fixture_with_data<'a>(wasm: bool) -> TestFixture<'a> {
     fixture.create_market(&eth_asset, market_config.clone());
     fixture.create_market(&xlm_asset, market_config.clone());
 
+    // Set status to Active (0) so tests can open positions
+    // Status values: 0=Active, 1=OnIce, 2=Frozen, 99=Setup
     fixture.trading.set_status(&0u32);
 
     fixture

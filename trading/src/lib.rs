@@ -6,7 +6,7 @@ pub mod storage;
 mod contract;
 mod trading;
 
-pub use trading::{Request, RequestType, SubmitResult};
+pub use trading::{ExecuteRequest, ExecuteRequestType};
 
 mod types;
 mod dependencies;
@@ -15,3 +15,4 @@ mod events;
 
 pub use contract::*;
 pub use types::*;
+pub use errors::TradingError;

@@ -7,6 +7,7 @@ pub struct TradingConfig {
     pub oracle: Address,        // Address of the oracle contract
     pub caller_take_rate: i128, // Percentage of fee that a user gets for keeping the protocol running
     pub max_positions: u32,     // Maximum number of positions per user
+    pub max_utilization: i128,  // Max leverage: total_notional / vault_assets (SCALAR_7). E.g., 20_000_000 = 2x, 50_000_000 = 5x. 0 = disabled
 }
 
 /// Position status
@@ -82,3 +83,23 @@ pub struct Position {
     pub interest_index: i128,   // Interest index value when position was created or last updated
     pub created_at: u64,        // Timestamp when position was created
 }
+
+/// Request for keeper execution
+#[contracttype]
+#[derive(Clone)]
+pub struct ExecuteRequest {
+    pub request_type: ExecuteRequestType,
+    pub position_id: u32,
+}
+
+/// Types of keeper actions (permissionless)
+#[contracttype]
+#[derive(Clone, PartialEq)]
+#[repr(u32)]
+pub enum ExecuteRequestType {
+    Fill = 0,
+    StopLoss = 1,
+    TakeProfit = 2,
+    Liquidate = 3,
+}
+

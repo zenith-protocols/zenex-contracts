@@ -1,10 +1,11 @@
 mod market;
 mod position;
 pub use position::execute_create_position;
-mod actions;
-pub use actions::{Request, RequestType, SubmitResult};
-mod submit;
-pub use submit::execute_submit;
+mod execute;
+pub use crate::types::{ExecuteRequest, ExecuteRequestType};
+mod user_actions;
+pub use user_actions::{execute_close_position, execute_modify_collateral, execute_set_triggers};
+pub use execute::execute_trigger;
 mod config;
 mod core;
 mod interest;

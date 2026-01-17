@@ -1,14 +1,12 @@
-use crate::dependencies::token::TOKEN_WASM;
 use crate::dependencies::vault::{VaultClient, VAULT_WASM};
 use crate::token::create_stellar_token;
-use crate::SCALAR_7;
 use sep_40_oracle::testutils::{Asset, MockPriceOracleClient, MockPriceOracleWASM};
 use sep_40_oracle::Asset as StellarAsset;
 use sep_41_token::testutils::MockTokenClient;
-use soroban_sdk::testutils::{Address as _, BytesN as _, Ledger, LedgerInfo};
-use soroban_sdk::{vec as svec, Address, BytesN, Env, Map, String, Symbol};
+use soroban_sdk::testutils::{Address as _, Ledger, LedgerInfo};
+use soroban_sdk::{vec as svec, Address, Env, String, Symbol};
 use std::ops::Index;
-use trading::{MarketConfig, SubmitResult, TradingClient};
+use trading::{MarketConfig, TradingClient};
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum AssetIndex {
@@ -89,18 +87,14 @@ impl TestFixture<'_> {
         };
         let trading_client = TradingClient::new(&e, &trading_id);
 
-        let token_wasm_hash = e.deployer().upload_contract_wasm(TOKEN_WASM);
-
         let strategies = soroban_sdk::Vec::from_array(&e, [trading_id.clone(), owner.clone()]);
         let vault_args = (
-            token_id.clone(),                     // token: Address
-            token_wasm_hash,                      // token_wasm_hash: BytesN<32>
             String::from_str(&e, "Vault Shares"), // name: String
             String::from_str(&e, "VSHR"),         // symbol: String
+            token_id.clone(),                     // asset: Address
+            0u32,                                 // decimals_offset: u32
             strategies,                           // strategies: Vec<Address>
             300u64,                               // lock_time: u64 (5 minutes)
-            1_000_000i128,                        // penalty_rate: i128 (10% in SCALAR_7)
-            0_1000000i128,                        // min liquidity percentage: u64 (10% in SCALAR_7)
         );
         let vault_id = e.register(VAULT_WASM, vault_args);
         let vault_client = VaultClient::new(&e, &vault_id);
@@ -109,8 +103,10 @@ impl TestFixture<'_> {
             oracle: oracle_id.clone(),
             caller_take_rate: 0, // 1% in SCALAR_7
             max_positions: 10,
+            max_utilization: 0, // 0 = disabled. Max leverage in SCALAR_7 (e.g., 20_000_000 = 2x, 50_000_000 = 5x)
         };
         // Set the vault in trading contract
+        // After initialize, status is Setup (99) which allows market queuing without delay
         trading_client.initialize(&String::from_str(&e, "Zenex"), &vault_id, &config);
 
         let fixture = TestFixture {
@@ -176,7 +172,7 @@ impl TestFixture<'_> {
     pub fn jump(&self, time: u64) {
         self.env.ledger().set(LedgerInfo {
             timestamp: self.env.ledger().timestamp().saturating_add(time),
-            protocol_version: 22,
+            protocol_version: 23,
             sequence_number: self.env.ledger().sequence(),
             network_id: Default::default(),
             base_reserve: 10,
@@ -190,7 +186,7 @@ impl TestFixture<'_> {
         let blocks = time / 5;
         self.env.ledger().set(LedgerInfo {
             timestamp: self.env.ledger().timestamp().saturating_add(time),
-            protocol_version: 22,
+            protocol_version: 23,
             sequence_number: self.env.ledger().sequence().saturating_add(blocks as u32),
             network_id: Default::default(),
             base_reserve: 10,
@@ -200,48 +196,4 @@ impl TestFixture<'_> {
         });
     }
 
-    /// Pretty print submit result transfers showing the flow of funds
-    pub fn print_transfers(&self, result: &SubmitResult) {
-        println!("\n=== Transfers ===");
-        if result.transfers.is_empty() {
-            println!("No transfers");
-            return;
-        }
-
-        let vault_address = &self.vault.address;
-        let vault_transfer = result.transfers.get(vault_address.clone()).unwrap_or(0);
-
-        // Show vault transfer first
-        if vault_transfer != 0 {
-            let amount_scaled = vault_transfer as f64 / SCALAR_7 as f64;
-            if vault_transfer > 0 {
-                println!("  Trading -> Vault: {:.6} tokens", amount_scaled);
-            } else {
-                println!("  Vault -> Trading: {:.6} tokens", -amount_scaled);
-            }
-        }
-
-        // Show all other transfers (users/callers)
-        for (address, amount) in result.transfers.iter() {
-            if address == self.vault.address.clone() {
-                continue; // Already handled above
-            }
-
-            let amount_scaled = amount as f64 / SCALAR_7 as f64;
-
-            // Extract last 4 characters from address for user identification
-            let address_str = format!("{:?}", address);
-            let last_chars = &address_str
-                [address_str.len().saturating_sub(6)..address_str.len().saturating_sub(2)];
-            let user_name = format!("User_{}", last_chars);
-
-            if amount > 0 {
-                println!("  Trading -> {}: {:.6} tokens", user_name, amount_scaled);
-            } else if amount < 0 {
-                println!("  {} -> Trading: {:.6} tokens", user_name, -amount_scaled);
-            }
-        }
-
-        println!();
-    }
 }

@@ -22,6 +22,9 @@ pub struct Trading {
 impl Trading {
 
     pub fn load(e: &Env, caller: Address) -> Self {
+        if !storage::has_name(e) {
+            panic_with_error!(e, TradingError::NotInitialized);
+        }
         let config = storage::get_config(e);
         let vault = storage::get_vault(e);
         let token = storage::get_token(e);
@@ -42,7 +45,14 @@ impl Trading {
         let mut market = if let Some(market) = self.markets.get(asset.clone()) {
             market
         } else {
-            Market::load(e, asset)
+            if !storage::has_market(e, asset) {
+                panic_with_error!(e, TradingError::MarketNotFound);
+            }
+            let loaded_market = Market::load(e, asset);
+            if !loaded_market.config.enabled {
+                panic_with_error!(e, TradingError::MarketDisabled);
+            }
+            loaded_market
         };
         market.update_borrowing_index(e);
         market
@@ -52,7 +62,23 @@ impl Trading {
         if let Some(position) = self.positions.get(position_id) {
             position
         } else {
+            if !storage::has_position(e, position_id) {
+                panic_with_error!(e, TradingError::PositionNotFound);
+            }
             Position::load(e, position_id)
+        }
+    }
+
+    /// Try to load a position, returning an error code instead of panicking.
+    /// Used by keeper operations to allow batch processing to continue.
+    pub fn try_load_position(&mut self, e: &Env, position_id: u32) -> Result<Position, u32> {
+        if let Some(position) = self.positions.get(position_id) {
+            Ok(position)
+        } else {
+            if !storage::has_position(e, position_id) {
+                return Err(TradingError::PositionNotFound as u32);
+            }
+            Ok(Position::load(e, position_id))
         }
     }
 
@@ -97,10 +123,10 @@ impl Trading {
         }
         let price_data = match PriceFeedClient::new(e, &self.config.oracle).lastprice(asset) {
             Some(price) => price,
-            None => panic_with_error!(e, TradingError::NoPrice),
+            None => panic_with_error!(e, TradingError::PriceNotFound),
         };
         if price_data.timestamp + MAX_PRICE_AGE < e.ledger().timestamp() {
-            panic_with_error!(e, TradingError::StalePrice);
+            panic_with_error!(e, TradingError::PriceStale);
         }
 
         self.prices.set(asset.clone(), price_data.price);

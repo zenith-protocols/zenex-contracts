@@ -1,12 +1,13 @@
 #![allow(clippy::too_many_arguments)]
 
-use crate::trading::{Request, SubmitResult};
+use crate::trading::ExecuteRequest;
 use crate::types::MarketConfig;
 use crate::{storage, trading, TradingConfig};
 use sep_40_oracle::Asset;
 use soroban_sdk::{contract, contractclient, contractimpl, Address, BytesN, Env, String, Vec};
 use stellar_access::ownable::{self as ownable, Ownable};
 use stellar_macros::{default_impl, only_owner};
+
 #[contract]
 pub struct TradingContract;
 
@@ -24,7 +25,7 @@ pub trait Trading {
     /// If the configuration is invalid
     fn initialize(e: Env, name: String, vault: Address, config: TradingConfig);
 
-    /// (Owner only) Queues a mconfiguration update
+    /// (Owner only) Queues a configuration update
     ///
     /// ### Arguments
     /// * `config` - New trading configuration
@@ -35,7 +36,7 @@ pub trait Trading {
     fn queue_set_config(e: Env, config: TradingConfig);
 
     /// (Owner only) Cancels a queued configuration update
-    /// 
+    ///
     /// ### Panics
     /// If the caller is not the owner
     /// If there is no queued configuration update
@@ -81,7 +82,7 @@ pub trait Trading {
     /// (Owner only) Sets the status of the trading contract
     ///
     /// ### Arguments
-    /// * `status` - The new status code (0: Normal, 1: Paused, etc.)
+    /// * `status` - The new status code (0: Active, 1: OnIce, 2: Frozen, 99: Setup)
     ///
     /// ### Panics
     /// If the caller is not the owner
@@ -93,14 +94,14 @@ pub trait Trading {
     /// * `user` - User address opening position
     /// * `asset` - Asset to trade
     /// * `collateral` - Collateral amount
-    /// * `leverage` - Leverage multiplier
+    /// * `notional_size` - Notional size of the position
     /// * `is_long` - Whether position is long (true) or short (false)
-    /// * `entry_price` - Price at which to open position 0 for market order
+    /// * `entry_price` - Price at which to open position, 0 for market order
     /// * `take_profit` - Take profit price level, 0 if not set
     /// * `stop_loss` - Stop loss price level, 0 if not set
     ///
     /// # Returns
-    /// Position ID of the newly opened position
+    /// (position_id, fee) tuple
     fn open_position(
         e: Env,
         user: Address,
@@ -111,17 +112,50 @@ pub trait Trading {
         entry_price: i128,
         take_profit: i128,
         stop_loss: i128,
-    ) -> u32;
+    ) -> (u32, i128);
 
-    /// Executes a batch of trading actions
+    /// Close a position (handles both open and pending positions)
+    ///
+    /// For pending positions: cancels and refunds collateral
+    /// For open positions: calculates PnL, fees, and settles
     ///
     /// # Arguments
-    /// * `caller` - Address of the caller executing the actions
-    /// * `requests` - Vector of requests to process
+    /// * `position_id` - ID of position to close (requires owner auth)
     ///
     /// # Returns
-    /// Results of the requests processed
-    fn submit(e: Env, caller: Address, requests: Vec<Request>) -> SubmitResult;
+    /// (pnl, fee) tuple
+    fn close_position(e: Env, position_id: u32) -> (i128, i128);
+
+    /// Modify collateral on an open position
+    ///
+    /// # Arguments
+    /// * `position_id` - ID of position to modify (requires owner auth)
+    /// * `new_collateral` - New collateral amount for the position
+    ///
+    /// # Returns
+    /// Interest fee settled (positive = paid, negative = received)
+    fn modify_collateral(e: Env, position_id: u32, new_collateral: i128) -> i128;
+
+    /// Set take profit and stop loss triggers
+    ///
+    /// # Arguments
+    /// * `position_id` - ID of position (requires owner auth)
+    /// * `take_profit` - Take profit price (0 to clear)
+    /// * `stop_loss` - Stop loss price (0 to clear)
+    fn set_triggers(e: Env, position_id: u32, take_profit: i128, stop_loss: i128);
+
+    /// Execute batch of keeper actions (Fill, StopLoss, TakeProfit, Liquidate)
+    ///
+    /// This function is permissionless - anyone can call it to trigger these actions.
+    /// Callers receive fees for successful keeper actions.
+    ///
+    /// # Arguments
+    /// * `caller` - Address of the keeper executing actions (receives fees)
+    /// * `requests` - Vector of execute requests
+    ///
+    /// # Returns
+    /// Vec<u32> with result codes for each action (0 = success, error code otherwise)
+    fn execute(e: Env, caller: Address, requests: Vec<ExecuteRequest>) -> Vec<u32>;
 
     fn upgrade(e: Env, wasm_hash: BytesN<32>);
 }
@@ -191,7 +225,7 @@ impl Trading for TradingContract {
         entry_price: i128,
         take_profit: i128,
         stop_loss: i128,
-    ) -> u32 {
+    ) -> (u32, i128) {
         storage::extend_instance(&e);
         trading::execute_create_position(
             &e,
@@ -206,9 +240,24 @@ impl Trading for TradingContract {
         )
     }
 
-    fn submit(e: Env, caller: Address, requests: Vec<Request>) -> SubmitResult {
+    fn close_position(e: Env, position_id: u32) -> (i128, i128) {
         storage::extend_instance(&e);
-        trading::execute_submit(&e, &caller, requests)
+        trading::execute_close_position(&e, position_id)
+    }
+
+    fn modify_collateral(e: Env, position_id: u32, new_collateral: i128) -> i128 {
+        storage::extend_instance(&e);
+        trading::execute_modify_collateral(&e, position_id, new_collateral)
+    }
+
+    fn set_triggers(e: Env, position_id: u32, take_profit: i128, stop_loss: i128) {
+        storage::extend_instance(&e);
+        trading::execute_set_triggers(&e, position_id, take_profit, stop_loss);
+    }
+
+    fn execute(e: Env, caller: Address, requests: Vec<ExecuteRequest>) -> Vec<u32> {
+        storage::extend_instance(&e);
+        trading::execute_trigger(&e, &caller, requests)
     }
 
     #[only_owner]

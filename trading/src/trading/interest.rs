@@ -1,6 +1,6 @@
 use crate::constants::{ONE_HOUR_SECONDS, SCALAR_18};
 use soroban_fixed_point_math::SorobanFixedPoint;
-use soroban_sdk::{log, Env};
+use soroban_sdk::Env;
 
 /// Calculate the adjusted hourly interest rates for long and short positions
 /// This combines the base rate, leverage multiplier, and long/short corrections
