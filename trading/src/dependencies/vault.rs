@@ -4,6 +4,7 @@ use soroban_sdk::{contractclient, Address, Env};
 
 /// Vault client interface - manually defined to avoid duplicate type conflicts
 /// from OpenZeppelin's stellar-tokens library
+#[allow(dead_code)] // Trait is used by the generated Client via #[contractclient]
 #[contractclient(name = "Client")]
 pub trait VaultInterface {
     /// Returns the address of the underlying asset that the vault manages

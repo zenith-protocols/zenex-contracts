@@ -1,15 +1,123 @@
-use crate::constants::{SCALAR_7, STATUS_ON_ICE};
+use crate::constants::{MAX_PRICE_AGE, SCALAR_7, STATUS_ACTIVE, STATUS_ON_ICE};
 use crate::dependencies::VaultClient;
 use crate::errors::TradingError;
-use crate::events::TradingEvents;
+use crate::events::{emit_fill_position, emit_liquidation, emit_stop_loss, emit_take_profit};
 use crate::storage;
-use crate::trading::core::Trading;
+use crate::trading::market::Market;
 use crate::trading::position::Position;
-use crate::types::{ExecuteRequest, ExecuteRequestType, PositionStatus};
+use crate::types::{ExecuteRequest, ExecuteRequestType, PositionStatus, TradingConfig};
+use sep_40_oracle::{Asset, PriceFeedClient};
 use soroban_fixed_point_math::SorobanFixedPoint;
 use soroban_sdk::auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation};
 use soroban_sdk::token::TokenClient;
-use soroban_sdk::{panic_with_error, vec, Address, Env, IntoVal, Map, Symbol, Val, Vec};
+use soroban_sdk::{map, panic_with_error, vec, Address, Env, IntoVal, Map, Symbol, Val, Vec};
+
+/// Context for batch execution operations (keeper triggers)
+/// Caches markets, positions, and prices to minimize storage reads
+pub struct ExecuteContext {
+    pub config: TradingConfig,
+    pub vault: Address,
+    pub token: Address,
+    pub caller: Address,
+    pub markets: Map<Asset, Market>,
+    pub positions: Map<u32, Position>,
+    pub positions_to_update: Vec<u32>,
+    pub markets_to_update: Vec<Asset>,
+    prices: Map<Asset, i128>,
+}
+
+impl ExecuteContext {
+    pub fn load(e: &Env, caller: Address) -> Self {
+        if !storage::has_name(e) {
+            panic_with_error!(e, TradingError::NotInitialized);
+        }
+        let config = storage::get_config(e);
+        let vault = storage::get_vault(e);
+        let token = storage::get_token(e);
+        ExecuteContext {
+            config,
+            vault,
+            token,
+            caller,
+            markets: map![e],
+            positions: map![e],
+            positions_to_update: vec![e],
+            markets_to_update: vec![e],
+            prices: map![e],
+        }
+    }
+
+    pub fn load_market(&mut self, e: &Env, asset: &Asset) -> Market {
+        let mut market = if let Some(market) = self.markets.get(asset.clone()) {
+            market
+        } else {
+            Market::load_checked(e, asset) // panics if not found or disabled
+        };
+        market.update_borrowing_index(e);
+        market
+    }
+
+    pub fn load_position(&mut self, e: &Env, position_id: u32) -> Position {
+        if let Some(position) = self.positions.get(position_id) {
+            position
+        } else {
+            Position::load(e, position_id) // panics if not found
+        }
+    }
+
+    pub fn cache_market(&mut self, market: &Market) {
+        self.markets.set(market.asset.clone(), market.clone());
+        if !self.markets_to_update.contains(&market.asset) {
+            self.markets_to_update.push_back(market.asset.clone());
+        }
+    }
+
+    pub fn cache_position(&mut self, position: &Position) {
+        self.positions.set(position.id, position.clone());
+        if !self.positions_to_update.contains(position.id) {
+            self.positions_to_update.push_back(position.id);
+        }
+    }
+
+    pub fn store_cached_markets(&mut self, e: &Env) {
+        for asset in self.markets_to_update.iter() {
+            let reserve = self.markets.get(asset).unwrap();
+            reserve.store(e);
+        }
+    }
+
+    pub fn store_cached_positions(&mut self, e: &Env) {
+        for position_id in self.positions_to_update.iter() {
+            let position = self.positions.get(position_id).unwrap();
+            position.store(e);
+        }
+    }
+
+    pub fn load_price(&mut self, e: &Env, asset: &Asset) -> i128 {
+        if let Some(price) = self.prices.get(asset.clone()) {
+            return price;
+        }
+        let price_data = match PriceFeedClient::new(e, &self.config.oracle).lastprice(asset) {
+            Some(price) => price,
+            None => panic_with_error!(e, TradingError::PriceNotFound),
+        };
+        if price_data.timestamp + MAX_PRICE_AGE < e.ledger().timestamp() {
+            panic_with_error!(e, TradingError::PriceStale);
+        }
+
+        self.prices.set(asset.clone(), price_data.price);
+        price_data.price
+    }
+
+    pub fn calculate_caller_fee(&self, e: &Env, fee: i128) -> i128 {
+        let caller_fee = fee.fixed_mul_floor(e, &self.config.caller_take_rate, &SCALAR_7);
+        if caller_fee > 0 { caller_fee } else { 0 }
+    }
+
+    pub fn check_max_positions(&self, positions: Vec<u32>) -> bool {
+        positions.len() < self.config.max_positions
+    }
+}
 
 /// Internal processing result that tracks transfers for execution
 /// The transfers map is used internally but not exposed to callers
@@ -43,20 +151,21 @@ pub fn execute_trigger(
     caller: &Address,
     requests: Vec<ExecuteRequest>,
 ) -> Vec<u32> {
-    // Allow keeper actions in Active (0) and OnIce (1), block in Frozen (2) and Setup (99)
-    if storage::get_status(e) > STATUS_ON_ICE {
+    // Allow keeper actions in Active and OnIce
+    let status = storage::get_status(e);
+    if status != STATUS_ACTIVE && status != STATUS_ON_ICE {
         panic_with_error!(e, TradingError::ContractPaused);
     }
 
-    let mut trading = Trading::load(e, caller.clone());
-    let processing_result = process_execute_requests(e, &mut trading, requests);
+    let mut ctx = ExecuteContext::load(e, caller.clone());
+    let processing_result = process_execute_requests(e, &mut ctx, requests);
 
     let token_client = TokenClient::new(e, &storage::get_token(e));
     let vault_client = VaultClient::new(e, &storage::get_vault(e));
 
     // STEP 1: Vault pays to contract (if needed)
     // This is done first to ensure the contract has enough balance to handle transfers
-    let vault_transfer = processing_result.transfers.get(trading.vault.clone()).unwrap_or(0);
+    let vault_transfer = processing_result.transfers.get(ctx.vault.clone()).unwrap_or(0);
     if vault_transfer < 0 {
         // Vault pays: withdraw from vault to this contract
         vault_client.strategy_withdraw(&e.current_contract_address(), &vault_transfer.abs());
@@ -64,7 +173,7 @@ pub fn execute_trigger(
 
     // STEP 2: Handle all other transfers (callers receiving fees, users receiving payouts)
     for (address, amount) in processing_result.transfers.iter() {
-        if address != trading.vault {
+        if address != ctx.vault {
             if amount > 0 {
                 // Contract pays to user/caller
                 token_client.transfer(&e.current_contract_address(), &address, &amount);
@@ -107,20 +216,13 @@ pub fn execute_trigger(
 /// Returns ProcessingResult which contains transfers (for internal use) and results
 fn process_execute_requests(
     e: &Env,
-    trading: &mut Trading,
+    ctx: &mut ExecuteContext,
     requests: Vec<ExecuteRequest>,
 ) -> ProcessingResult {
     let mut result = ProcessingResult::new(e);
 
     for request in requests.iter() {
-        // Try to load position - return error code if not found
-        let mut position = match trading.try_load_position(e, request.position_id) {
-            Ok(pos) => pos,
-            Err(error_code) => {
-                result.results.push_back(error_code);
-                continue;
-            }
-        };
+        let mut position = ctx.load_position(e, request.position_id);
 
         // Validate position status for the requested action
         let (is_valid, specific_error) = match request.request_type {
@@ -148,17 +250,17 @@ fn process_execute_requests(
         }
 
         let action_result = match request.request_type {
-            ExecuteRequestType::Fill => apply_fill(e, &mut result, trading, &mut position),
-            ExecuteRequestType::StopLoss => apply_stop_loss(e, &mut result, trading, &mut position),
-            ExecuteRequestType::TakeProfit => apply_take_profit(e, &mut result, trading, &mut position),
-            ExecuteRequestType::Liquidate => apply_liquidation(e, &mut result, trading, &mut position),
+            ExecuteRequestType::Fill => apply_fill(e, &mut result, ctx, &mut position),
+            ExecuteRequestType::StopLoss => apply_stop_loss(e, &mut result, ctx, &mut position),
+            ExecuteRequestType::TakeProfit => apply_take_profit(e, &mut result, ctx, &mut position),
+            ExecuteRequestType::Liquidate => apply_liquidation(e, &mut result, ctx, &mut position),
         };
 
         result.results.push_back(action_result);
     }
 
-    trading.store_cached_markets(e);
-    trading.store_cached_positions(e);
+    ctx.store_cached_markets(e);
+    ctx.store_cached_positions(e);
 
     result
 }
@@ -168,11 +270,11 @@ fn process_execute_requests(
 fn handle_close(
     e: &Env,
     result: &mut ProcessingResult,
-    trading: &mut Trading,
+    ctx: &mut ExecuteContext,
     position: &mut Position,
 ) -> (i128, i128) {
-    let mut market = trading.load_market(e, &position.asset);
-    let calc = position.calculate_close(e, trading, &market);
+    let mut market = ctx.load_market(e, &position.asset);
+    let calc = position.calculate_close(e, ctx, &market);
 
     // User receives their payout (if positive)
     if calc.user_payout > 0 {
@@ -181,12 +283,12 @@ fn handle_close(
 
     // Vault transfer (positive = receives, negative = pays)
     if calc.vault_transfer != 0 {
-        result.add_transfer(&trading.vault, calc.vault_transfer);
+        result.add_transfer(&ctx.vault, calc.vault_transfer);
     }
 
     // Caller fee
     if calc.caller_fee > 0 {
-        result.add_transfer(&trading.caller, calc.caller_fee);
+        result.add_transfer(&ctx.caller, calc.caller_fee);
     }
 
     storage::remove_user_position(e, &position.user, position.id);
@@ -197,8 +299,8 @@ fn handle_close(
         -position.notional_size,
         position.is_long,
     );
-    trading.cache_market(&market);
-    trading.cache_position(position);
+    ctx.cache_market(&market);
+    ctx.cache_position(position);
 
     (calc.price, calc.fee)
 }
@@ -207,10 +309,10 @@ fn handle_close(
 fn apply_fill(
     e: &Env,
     result: &mut ProcessingResult,
-    trading: &mut Trading,
+    ctx: &mut ExecuteContext,
     position: &mut Position,
 ) -> u32 {
-    let current_price = trading.load_price(e, &position.asset);
+    let current_price = ctx.load_price(e, &position.asset);
 
     let can_fill = if position.is_long {
         current_price <= position.entry_price
@@ -225,26 +327,49 @@ fn apply_fill(
     position.status = PositionStatus::Open;
     position.entry_price = current_price;
 
-    let mut market = trading.load_market(e, &position.asset);
+    let mut market = ctx.load_market(e, &position.asset);
+
+    // Check if position is balancing BEFORE updating market stats
+    let should_pay_base_fee = if position.is_long {
+        let new_long = market.data.long_notional_size + position.notional_size;
+        new_long > market.data.short_notional_size
+    } else {
+        let new_short = market.data.short_notional_size + position.notional_size;
+        new_short > market.data.long_notional_size
+    };
+
     market.update_stats(
         position.collateral,
         position.notional_size,
         position.is_long,
     );
 
-    // The base fee is in the current contract address, so we need to transfer it to the vault
-    // and give the caller their fee
+    // Calculate fees from notional_size (same formula as open)
     let base_fee = position
-        .collateral
+        .notional_size
         .fixed_mul_ceil(e, &market.config.base_fee, &SCALAR_7);
-    let caller_fee = trading.calculate_caller_fee(e, base_fee);
-    result.add_transfer(&trading.caller, caller_fee);
-    result.add_transfer(&trading.vault, base_fee - caller_fee);
+    let price_impact = position
+        .notional_size
+        .fixed_div_ceil(e, &market.config.price_impact_scalar, &SCALAR_7);
 
-    trading.cache_market(&market);
-    trading.cache_position(position);
+    if should_pay_base_fee {
+        // Position increases imbalance: send fees to vault (minus caller fee)
+        let total_fee = base_fee + price_impact;
+        let caller_fee = ctx.calculate_caller_fee(e, total_fee);
+        result.add_transfer(&ctx.caller, caller_fee);
+        result.add_transfer(&ctx.vault, total_fee - caller_fee);
+    } else {
+        // Position is balancing: refund base_fee to user, only price_impact goes to vault
+        result.add_transfer(&position.user, base_fee);
+        let caller_fee = ctx.calculate_caller_fee(e, price_impact);
+        result.add_transfer(&ctx.caller, caller_fee);
+        result.add_transfer(&ctx.vault, price_impact - caller_fee);
+    }
 
-    TradingEvents::fill_position(
+    ctx.cache_market(&market);
+    ctx.cache_position(position);
+
+    emit_fill_position(
         e,
         position.user.clone(),
         position.asset.clone(),
@@ -258,17 +383,17 @@ fn apply_fill(
 fn apply_stop_loss(
     e: &Env,
     result: &mut ProcessingResult,
-    trading: &mut Trading,
+    ctx: &mut ExecuteContext,
     position: &mut Position,
 ) -> u32 {
-    let current_price = trading.load_price(e, &position.asset);
+    let current_price = ctx.load_price(e, &position.asset);
     if !position.check_stop_loss(current_price) {
         return TradingError::StopLossNotTriggered as u32;
     }
 
-    let (price, fee) = handle_close(e, result, trading, position);
+    let (price, fee) = handle_close(e, result, ctx, position);
 
-    TradingEvents::stop_loss(
+    emit_stop_loss(
         e,
         position.user.clone(),
         position.asset.clone(),
@@ -284,17 +409,17 @@ fn apply_stop_loss(
 fn apply_take_profit(
     e: &Env,
     result: &mut ProcessingResult,
-    trading: &mut Trading,
+    ctx: &mut ExecuteContext,
     position: &mut Position,
 ) -> u32 {
-    let current_price = trading.load_price(e, &position.asset);
+    let current_price = ctx.load_price(e, &position.asset);
     if !position.check_take_profit(current_price) {
         return TradingError::TakeProfitNotTriggered as u32;
     }
 
-    let (price, fee) = handle_close(e, result, trading, position);
+    let (price, fee) = handle_close(e, result, ctx, position);
 
-    TradingEvents::take_profit(
+    emit_take_profit(
         e,
         position.user.clone(),
         position.asset.clone(),
@@ -310,11 +435,11 @@ fn apply_take_profit(
 fn apply_liquidation(
     e: &Env,
     result: &mut ProcessingResult,
-    trading: &mut Trading,
+    ctx: &mut ExecuteContext,
     position: &mut Position,
 ) -> u32 {
-    let current_price = trading.load_price(e, &position.asset);
-    let mut market = trading.load_market(e, &position.asset);
+    let current_price = ctx.load_price(e, &position.asset);
+    let mut market = ctx.load_market(e, &position.asset);
 
     let pnl = position.calculate_pnl(e, current_price);
     let fee = position.calculate_fee(e, &market);
@@ -329,13 +454,13 @@ fn apply_liquidation(
         return TradingError::PositionNotLiquidatable as u32;
     }
 
-    let caller_fee = trading.calculate_caller_fee(e, fee);
-    result.add_transfer(&trading.caller, caller_fee);
+    let caller_fee = ctx.calculate_caller_fee(e, fee);
+    result.add_transfer(&ctx.caller, caller_fee);
 
     let vault_amount = position.collateral - caller_fee;
-    result.add_transfer(&trading.vault, vault_amount);
+    result.add_transfer(&ctx.vault, vault_amount);
 
-    TradingEvents::liquidation(
+    emit_liquidation(
         e,
         position.user.clone(),
         position.asset.clone(),
@@ -353,7 +478,7 @@ fn apply_liquidation(
     position.status = PositionStatus::Closed;
 
     storage::remove_user_position(e, &position.user, position.id);
-    trading.cache_market(&market);
-    trading.cache_position(position);
+    ctx.cache_market(&market);
+    ctx.cache_position(position);
     0
 }

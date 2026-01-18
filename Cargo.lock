@@ -1395,18 +1395,16 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "stellar-access"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b5345cb2ba75b98f4b355fc95952e418046e9fe46e4fd94648c719993511a29d"
+version = "0.6.0"
+source = "git+https://github.com/OpenZeppelin/stellar-contracts.git?tag=v0.6.0#82f97111f9568d32653dd5b3563baf5b73509c89"
 dependencies = [
  "soroban-sdk",
 ]
 
 [[package]]
 name = "stellar-macros"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bcc533c344e11f77f34f03e7cdc8d70da83784c746953bfd4b2d62f5423130ac"
+version = "0.6.0"
+source = "git+https://github.com/OpenZeppelin/stellar-contracts.git?tag=v0.6.0#82f97111f9568d32653dd5b3563baf5b73509c89"
 dependencies = [
  "proc-macro2",
  "quote",

@@ -13,6 +13,7 @@ pub enum TradingError {
 
     // Market
     MarketNotFound = 310,
+    MarketInitNotQueued = 311,
     MarketDisabled = 312,
 
     // Oracle/Price
@@ -25,7 +26,9 @@ pub enum TradingError {
     PositionNotOpen = 327,
     PositionNotPending = 328,
     MaxPositionsReached = 329,
-    InvalidCollateral = 330,
+    NegativeValueNotAllowed = 330,
+    CollateralBelowMinimum = 331,
+    CollateralAboveMaximum = 332,
     InvalidEntryPrice = 334,
     WithdrawalBreaksMargin = 337,
     InvalidTakeProfitPrice = 340,
@@ -39,6 +42,7 @@ pub enum TradingError {
     ActionNotAllowedForStatus = 351,
 
     // Status
+    InvalidStatus = 381,
     ContractPaused = 380,
 
     // Utilization

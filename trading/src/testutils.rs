@@ -4,6 +4,7 @@ use crate::constants::SCALAR_7;
 use crate::{MarketConfig, TradingContract};
 use soroban_sdk::{testutils::Address as _, Address, Env};
 
+#[allow(dead_code)]
 pub(crate) fn create_trading(e: &Env) -> Address {
     e.register(
         TradingContract {},

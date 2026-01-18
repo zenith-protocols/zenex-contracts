@@ -1,289 +1,377 @@
 use sep_40_oracle::Asset;
-use soroban_sdk::{Address, Env, Symbol};
+use soroban_sdk::{contractevent, Address, Env};
 
 use crate::MarketConfig;
 
-pub struct TradingEvents {}
+// Configuration Events
 
-impl TradingEvents {
-    /// Emitted when trading configuration is updated
-    ///
-    /// - topics - `["set_config"]`
-    /// - data - `[oracle: Address, caller_take_rate: i128, max_positions: u32]`
-    ///
-    /// ### Arguments
-    /// * oracle - The oracle address
-    /// * caller_take_rate - The fee rate for callers
-    /// * max_positions - Maximum positions per user
-    pub fn set_config(e: &Env, oracle: Address, caller_take_rate: i128, max_positions: u32) {
-        let topics = (Symbol::new(e, "set_config"),);
-        e.events()
-            .publish(topics, (oracle, caller_take_rate, max_positions));
-    }
+#[contractevent]
+#[derive(Clone)]
+pub struct SetConfig {
+    pub oracle: Address,
+    pub caller_take_rate: i128,
+    pub max_positions: u32,
+}
 
-    /// Emitted when a configuration update is queued
-    ///
-    /// - topics - ["queue_set_config"]
-    /// - data - [oracle: Address, caller_take_rate: i128, max_positions: u32, unlock_time: u64]
-    pub fn queue_set_config(
-        e: &Env,
-        oracle: Address,
-        caller_take_rate: i128,
-        max_positions: u32,
-        unlock_time: u64,
-    ) {
-        let topics = (Symbol::new(e, "queue_set_config"),);
-        e.events().publish(
-            topics,
-            (oracle, caller_take_rate, max_positions, unlock_time),
-        );
-    }
+#[contractevent]
+#[derive(Clone)]
+pub struct QueueSetConfig {
+    pub oracle: Address,
+    pub caller_take_rate: i128,
+    pub max_positions: u32,
+    pub unlock_time: u64,
+}
 
-    /// Emitted when a queued configuration update is cancelled
-    ///
-    /// - topics - ["cancel_set_config"]
-    /// - data - `()`
-    pub fn cancel_set_config(e: &Env) {
-        let topics = (Symbol::new(e, "cancel_set_config"),);
-        e.events().publish(topics, ());
-    }
+#[contractevent]
+#[derive(Clone)]
+pub struct CancelSetConfig {}
 
-    /// Emitted when a market configuration is queued
-    ///
-    /// - topics - `["queue_set_market", asset: Asset]`
-    /// - data - `config: MarketConfig`
-    ///
-    /// ### Arguments
-    /// * asset - The asset for the market
-    /// * config - The market configuration
-    pub fn queue_set_market(e: &Env, asset: Asset, config: MarketConfig) {
-        let topics = (Symbol::new(e, "queue_set_market"), asset);
-        e.events().publish(topics, config);
-    }
+#[contractevent]
+#[derive(Clone)]
+pub struct QueueSetMarket {
+    #[topic]
+    pub asset: Asset,
+    pub config: MarketConfig,
+}
 
-    /// Emitted when a queued market configuration is cancelled
-    ///
-    /// - topics - `["cancel_set_market", asset: Asset]`
-    /// - data - `()`
-    /// ### Arguments
-    /// * asset - The asset for the market
-    pub fn cancel_set_market(e: &Env, asset: Asset) {
-        let topics = (Symbol::new(e, "cancel_set_market"), asset);
-        e.events().publish(topics, ());
-    }
+#[contractevent]
+#[derive(Clone)]
+pub struct CancelSetMarket {
+    #[topic]
+    pub asset: Asset,
+}
 
-    /// Emitted when a queued market configuration is executed
-    ///
-    /// - topics - `["set_market", asset: Asset]`
-    /// - data - `()`
-    ///
-    /// ### Arguments
-    /// * asset - The asset for the market
-    pub fn set_market(e: &Env, asset: Asset) {
-        let topics = (Symbol::new(e, "set_market"), asset);
-        e.events().publish(topics, ());
-    }
+#[contractevent]
+#[derive(Clone)]
+pub struct SetMarket {
+    #[topic]
+    pub asset: Asset,
+}
 
-    /// Emitted when trading status is updated
-    ///
-    /// - topics - `["set_status"]`
-    /// - data - `status: u32`
-    ///
-    /// ### Arguments
-    /// * status - The new trading status
-    pub fn set_status(e: &Env, status: u32) {
-        let topics = (Symbol::new(e, "set_status"),);
-        e.events().publish(topics, status);
-    }
+#[contractevent]
+#[derive(Clone)]
+pub struct SetStatus {
+    pub status: u32,
+}
 
-    /// Emitted when a new position is opened
-    ///
-    /// - topics - `["open_position", asset: Asset, user: Address]`
-    /// - data - `[position_id: u32]`
-    ///
-    /// ### Arguments
-    /// * user - The user opening the position
-    /// * asset - The asset being traded
-    /// * position_id - The ID of the new position
-    pub fn open_position(e: &Env, user: Address, asset: Asset, position_id: u32) {
-        let topics = (Symbol::new(e, "open_position"), asset, user);
-        e.events().publish(topics, (position_id,));
-    }
+// Position Events
 
-    /// Emitted when a position is closed
-    ///
-    /// - topics - `["close_position", asset: Asset, user: Address]`
-    /// - data - `[position_id: u32, price: i128, fee: i128]`
-    ///
-    /// ### Arguments
-    /// * user - The position owner
-    /// * asset - The traded asset
-    /// * position_id - The position ID
-    /// * price - The closing price
-    /// * fee - The protocol fee at close (includes base fee, price impact, and interest)
-    pub fn close_position(
-        e: &Env,
-        user: Address,
-        asset: Asset,
-        position_id: u32,
-        price: i128,
-        fee: i128,
-    ) {
-        let topics = (Symbol::new(e, "close_position"), asset, user);
-        e.events()
-            .publish(topics, (position_id, price, fee));
-    }
+#[contractevent]
+#[derive(Clone)]
+pub struct OpenPosition {
+    #[topic]
+    pub asset: Asset,
+    #[topic]
+    pub user: Address,
+    pub position_id: u32,
+}
 
-    /// Emitted when a limit order is filled
-    ///
-    /// - topics - `["fill_position", asset: Asset, user: Address]`
-    /// - data - `[position_id: u32]`
-    ///
-    /// ### Arguments
-    /// * user - The position owner
-    /// * asset - The traded asset
-    /// * position_id - The position ID
-    pub fn fill_position(
-        e: &Env,
-        user: Address,
-        asset: Asset,
-        position_id: u32,
-    ) {
-        let topics = (Symbol::new(e, "fill_position"), asset, user);
-        e.events().publish(topics, (position_id,));
-    }
+#[contractevent]
+#[derive(Clone)]
+pub struct ClosePosition {
+    #[topic]
+    pub asset: Asset,
+    #[topic]
+    pub user: Address,
+    pub position_id: u32,
+    pub price: i128,
+    pub fee: i128,
+}
 
-    /// Emitted when a position is liquidated
-    ///
-    /// - topics - `["liquidation", asset: Asset, user: Address]`
-    /// - data - `[position_id: u32, price: i128, fee: i128]`
-    ///
-    /// ### Arguments
-    /// * user - The position owner
-    /// * asset - The traded asset
-    /// * position_id - The position ID
-    /// * price - The liquidation price
-    /// * fee - The fee charged (includes base fee, price impact, and interest)
-    pub fn liquidation(e: &Env, user: Address, asset: Asset, position_id: u32, price: i128, fee: i128) {
-        let topics = (Symbol::new(e, "liquidation"), asset, user);
-        e.events().publish(topics, (position_id, price, fee));
-    }
+#[contractevent]
+#[derive(Clone)]
+pub struct FillPosition {
+    #[topic]
+    pub asset: Asset,
+    #[topic]
+    pub user: Address,
+    pub position_id: u32,
+}
 
-    /// Emitted when a position's take profit is hit
-    ///
-    /// - topics - `["take_profit", asset: Asset, user: Address]`
-    /// - data - `[position_id: u32, price: i128, fee: i128]`
-    ///
-    /// ### Arguments
-    /// * user - The position owner
-    /// * asset - The traded asset
-    /// * position_id - The position ID
-    /// * price - The price when take profit was triggered
-    /// * fee - The fee charged (includes base fee, price impact, and interest)
-    pub fn take_profit(e: &Env, user: Address, asset: Asset, position_id: u32, price: i128, fee: i128) {
-        let topics = (Symbol::new(e, "take_profit"), asset, user);
-        e.events().publish(topics, (position_id, price, fee));
-    }
+#[contractevent]
+#[derive(Clone)]
+pub struct Liquidation {
+    #[topic]
+    pub asset: Asset,
+    #[topic]
+    pub user: Address,
+    pub position_id: u32,
+    pub price: i128,
+    pub fee: i128,
+}
 
-    /// Emitted when a position's stop loss is hit
-    ///
-    /// - topics - `["stop_loss", asset: Asset, user: Address]`
-    /// - data - `[position_id: u32, price: i128, fee: i128]`
-    ///
-    /// ### Arguments
-    /// * user - The position owner
-    /// * asset - The traded asset
-    /// * position_id - The position ID
-    /// * price - The price when stop loss was triggered
-    /// * fee - The fee charged (includes base fee, price impact, and interest)
-    pub fn stop_loss(e: &Env, user: Address, asset: Asset, position_id: u32, price: i128, fee: i128) {
-        let topics = (Symbol::new(e, "stop_loss"), asset, user);
-        e.events().publish(topics, (position_id, price, fee));
-    }
+#[contractevent]
+#[derive(Clone)]
+pub struct TakeProfit {
+    #[topic]
+    pub asset: Asset,
+    #[topic]
+    pub user: Address,
+    pub position_id: u32,
+    pub price: i128,
+    pub fee: i128,
+}
 
-    /// Emitted when a pending position is cancelled
-    ///
-    /// - topics - `["cancel_position", asset: Asset, user: Address]`
-    /// - data - `[position_id: u32]`
-    ///
-    /// ### Arguments
-    /// * user - The position owner
-    /// * asset - The traded asset
-    /// * position_id - The position ID
-    pub fn cancel_position(e: &Env, user: Address, asset: Asset, position_id: u32) {
-        let topics = (Symbol::new(e, "cancel_position"), asset, user);
-        e.events().publish(topics, (position_id,));
-    }
+#[contractevent]
+#[derive(Clone)]
+pub struct StopLoss {
+    #[topic]
+    pub asset: Asset,
+    #[topic]
+    pub user: Address,
+    pub position_id: u32,
+    pub price: i128,
+    pub fee: i128,
+}
 
-    /// Emitted when collateral is withdrawn from a position
-    ///
-    /// - topics - `["withdraw_collateral", asset: Asset, user: Address]`
-    /// - data - `[position_id: u32, amount: i128]`
-    ///
-    /// ### Arguments
-    /// * user - The user withdrawing collateral
-    /// * asset - The asset being traded
-    /// * position_id - The position ID
-    /// * amount - The amount withdrawn
-    pub fn withdraw_collateral(
-        e: &Env,
-        user: Address,
-        asset: Asset,
-        position_id: u32,
-        amount: i128,
-    ) {
-        let topics = (Symbol::new(e, "withdraw_collateral"), asset, user);
-        e.events().publish(topics, (position_id, amount));
-    }
+#[contractevent]
+#[derive(Clone)]
+pub struct CancelPosition {
+    #[topic]
+    pub asset: Asset,
+    #[topic]
+    pub user: Address,
+    pub position_id: u32,
+}
 
-    /// Emitted when collateral is deposited to a position
-    ///
-    /// - topics - `["deposit_collateral", asset: Asset, user: Address]`
-    /// - data - `[position_id: u32, amount: i128]`
-    ///
-    /// ### Arguments
-    /// * user - The user depositing collateral
-    /// * asset - The asset being traded
-    /// * position_id - The position ID
-    /// * amount - The amount deposited
-    pub fn deposit_collateral(
-        e: &Env,
-        user: Address,
-        asset: Asset,
-        position_id: u32,
-        amount: i128,
-    ) {
-        let topics = (Symbol::new(e, "deposit_collateral"), asset, user);
-        e.events().publish(topics, (position_id, amount));
-    }
+#[contractevent]
+#[derive(Clone)]
+pub struct WithdrawCollateral {
+    #[topic]
+    pub asset: Asset,
+    #[topic]
+    pub user: Address,
+    pub position_id: u32,
+    pub amount: i128,
+}
 
-    /// Emitted when take profit is set for a position
-    ///
-    /// - topics - `["set_take_profit", asset: Asset, user: Address]`
-    /// - data - `[position_id: u32, price: i128]`
-    ///
-    /// ### Arguments
-    /// * user - The user setting take profit
-    /// * asset - The asset being traded
-    /// * position_id - The position ID
-    /// * price - The take profit price level
-    pub fn set_take_profit(e: &Env, user: Address, asset: Asset, position_id: u32, price: i128) {
-        let topics = (Symbol::new(e, "set_take_profit"), asset, user);
-        e.events().publish(topics, (position_id, price));
-    }
+#[contractevent]
+#[derive(Clone)]
+pub struct DepositCollateral {
+    #[topic]
+    pub asset: Asset,
+    #[topic]
+    pub user: Address,
+    pub position_id: u32,
+    pub amount: i128,
+}
 
-    /// Emitted when stop loss is set for a position
-    ///
-    /// - topics - `["set_stop_loss", asset: Asset, user: Address]`
-    /// - data - `[position_id: u32, price: i128]`
-    ///
-    /// ### Arguments
-    /// * user - The user setting stop loss
-    /// * asset - The asset being traded
-    /// * position_id - The position ID
-    /// * price - The stop loss price level
-    pub fn set_stop_loss(e: &Env, user: Address, asset: Asset, position_id: u32, price: i128) {
-        let topics = (Symbol::new(e, "set_stop_loss"), asset, user);
-        e.events().publish(topics, (position_id, price));
+#[contractevent]
+#[derive(Clone)]
+pub struct SetTakeProfit {
+    #[topic]
+    pub asset: Asset,
+    #[topic]
+    pub user: Address,
+    pub position_id: u32,
+    pub price: i128,
+}
+
+#[contractevent]
+#[derive(Clone)]
+pub struct SetStopLoss {
+    #[topic]
+    pub asset: Asset,
+    #[topic]
+    pub user: Address,
+    pub position_id: u32,
+    pub price: i128,
+}
+
+// Helper functions to emit events
+
+pub fn emit_set_config(e: &Env, oracle: Address, caller_take_rate: i128, max_positions: u32) {
+    SetConfig {
+        oracle,
+        caller_take_rate,
+        max_positions,
     }
+    .publish(e);
+}
+
+pub fn emit_queue_set_config(
+    e: &Env,
+    oracle: Address,
+    caller_take_rate: i128,
+    max_positions: u32,
+    unlock_time: u64,
+) {
+    QueueSetConfig {
+        oracle,
+        caller_take_rate,
+        max_positions,
+        unlock_time,
+    }
+    .publish(e);
+}
+
+pub fn emit_cancel_set_config(e: &Env) {
+    CancelSetConfig {}.publish(e);
+}
+
+pub fn emit_queue_set_market(e: &Env, asset: Asset, config: MarketConfig) {
+    QueueSetMarket { asset, config }.publish(e);
+}
+
+pub fn emit_cancel_set_market(e: &Env, asset: Asset) {
+    CancelSetMarket { asset }.publish(e);
+}
+
+pub fn emit_set_market(e: &Env, asset: Asset) {
+    SetMarket { asset }.publish(e);
+}
+
+pub fn emit_set_status(e: &Env, status: u32) {
+    SetStatus { status }.publish(e);
+}
+
+pub fn emit_open_position(e: &Env, user: Address, asset: Asset, position_id: u32) {
+    OpenPosition {
+        asset,
+        user,
+        position_id,
+    }
+    .publish(e);
+}
+
+pub fn emit_close_position(
+    e: &Env,
+    user: Address,
+    asset: Asset,
+    position_id: u32,
+    price: i128,
+    fee: i128,
+) {
+    ClosePosition {
+        asset,
+        user,
+        position_id,
+        price,
+        fee,
+    }
+    .publish(e);
+}
+
+pub fn emit_fill_position(e: &Env, user: Address, asset: Asset, position_id: u32) {
+    FillPosition {
+        asset,
+        user,
+        position_id,
+    }
+    .publish(e);
+}
+
+pub fn emit_liquidation(
+    e: &Env,
+    user: Address,
+    asset: Asset,
+    position_id: u32,
+    price: i128,
+    fee: i128,
+) {
+    Liquidation {
+        asset,
+        user,
+        position_id,
+        price,
+        fee,
+    }
+    .publish(e);
+}
+
+pub fn emit_take_profit(
+    e: &Env,
+    user: Address,
+    asset: Asset,
+    position_id: u32,
+    price: i128,
+    fee: i128,
+) {
+    TakeProfit {
+        asset,
+        user,
+        position_id,
+        price,
+        fee,
+    }
+    .publish(e);
+}
+
+pub fn emit_stop_loss(
+    e: &Env,
+    user: Address,
+    asset: Asset,
+    position_id: u32,
+    price: i128,
+    fee: i128,
+) {
+    StopLoss {
+        asset,
+        user,
+        position_id,
+        price,
+        fee,
+    }
+    .publish(e);
+}
+
+pub fn emit_cancel_position(e: &Env, user: Address, asset: Asset, position_id: u32) {
+    CancelPosition {
+        asset,
+        user,
+        position_id,
+    }
+    .publish(e);
+}
+
+pub fn emit_withdraw_collateral(
+    e: &Env,
+    user: Address,
+    asset: Asset,
+    position_id: u32,
+    amount: i128,
+) {
+    WithdrawCollateral {
+        asset,
+        user,
+        position_id,
+        amount,
+    }
+    .publish(e);
+}
+
+pub fn emit_deposit_collateral(
+    e: &Env,
+    user: Address,
+    asset: Asset,
+    position_id: u32,
+    amount: i128,
+) {
+    DepositCollateral {
+        asset,
+        user,
+        position_id,
+        amount,
+    }
+    .publish(e);
+}
+
+pub fn emit_set_take_profit(e: &Env, user: Address, asset: Asset, position_id: u32, price: i128) {
+    SetTakeProfit {
+        asset,
+        user,
+        position_id,
+        price,
+    }
+    .publish(e);
+}
+
+pub fn emit_set_stop_loss(e: &Env, user: Address, asset: Asset, position_id: u32, price: i128) {
+    SetStopLoss {
+        asset,
+        user,
+        position_id,
+        price,
+    }
+    .publish(e);
 }

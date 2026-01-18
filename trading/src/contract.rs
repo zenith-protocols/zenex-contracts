@@ -1,12 +1,16 @@
 #![allow(clippy::too_many_arguments)]
 
+use crate::constants::{STATUS_ACTIVE, STATUS_FROZEN, STATUS_ON_ICE};
+use crate::errors::TradingError;
+use crate::events::emit_set_status;
 use crate::trading::ExecuteRequest;
 use crate::types::MarketConfig;
 use crate::{storage, trading, TradingConfig};
+use soroban_sdk::panic_with_error;
 use sep_40_oracle::Asset;
 use soroban_sdk::{contract, contractclient, contractimpl, Address, BytesN, Env, String, Vec};
 use stellar_access::ownable::{self as ownable, Ownable};
-use stellar_macros::{default_impl, only_owner};
+use stellar_macros::only_owner;
 
 #[contract]
 pub struct TradingContract;
@@ -131,10 +135,7 @@ pub trait Trading {
     /// # Arguments
     /// * `position_id` - ID of position to modify (requires owner auth)
     /// * `new_collateral` - New collateral amount for the position
-    ///
-    /// # Returns
-    /// Interest fee settled (positive = paid, negative = received)
-    fn modify_collateral(e: Env, position_id: u32, new_collateral: i128) -> i128;
+    fn modify_collateral(e: Env, position_id: u32, new_collateral: i128);
 
     /// Set take profit and stop loss triggers
     ///
@@ -211,8 +212,12 @@ impl Trading for TradingContract {
 
     #[only_owner]
     fn set_status(e: Env, status: u32) {
+        if status != STATUS_ACTIVE && status != STATUS_ON_ICE && status != STATUS_FROZEN {
+            panic_with_error!(&e, TradingError::InvalidStatus);
+        }
         storage::extend_instance(&e);
         storage::set_status(&e, status);
+        emit_set_status(&e, status);
     }
 
     fn open_position(
@@ -245,9 +250,9 @@ impl Trading for TradingContract {
         trading::execute_close_position(&e, position_id)
     }
 
-    fn modify_collateral(e: Env, position_id: u32, new_collateral: i128) -> i128 {
+    fn modify_collateral(e: Env, position_id: u32, new_collateral: i128) {
         storage::extend_instance(&e);
-        trading::execute_modify_collateral(&e, position_id, new_collateral)
+        trading::execute_modify_collateral(&e, position_id, new_collateral);
     }
 
     fn set_triggers(e: Env, position_id: u32, take_profit: i128, stop_loss: i128) {
@@ -267,6 +272,5 @@ impl Trading for TradingContract {
     }
 }
 
-#[default_impl]
-#[contractimpl]
+#[contractimpl(contracttrait)]
 impl Ownable for TradingContract {}

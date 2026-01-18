@@ -1,7 +1,7 @@
 use crate::constants::{SCALAR_18, SCALAR_7, STATUS_SETUP};
 use crate::dependencies::VaultClient;
 use crate::errors::TradingError;
-use crate::events::TradingEvents;
+use crate::events::{emit_cancel_set_config, emit_cancel_set_market, emit_queue_set_config, emit_queue_set_market, emit_set_config, emit_set_market};
 use crate::types::{ConfigUpdate, MarketConfig, QueuedMarketInit, TradingConfig};
 use crate::{constants::SECONDS_PER_WEEK, storage, MarketData};
 use sep_40_oracle::Asset;
@@ -35,8 +35,7 @@ pub fn execute_queue_set_config(e: &Env, config: &TradingConfig) {
         unlock_time,
     };
     storage::set_config_update(e, &update);
-    // Emit queue event for clients/indexers
-    TradingEvents::queue_set_config(
+    emit_queue_set_config(
         e,
         config.oracle.clone(),
         config.caller_take_rate,
@@ -46,20 +45,14 @@ pub fn execute_queue_set_config(e: &Env, config: &TradingConfig) {
 }
 
 pub fn execute_cancel_set_config(e: &Env) {
-    if !storage::has_config_update(e) {
-        panic_with_error!(e, TradingError::UpdateNotQueued);
-    }
+    storage::get_config_update(e); // panics if not queued
     storage::del_config_update(e);
-    TradingEvents::cancel_set_config(e);
+    emit_cancel_set_config(e);
 }
 
 pub fn execute_set_config(e: &Env) {
-    // Apply only if there is a queued config and it's unlocked
-    if !storage::has_config_update(e) {
-        panic_with_error!(e, TradingError::UpdateNotQueued);
-    }
+    let queued = storage::get_config_update(e); // panics if not queued
 
-    let queued = storage::get_config_update(e);
     if queued.unlock_time > e.ledger().timestamp() {
         panic_with_error!(e, TradingError::UpdateNotUnlocked);
     }
@@ -69,7 +62,7 @@ pub fn execute_set_config(e: &Env) {
     storage::set_config(e, &queued.config);
     storage::del_config_update(e);
 
-    TradingEvents::set_config(
+    emit_set_config(
         e,
         queued.config.oracle.clone(),
         queued.config.caller_take_rate,
@@ -96,11 +89,12 @@ pub fn execute_queue_set_market(e: &Env, asset: &Asset, config: &MarketConfig) {
             unlock_time,
         },
     );
-    TradingEvents::queue_set_market(e, asset.clone(), config.clone());
+    emit_queue_set_market(e, asset.clone(), config.clone());
 }
 
 pub fn execute_cancel_queued_market(e: &Env, asset: &Asset) {
     storage::del_queued_market(e, asset);
+    emit_cancel_set_market(e, asset.clone());
 }
 
 pub fn execute_set_market(e: &Env, asset: &Asset) {
@@ -125,31 +119,39 @@ pub fn execute_set_market(e: &Env, asset: &Asset) {
     };
     storage::set_market_data(e, asset, &initial_market_data);
     storage::push_market_list(e, asset);
-    TradingEvents::set_market(e, asset.clone());
+    emit_set_market(e, asset.clone());
 }
 
 fn require_valid_market_config(e: &Env, config: &MarketConfig) {
-    // Collateral bounds
+    // Check for negative/zero values first
+    if config.maintenance_margin <= 0
+        || config.init_margin <= 0
+        || config.base_fee < 0
+        || config.base_hourly_rate < 0
+        || config.price_impact_scalar <= 0
+    {
+        panic_with_error!(e, TradingError::NegativeValueNotAllowed);
+    }
+
+    // Collateral bounds (positive value validation)
     if config.min_collateral < SCALAR_7 || config.max_collateral <= config.min_collateral {
         panic_with_error!(e, TradingError::InvalidConfig);
     }
 
-    // Margin requirements
-    if config.maintenance_margin <= 0
-        || config.init_margin <= 0
-        || config.init_margin < config.maintenance_margin
-    {
-        panic_with_error!(e, TradingError::InvalidConfig);
-    }
-
-    // Fee configuration
-    if config.base_fee < 0 || config.base_hourly_rate < 0 || config.price_impact_scalar <= 0 {
+    // Margin relationship validation
+    if config.init_margin < config.maintenance_margin {
         panic_with_error!(e, TradingError::InvalidConfig);
     }
 }
 
 fn require_valid_config(e: &Env, config: &TradingConfig) {
-    if config.caller_take_rate < 0 || config.caller_take_rate > SCALAR_7 {
+    // Check for negative values first
+    if config.caller_take_rate < 0 || config.max_utilization < 0 {
+        panic_with_error!(e, TradingError::NegativeValueNotAllowed);
+    }
+
+    // caller_take_rate must not exceed 100%
+    if config.caller_take_rate > SCALAR_7 {
         panic_with_error!(e, TradingError::InvalidConfig);
     }
 

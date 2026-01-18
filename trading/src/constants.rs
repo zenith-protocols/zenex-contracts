@@ -7,12 +7,14 @@ pub const ONE_HOUR_SECONDS: u64 = 3600;
 pub const ONE_DAY_SECONDS: u64 = ONE_HOUR_SECONDS * 24; // 24 hours
 pub const SECONDS_PER_WEEK: u64 = ONE_DAY_SECONDS * 7; // 7 days
 
-// Limits
-pub const MAX_ACTIONABLE_POSITIONS: u32 = 50; // Max positions to track for keeper actions
 // Oracle
 pub const MAX_PRICE_AGE: u64 = 900; // Max price age in seconds (5 minutes)
 
-// Status codes
+// Status codes (settable via set_status)
+// - ACTIVE: Full operations allowed
+// - ON_ICE: No new positions, existing positions can be managed
+// - FROZEN: All operations locked
+// - SETUP: Initial configuration mode
 pub const STATUS_ACTIVE: u32 = 0;
 pub const STATUS_ON_ICE: u32 = 1;
 pub const STATUS_FROZEN: u32 = 2;

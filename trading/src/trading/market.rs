@@ -1,8 +1,9 @@
-use sep_40_oracle::Asset;
-use soroban_sdk::{contracttype, Env};
+use crate::errors::TradingError;
 use crate::storage;
 use crate::trading::interest::{calculate_long_short_hourly_rates, update_index_with_interest};
 use crate::types::{MarketConfig, MarketData};
+use sep_40_oracle::Asset;
+use soroban_sdk::{contracttype, panic_with_error, Env};
 
 #[derive(Clone)]
 #[contracttype]
@@ -23,6 +24,16 @@ impl Market {
             config: market_config,
             data: market_data,
         }
+    }
+
+    /// Load a market and validate that it is enabled
+    /// Panics if market is disabled
+    pub fn load_checked(e: &Env, asset: &Asset) -> Market {
+        let market = Self::load(e, asset);
+        if !market.config.enabled {
+            panic_with_error!(e, TradingError::MarketDisabled);
+        }
+        market
     }
 
     pub fn store(&self, e: &Env) {
@@ -78,10 +89,5 @@ impl Market {
             self.data.short_notional_size += notional_size;
             self.data.short_collateral += collateral;
         }
-    }
-
-    /// Check if position size is within allowed range
-    pub fn is_position_valid(&self, collateral: i128) -> bool {
-        collateral >= self.config.min_collateral && collateral <= self.config.max_collateral
     }
 }

@@ -5,6 +5,7 @@ pub const VAULT_WASM: &[u8] = include_bytes!("../../../wasm/strategy_vault.wasm"
 
 /// Vault client interface - manually defined to avoid duplicate type conflicts
 /// from OpenZeppelin's stellar-tokens library
+#[allow(dead_code)] // Trait is used by the generated VaultClient via #[contractclient]
 #[contractclient(name = "VaultClient")]
 pub trait VaultInterface {
     /// Returns the address of the underlying asset that the vault manages

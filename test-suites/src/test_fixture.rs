@@ -142,7 +142,7 @@ impl TestFixture<'_> {
             self.env
                 .storage()
                 .persistent()
-                .get(&trading::storage::TradingDataKey::MarketConfig(asset))
+                .get(&trading::storage::TradingStorageKey::MarketConfig(asset))
                 .unwrap()
         })
     }
@@ -152,7 +152,7 @@ impl TestFixture<'_> {
             self.env
                 .storage()
                 .persistent()
-                .get(&trading::storage::TradingDataKey::MarketData(asset))
+                .get(&trading::storage::TradingStorageKey::MarketData(asset))
                 .unwrap()
         })
     }
@@ -162,7 +162,7 @@ impl TestFixture<'_> {
             self.env
                 .storage()
                 .persistent()
-                .get(&trading::storage::TradingDataKey::Position(position_id))
+                .get(&trading::storage::TradingStorageKey::Position(position_id))
                 .unwrap()
         })
     }
