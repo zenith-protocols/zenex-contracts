@@ -399,21 +399,18 @@ pub fn execute_create_position(
         entry_price
     };
 
-    // For limit orders: always charge base fee (will be refunded on fill if balancing)
-    // For market orders: only charge base fee if position increases market imbalance
-    let should_pay_base_fee = if market_order {
-        // Check BEFORE updating market stats to see if this position would balance the market
-        if is_long {
-            let new_long_notional = market.data.long_notional_size + notional_size;
-            new_long_notional > market.data.short_notional_size
-        } else {
-            let new_short_notional = market.data.short_notional_size + notional_size;
-            new_short_notional > market.data.long_notional_size
-        }
-    } else {
-        // Limit orders always pay base fee upfront (refunded on fill if balancing)
-        true
-    };
+    // Calculate what dominance WOULD be AFTER adding this position
+    let new_long = market.data.long_notional_size + if is_long { notional_size } else { 0 };
+    let new_short = market.data.short_notional_size + if !is_long { notional_size } else { 0 };
+
+    let would_be_long_dominant = new_long > new_short;
+    let would_be_short_dominant = new_short > new_long;
+
+    // For market orders: charge fee if this position would make/keep its side dominant
+    // For limit orders: always charge fee upfront (refunded on fill if balancing)
+    let should_pay_base_fee = !market_order
+        || (would_be_long_dominant && is_long)
+        || (would_be_short_dominant && !is_long);
 
     // If market order, update market stats immediately
     if market_order {

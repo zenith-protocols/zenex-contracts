@@ -89,22 +89,21 @@ impl Position {
     }
 
     pub fn calculate_fee(&self, e: &Env, market: &Market) -> i128 {
-        // Pay base fee only for the dominant side (side that increases market imbalance)
-        // When closing, we check if closing this position would REDUCE the dominant side's imbalance
-        // If closing reduces imbalance (i.e., this position is on the dominant side), charge base fee
-        let should_pay_base_fee = if self.is_long {
-            // Closing a long position reduces long dominance, so pay fee if long is currently dominant
-            market.data.long_notional_size >= market.data.short_notional_size
-        } else {
-            // Closing a short position reduces short dominance, so pay fee if short is currently dominant
-            market.data.short_notional_size >= market.data.long_notional_size
-        };
+        // Pay base fee when closing a position on the dominant side
+        // If balanced (both sides equal), both sides pay the base fee
+        let is_long_dominant = market.data.long_notional_size > market.data.short_notional_size;
+        let is_short_dominant = market.data.short_notional_size > market.data.long_notional_size;
+        let is_balanced = market.data.long_notional_size == market.data.short_notional_size;
+
+        let should_pay_base_fee = is_balanced
+            || (is_long_dominant && self.is_long)
+            || (is_short_dominant && !self.is_long);
 
         let base_fee = if should_pay_base_fee {
             self.notional_size
                 .fixed_mul_ceil(e, &market.config.base_fee, &SCALAR_7)
         } else {
-            0 // No base fee when closing a balancing position
+            0 // No base fee when closing on the non-dominant side
         };
 
         let price_impact_scalar = self

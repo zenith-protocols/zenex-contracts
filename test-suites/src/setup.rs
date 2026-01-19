@@ -30,7 +30,6 @@ pub fn create_fixture_with_data<'a>(wasm: bool) -> TestFixture<'a> {
 mod tests {
     use soroban_sdk::testutils::Address as _;
     use soroban_sdk::Address;
-    use crate::SCALAR_7;
     use super::*;
 
     #[test]
