@@ -15,7 +15,4 @@ pub trait VaultInterface {
 
     /// Strategy withdraws tokens from the vault (decreases total_assets and share price)
     fn strategy_withdraw(e: Env, strategy: Address, amount: i128);
-
-    /// Strategy deposits tokens to the vault (increases total_assets and share price)
-    fn strategy_deposit(e: Env, strategy: Address, amount: i128);
 }

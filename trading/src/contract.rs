@@ -2,7 +2,7 @@
 
 use crate::constants::{STATUS_ACTIVE, STATUS_FROZEN, STATUS_ON_ICE};
 use crate::errors::TradingError;
-use crate::events::emit_set_status;
+use crate::events::SetStatus;
 use crate::trading::ExecuteRequest;
 use crate::types::MarketConfig;
 use crate::{storage, trading, TradingConfig};
@@ -96,7 +96,7 @@ pub trait Trading {
     ///
     /// # Arguments
     /// * `user` - User address opening position
-    /// * `asset` - Asset to trade
+    /// * `asset_index` - Index of the asset to trade (from market list)
     /// * `collateral` - Collateral amount
     /// * `notional_size` - Notional size of the position
     /// * `is_long` - Whether position is long (true) or short (false)
@@ -109,7 +109,7 @@ pub trait Trading {
     fn open_position(
         e: Env,
         user: Address,
-        asset: Asset,
+        asset_index: u32,
         collateral: i128,
         notional_size: i128,
         is_long: bool,
@@ -217,13 +217,13 @@ impl Trading for TradingContract {
         }
         storage::extend_instance(&e);
         storage::set_status(&e, status);
-        emit_set_status(&e, status);
+        SetStatus { status }.publish(&e);
     }
 
     fn open_position(
         e: Env,
         user: Address,
-        asset: Asset,
+        asset_index: u32,
         collateral: i128,
         notional_size: i128,
         is_long: bool,
@@ -235,7 +235,7 @@ impl Trading for TradingContract {
         trading::execute_create_position(
             &e,
             &user,
-            &asset,
+            asset_index,
             collateral,
             notional_size,
             is_long,

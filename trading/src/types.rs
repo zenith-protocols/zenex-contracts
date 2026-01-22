@@ -22,6 +22,7 @@ pub enum PositionStatus {
 #[contracttype]
 #[derive(Clone)]
 pub struct MarketConfig {
+    pub asset: Asset,         // The asset this market trades (immutable once set)
     pub enabled: bool,        // Whether trading is enabled for this asset
     pub max_payout: i128,     // Maximum payout percentage (with 7 decimals)
     pub min_collateral: i128, // Minimum collateral required for a position
@@ -73,7 +74,7 @@ pub struct Position {
     pub id: u32,                // Unique identifier for the position
     pub user: Address,          // Address of the user who owns this position
     pub status: PositionStatus, // Current status of the position
-    pub asset: Asset,           // The asset being traded
+    pub asset_index: u32,       // Index of the asset being traded (references market list)
     pub is_long: bool,          // Whether position is long (true) or short (false)
     pub stop_loss: i128,        // Stop loss price level, 0 if not set
     pub take_profit: i128,      // Take profit price level, 0 if not set

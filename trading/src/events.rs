@@ -1,5 +1,5 @@
 use sep_40_oracle::Asset;
-use soroban_sdk::{contractevent, Address, Env};
+use soroban_sdk::{contractevent, Address};
 
 use crate::MarketConfig;
 
@@ -26,6 +26,7 @@ pub struct QueueSetConfig {
 #[derive(Clone)]
 pub struct CancelSetConfig {}
 
+// Market setup events still use Asset since index doesn't exist yet
 #[contractevent]
 #[derive(Clone)]
 pub struct QueueSetMarket {
@@ -45,7 +46,7 @@ pub struct CancelSetMarket {
 #[derive(Clone)]
 pub struct SetMarket {
     #[topic]
-    pub asset: Asset,
+    pub asset_index: u32,
 }
 
 #[contractevent]
@@ -54,13 +55,13 @@ pub struct SetStatus {
     pub status: u32,
 }
 
-// Position Events
+// Position Events - all use asset_index
 
 #[contractevent]
 #[derive(Clone)]
 pub struct OpenPosition {
     #[topic]
-    pub asset: Asset,
+    pub asset_index: u32,
     #[topic]
     pub user: Address,
     pub position_id: u32,
@@ -70,7 +71,7 @@ pub struct OpenPosition {
 #[derive(Clone)]
 pub struct ClosePosition {
     #[topic]
-    pub asset: Asset,
+    pub asset_index: u32,
     #[topic]
     pub user: Address,
     pub position_id: u32,
@@ -82,7 +83,7 @@ pub struct ClosePosition {
 #[derive(Clone)]
 pub struct FillPosition {
     #[topic]
-    pub asset: Asset,
+    pub asset_index: u32,
     #[topic]
     pub user: Address,
     pub position_id: u32,
@@ -92,7 +93,7 @@ pub struct FillPosition {
 #[derive(Clone)]
 pub struct Liquidation {
     #[topic]
-    pub asset: Asset,
+    pub asset_index: u32,
     #[topic]
     pub user: Address,
     pub position_id: u32,
@@ -104,7 +105,7 @@ pub struct Liquidation {
 #[derive(Clone)]
 pub struct TakeProfit {
     #[topic]
-    pub asset: Asset,
+    pub asset_index: u32,
     #[topic]
     pub user: Address,
     pub position_id: u32,
@@ -116,7 +117,7 @@ pub struct TakeProfit {
 #[derive(Clone)]
 pub struct StopLoss {
     #[topic]
-    pub asset: Asset,
+    pub asset_index: u32,
     #[topic]
     pub user: Address,
     pub position_id: u32,
@@ -128,7 +129,7 @@ pub struct StopLoss {
 #[derive(Clone)]
 pub struct CancelPosition {
     #[topic]
-    pub asset: Asset,
+    pub asset_index: u32,
     #[topic]
     pub user: Address,
     pub position_id: u32,
@@ -138,7 +139,7 @@ pub struct CancelPosition {
 #[derive(Clone)]
 pub struct WithdrawCollateral {
     #[topic]
-    pub asset: Asset,
+    pub asset_index: u32,
     #[topic]
     pub user: Address,
     pub position_id: u32,
@@ -149,7 +150,7 @@ pub struct WithdrawCollateral {
 #[derive(Clone)]
 pub struct DepositCollateral {
     #[topic]
-    pub asset: Asset,
+    pub asset_index: u32,
     #[topic]
     pub user: Address,
     pub position_id: u32,
@@ -160,7 +161,7 @@ pub struct DepositCollateral {
 #[derive(Clone)]
 pub struct SetTakeProfit {
     #[topic]
-    pub asset: Asset,
+    pub asset_index: u32,
     #[topic]
     pub user: Address,
     pub position_id: u32,
@@ -171,207 +172,9 @@ pub struct SetTakeProfit {
 #[derive(Clone)]
 pub struct SetStopLoss {
     #[topic]
-    pub asset: Asset,
+    pub asset_index: u32,
     #[topic]
     pub user: Address,
     pub position_id: u32,
     pub price: i128,
-}
-
-// Helper functions to emit events
-
-pub fn emit_set_config(e: &Env, oracle: Address, caller_take_rate: i128, max_positions: u32) {
-    SetConfig {
-        oracle,
-        caller_take_rate,
-        max_positions,
-    }
-    .publish(e);
-}
-
-pub fn emit_queue_set_config(
-    e: &Env,
-    oracle: Address,
-    caller_take_rate: i128,
-    max_positions: u32,
-    unlock_time: u64,
-) {
-    QueueSetConfig {
-        oracle,
-        caller_take_rate,
-        max_positions,
-        unlock_time,
-    }
-    .publish(e);
-}
-
-pub fn emit_cancel_set_config(e: &Env) {
-    CancelSetConfig {}.publish(e);
-}
-
-pub fn emit_queue_set_market(e: &Env, asset: Asset, config: MarketConfig) {
-    QueueSetMarket { asset, config }.publish(e);
-}
-
-pub fn emit_cancel_set_market(e: &Env, asset: Asset) {
-    CancelSetMarket { asset }.publish(e);
-}
-
-pub fn emit_set_market(e: &Env, asset: Asset) {
-    SetMarket { asset }.publish(e);
-}
-
-pub fn emit_set_status(e: &Env, status: u32) {
-    SetStatus { status }.publish(e);
-}
-
-pub fn emit_open_position(e: &Env, user: Address, asset: Asset, position_id: u32) {
-    OpenPosition {
-        asset,
-        user,
-        position_id,
-    }
-    .publish(e);
-}
-
-pub fn emit_close_position(
-    e: &Env,
-    user: Address,
-    asset: Asset,
-    position_id: u32,
-    price: i128,
-    fee: i128,
-) {
-    ClosePosition {
-        asset,
-        user,
-        position_id,
-        price,
-        fee,
-    }
-    .publish(e);
-}
-
-pub fn emit_fill_position(e: &Env, user: Address, asset: Asset, position_id: u32) {
-    FillPosition {
-        asset,
-        user,
-        position_id,
-    }
-    .publish(e);
-}
-
-pub fn emit_liquidation(
-    e: &Env,
-    user: Address,
-    asset: Asset,
-    position_id: u32,
-    price: i128,
-    fee: i128,
-) {
-    Liquidation {
-        asset,
-        user,
-        position_id,
-        price,
-        fee,
-    }
-    .publish(e);
-}
-
-pub fn emit_take_profit(
-    e: &Env,
-    user: Address,
-    asset: Asset,
-    position_id: u32,
-    price: i128,
-    fee: i128,
-) {
-    TakeProfit {
-        asset,
-        user,
-        position_id,
-        price,
-        fee,
-    }
-    .publish(e);
-}
-
-pub fn emit_stop_loss(
-    e: &Env,
-    user: Address,
-    asset: Asset,
-    position_id: u32,
-    price: i128,
-    fee: i128,
-) {
-    StopLoss {
-        asset,
-        user,
-        position_id,
-        price,
-        fee,
-    }
-    .publish(e);
-}
-
-pub fn emit_cancel_position(e: &Env, user: Address, asset: Asset, position_id: u32) {
-    CancelPosition {
-        asset,
-        user,
-        position_id,
-    }
-    .publish(e);
-}
-
-pub fn emit_withdraw_collateral(
-    e: &Env,
-    user: Address,
-    asset: Asset,
-    position_id: u32,
-    amount: i128,
-) {
-    WithdrawCollateral {
-        asset,
-        user,
-        position_id,
-        amount,
-    }
-    .publish(e);
-}
-
-pub fn emit_deposit_collateral(
-    e: &Env,
-    user: Address,
-    asset: Asset,
-    position_id: u32,
-    amount: i128,
-) {
-    DepositCollateral {
-        asset,
-        user,
-        position_id,
-        amount,
-    }
-    .publish(e);
-}
-
-pub fn emit_set_take_profit(e: &Env, user: Address, asset: Asset, position_id: u32, price: i128) {
-    SetTakeProfit {
-        asset,
-        user,
-        position_id,
-        price,
-    }
-    .publish(e);
-}
-
-pub fn emit_set_stop_loss(e: &Env, user: Address, asset: Asset, position_id: u32, price: i128) {
-    SetStopLoss {
-        asset,
-        user,
-        position_id,
-        price,
-    }
-    .publish(e);
 }

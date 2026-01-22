@@ -8,7 +8,7 @@ pub fn create_fixture_with_data<'a>(wasm: bool) -> TestFixture<'a> {
     // ERC-4626 deposit(assets, receiver, from, operator)
     fixture.vault.deposit(&100_000_000_0000000, &fixture.owner, &fixture.owner, &fixture.owner);
 
-    let market_config = default_market();
+    let market_config = default_market(&fixture.env);
 
     // Extract the assets before the mutable borrows
     let btc_asset = fixture.assets[AssetIndex::BTC].clone();

@@ -1,11 +1,8 @@
 use crate::constants::{SCALAR_18, SCALAR_7};
 use crate::storage;
-use crate::trading::actions::ActionContext;
-use crate::trading::execute::ExecuteContext;
 use crate::trading::market::Market;
 use crate::types::ExecuteRequestType;
 pub(crate) use crate::types::{Position, PositionStatus};
-use sep_40_oracle::Asset;
 use soroban_fixed_point_math::SorobanFixedPoint;
 use soroban_sdk::{Address, Env};
 
@@ -28,7 +25,7 @@ impl Position {
         id: u32,
         user: Address,
         status: PositionStatus,
-        asset: Asset,
+        asset_index: u32,
         is_long: bool,
         stop_loss: i128,
         take_profit: i128,
@@ -41,7 +38,7 @@ impl Position {
             id,
             user,
             status,
-            asset,
+            asset_index,
             is_long,
             stop_loss,
             take_profit,
@@ -156,32 +153,9 @@ impl Position {
         }
     }
 
-    /// Calculate all values needed to close this position (for batch keeper execution)
-    /// Returns a CloseCalculation struct with all transfer amounts including caller_fee
+    /// Calculate all values needed to close this position
+    /// caller_take_rate: 0 for user-initiated close, non-zero for keeper actions
     pub fn calculate_close(
-        &self,
-        e: &Env,
-        ctx: &mut ExecuteContext,
-        market: &Market,
-    ) -> CloseCalculation {
-        let price = ctx.load_price(e, &self.asset);
-        self.calculate_close_internal(e, price, ctx.config.caller_take_rate, market)
-    }
-
-    /// Calculate all values needed to close this position (for user-initiated close)
-    /// No caller_fee since user is closing their own position
-    pub fn calculate_close_for_user(
-        &self,
-        e: &Env,
-        ctx: &ActionContext,
-        market: &Market,
-    ) -> CloseCalculation {
-        let price = ctx.load_price(e, &self.asset);
-        self.calculate_close_internal(e, price, 0, market) // No caller fee for user actions
-    }
-
-    /// Internal calculation logic shared by both contexts
-    fn calculate_close_internal(
         &self,
         e: &Env,
         price: i128,

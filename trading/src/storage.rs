@@ -12,12 +12,18 @@ use soroban_sdk::{
 /********** Ledger Thresholds **********/
 
 const ONE_DAY_LEDGERS: u32 = 17280; // assumes 5s a ledger
-const LEDGER_THRESHOLD_INSTANCE: u32 = ONE_DAY_LEDGERS * 30; // ~ 30 days
-const LEDGER_BUMP_INSTANCE: u32 = LEDGER_THRESHOLD_INSTANCE + ONE_DAY_LEDGERS; // ~ 31 days
-const LEDGER_THRESHOLD_SHARED: u32 = ONE_DAY_LEDGERS * 45; // ~ 45 days
-const LEDGER_BUMP_SHARED: u32 = LEDGER_THRESHOLD_SHARED + ONE_DAY_LEDGERS; // ~ 46 days
-const LEDGER_THRESHOLD_USER: u32 = ONE_DAY_LEDGERS * 100; // ~ 100 days
-const LEDGER_BUMP_USER: u32 = LEDGER_THRESHOLD_USER + 20 * ONE_DAY_LEDGERS; // ~ 120 days
+
+// Instance storage: bump every ~30 days
+const LEDGER_THRESHOLD_INSTANCE: u32 = ONE_DAY_LEDGERS * 30; // 30 days - bump when below this
+const LEDGER_BUMP_INSTANCE: u32 = ONE_DAY_LEDGERS * 60;      // 60 days - bump to this
+
+// Shared storage (market config/data): bump every ~30 days
+const LEDGER_THRESHOLD_SHARED: u32 = ONE_DAY_LEDGERS * 30;   // 30 days - bump when below this
+const LEDGER_BUMP_SHARED: u32 = ONE_DAY_LEDGERS * 60;        // 60 days - bump to this
+
+// User storage (positions): bump every ~30 days
+const LEDGER_THRESHOLD_USER: u32 = ONE_DAY_LEDGERS * 30;     // 30 days - bump when below this
+const LEDGER_BUMP_USER: u32 = ONE_DAY_LEDGERS * 60;          // 60 days - bump to this
 
 /********** Storage Keys **********/
 
@@ -30,14 +36,14 @@ pub enum TradingStorageKey {
     Vault,
     Token,
     Config,
-    MarketList,
+    MarketCounter,
     PositionCounter,
     // Temporary storage
     ConfigUpdate,
-    MarketInit(Asset),
+    MarketInit(Asset), // Uses Asset since index doesn't exist until market is activated
     // Persistent storage
-    MarketConfig(Asset),
-    MarketData(Asset),
+    MarketConfig(u32),
+    MarketData(u32),
     UserPositions(Address),
     Position(u32),
 }
@@ -157,8 +163,8 @@ pub fn del_config_update(e: &Env) {
 
 /********** Market Config **********/
 
-pub fn get_market_config(e: &Env, asset: &Asset) -> MarketConfig {
-    let key = TradingStorageKey::MarketConfig(asset.clone());
+pub fn get_market_config(e: &Env, asset_index: u32) -> MarketConfig {
+    let key = TradingStorageKey::MarketConfig(asset_index);
     let result = e
         .storage()
         .persistent()
@@ -170,8 +176,8 @@ pub fn get_market_config(e: &Env, asset: &Asset) -> MarketConfig {
     result
 }
 
-pub fn set_market_config(e: &Env, asset: &Asset, config: &MarketConfig) {
-    let key = TradingStorageKey::MarketConfig(asset.clone());
+pub fn set_market_config(e: &Env, asset_index: u32, config: &MarketConfig) {
+    let key = TradingStorageKey::MarketConfig(asset_index);
     e.storage().persistent().set(&key, config);
     e.storage()
         .persistent()
@@ -201,45 +207,41 @@ pub fn del_queued_market(e: &Env, asset: &Asset) {
 
 /********** Market Data **********/
 
-pub fn get_market_data(e: &Env, asset: &Asset) -> MarketData {
-    let key = TradingStorageKey::MarketData(asset.clone());
+pub fn get_market_data(e: &Env, asset_index: u32) -> MarketData {
+    let key = TradingStorageKey::MarketData(asset_index);
     e.storage()
         .persistent()
         .extend_ttl(&key, LEDGER_THRESHOLD_SHARED, LEDGER_BUMP_SHARED);
     e.storage().persistent().get(&key).unwrap_optimized()
 }
 
-pub fn set_market_data(e: &Env, asset: &Asset, data: &MarketData) {
-    let key = TradingStorageKey::MarketData(asset.clone());
+pub fn set_market_data(e: &Env, asset_index: u32, data: &MarketData) {
+    let key = TradingStorageKey::MarketData(asset_index);
     e.storage().persistent().set(&key, data);
     e.storage()
         .persistent()
         .extend_ttl(&key, LEDGER_THRESHOLD_SHARED, LEDGER_BUMP_SHARED);
 }
 
-/********** Market List **********/
+/********** Market Counter **********/
 
-pub fn get_market_list(e: &Env) -> Vec<Asset> {
+pub fn get_market_counter(e: &Env) -> u32 {
     e.storage()
         .instance()
-        .get(&TradingStorageKey::MarketList)
-        .unwrap_optimized()
+        .get(&TradingStorageKey::MarketCounter)
+        .unwrap_or(0)
 }
 
-pub fn set_market_list(e: &Env, market_list: &Vec<Asset>) {
+pub fn set_market_counter(e: &Env, counter: u32) {
     e.storage()
         .instance()
-        .set(&TradingStorageKey::MarketList, market_list);
+        .set(&TradingStorageKey::MarketCounter, &counter);
 }
 
-pub fn push_market_list(e: &Env, asset: &Asset) -> u32 {
-    let mut market_list = get_market_list(e);
-    market_list.push_back(asset.clone());
-    let new_index = market_list.len() - 1;
-    e.storage()
-        .instance()
-        .set(&TradingStorageKey::MarketList, &market_list);
-    new_index
+pub fn bump_market_index(e: &Env) -> u32 {
+    let current_index = get_market_counter(e);
+    set_market_counter(e, current_index + 1);
+    current_index
 }
 
 /********** Position Counter **********/

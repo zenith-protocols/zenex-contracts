@@ -137,22 +137,22 @@ impl TestFixture<'_> {
         })
     }
 
-    pub fn read_market_config(&self, asset: StellarAsset) -> MarketConfig {
+    pub fn read_market_config(&self, asset_index: u32) -> MarketConfig {
         self.env.as_contract(&self.trading.address, || {
             self.env
                 .storage()
                 .persistent()
-                .get(&trading::storage::TradingStorageKey::MarketConfig(asset))
+                .get(&trading::storage::TradingStorageKey::MarketConfig(asset_index))
                 .unwrap()
         })
     }
 
-    pub fn read_market_data(&self, asset: StellarAsset) -> trading::MarketData {
+    pub fn read_market_data(&self, asset_index: u32) -> trading::MarketData {
         self.env.as_contract(&self.trading.address, || {
             self.env
                 .storage()
                 .persistent()
-                .get(&trading::storage::TradingStorageKey::MarketData(asset))
+                .get(&trading::storage::TradingStorageKey::MarketData(asset_index))
                 .unwrap()
         })
     }

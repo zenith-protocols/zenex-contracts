@@ -2,25 +2,23 @@ use crate::errors::TradingError;
 use crate::storage;
 use crate::trading::interest::{calculate_long_short_hourly_rates, update_index_with_interest};
 use crate::types::{MarketConfig, MarketData};
-use sep_40_oracle::Asset;
 use soroban_sdk::{contracttype, panic_with_error, Env};
 
 #[derive(Clone)]
 #[contracttype]
 pub struct Market {
-    pub asset: Asset,         // the asset for this market
+    pub asset_index: u32,     // index of the asset for this market
     pub config: MarketConfig, // the reserve configuration
     pub data: MarketData,     // the reserve data
 }
 
 /// Implementation of methods and functionality for Market
 impl Market {
-
-    pub fn load(e: &Env, asset: &Asset) -> Market {
-        let market_config = storage::get_market_config(e, asset);
-        let market_data = storage::get_market_data(e, asset);
+    pub fn load(e: &Env, asset_index: u32) -> Market {
+        let market_config = storage::get_market_config(e, asset_index);
+        let market_data = storage::get_market_data(e, asset_index);
         Market {
-            asset: asset.clone(),
+            asset_index,
             config: market_config,
             data: market_data,
         }
@@ -28,8 +26,8 @@ impl Market {
 
     /// Load a market and validate that it is enabled
     /// Panics if market is disabled
-    pub fn load_checked(e: &Env, asset: &Asset) -> Market {
-        let market = Self::load(e, asset);
+    pub fn load_checked(e: &Env, asset_index: u32) -> Market {
+        let market = Self::load(e, asset_index);
         if !market.config.enabled {
             panic_with_error!(e, TradingError::MarketDisabled);
         }
@@ -37,7 +35,7 @@ impl Market {
     }
 
     pub fn store(&self, e: &Env) {
-        storage::set_market_data(e, &self.asset, &self.data);
+        storage::set_market_data(e, self.asset_index, &self.data);
     }
 
     /// Updates borrowing rates and indexes for the market

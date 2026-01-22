@@ -1,11 +1,13 @@
 use crate::constants::{SCALAR_18, SCALAR_7, STATUS_SETUP};
 use crate::dependencies::VaultClient;
 use crate::errors::TradingError;
-use crate::events::{emit_cancel_set_config, emit_cancel_set_market, emit_queue_set_config, emit_queue_set_market, emit_set_config, emit_set_market};
+use crate::events::{
+    CancelSetConfig, CancelSetMarket, QueueSetConfig, QueueSetMarket, SetConfig, SetMarket,
+};
 use crate::types::{ConfigUpdate, MarketConfig, QueuedMarketInit, TradingConfig};
 use crate::{constants::SECONDS_PER_WEEK, storage, MarketData};
 use sep_40_oracle::Asset;
-use soroban_sdk::{panic_with_error, vec, Address, Env, String};
+use soroban_sdk::{panic_with_error, Address, Env, String};
 
 pub fn execute_initialize(e: &Env, name: &String, vault: &Address, config: &TradingConfig) {
     if storage::has_name(e) {
@@ -18,7 +20,7 @@ pub fn execute_initialize(e: &Env, name: &String, vault: &Address, config: &Trad
     storage::set_token(e, &token);
     require_valid_config(e, config);
     storage::set_config(e, config);
-    storage::set_market_list(e, &vec![e]);
+    storage::set_market_counter(e, 0);
     storage::set_status(e, STATUS_SETUP)
 }
 
@@ -35,19 +37,19 @@ pub fn execute_queue_set_config(e: &Env, config: &TradingConfig) {
         unlock_time,
     };
     storage::set_config_update(e, &update);
-    emit_queue_set_config(
-        e,
-        config.oracle.clone(),
-        config.caller_take_rate,
-        config.max_positions,
+    QueueSetConfig {
+        oracle: config.oracle.clone(),
+        caller_take_rate: config.caller_take_rate,
+        max_positions: config.max_positions,
         unlock_time,
-    );
+    }
+    .publish(e);
 }
 
 pub fn execute_cancel_set_config(e: &Env) {
     storage::get_config_update(e); // panics if not queued
     storage::del_config_update(e);
-    emit_cancel_set_config(e);
+    CancelSetConfig {}.publish(e);
 }
 
 pub fn execute_set_config(e: &Env) {
@@ -62,12 +64,12 @@ pub fn execute_set_config(e: &Env) {
     storage::set_config(e, &queued.config);
     storage::del_config_update(e);
 
-    emit_set_config(
-        e,
-        queued.config.oracle.clone(),
-        queued.config.caller_take_rate,
-        queued.config.max_positions,
-    );
+    SetConfig {
+        oracle: queued.config.oracle.clone(),
+        caller_take_rate: queued.config.caller_take_rate,
+        max_positions: queued.config.max_positions,
+    }
+    .publish(e);
 }
 
 
@@ -81,20 +83,33 @@ pub fn execute_queue_set_market(e: &Env, asset: &Asset, config: &MarketConfig) {
         unlock_time += SECONDS_PER_WEEK;
     }
 
+    // Create config with correct asset (overrides any placeholder in input config)
+    let market_config = MarketConfig {
+        asset: asset.clone(),
+        ..config.clone()
+    };
+
     storage::set_queued_market(
         e,
         asset,
         &QueuedMarketInit {
-            config: config.clone(),
+            config: market_config.clone(),
             unlock_time,
         },
     );
-    emit_queue_set_market(e, asset.clone(), config.clone());
+    QueueSetMarket {
+        asset: asset.clone(),
+        config: market_config,
+    }
+    .publish(e);
 }
 
 pub fn execute_cancel_queued_market(e: &Env, asset: &Asset) {
     storage::del_queued_market(e, asset);
-    emit_cancel_set_market(e, asset.clone());
+    CancelSetMarket {
+        asset: asset.clone(),
+    }
+    .publish(e);
 }
 
 pub fn execute_set_market(e: &Env, asset: &Asset) {
@@ -103,7 +118,11 @@ pub fn execute_set_market(e: &Env, asset: &Asset) {
         panic_with_error!(e, TradingError::UpdateNotUnlocked);
     }
 
-    storage::set_market_config(e, asset, &queued_market.config);
+    // Get next market index from counter
+    let asset_index = storage::bump_market_index(e);
+
+    // Store the queued market config (asset already set during queue)
+    storage::set_market_config(e, asset_index, &queued_market.config);
 
     // Initialize MarketData with default values
     let initial_market_data = MarketData {
@@ -117,9 +136,12 @@ pub fn execute_set_market(e: &Env, asset: &Asset) {
         short_interest_index: SCALAR_18,
         last_update: e.ledger().timestamp(),
     };
-    storage::set_market_data(e, asset, &initial_market_data);
-    storage::push_market_list(e, asset);
-    emit_set_market(e, asset.clone());
+    storage::set_market_data(e, asset_index, &initial_market_data);
+
+    // Clean up queued market
+    storage::del_queued_market(e, asset);
+
+    SetMarket { asset_index }.publish(e);
 }
 
 fn require_valid_market_config(e: &Env, config: &MarketConfig) {

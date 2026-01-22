@@ -1,16 +1,15 @@
 use crate::constants::{MAX_PRICE_AGE, SCALAR_7, STATUS_ACTIVE, STATUS_ON_ICE};
 use crate::dependencies::VaultClient;
 use crate::errors::TradingError;
-use crate::events::{emit_fill_position, emit_liquidation, emit_stop_loss, emit_take_profit};
+use crate::events::{FillPosition, Liquidation, StopLoss, TakeProfit};
 use crate::storage;
 use crate::trading::market::Market;
 use crate::trading::position::Position;
 use crate::types::{ExecuteRequest, ExecuteRequestType, PositionStatus, TradingConfig};
-use sep_40_oracle::{Asset, PriceFeedClient};
+use sep_40_oracle::PriceFeedClient;
 use soroban_fixed_point_math::SorobanFixedPoint;
-use soroban_sdk::auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation};
 use soroban_sdk::token::TokenClient;
-use soroban_sdk::{map, panic_with_error, vec, Address, Env, IntoVal, Map, Symbol, Val, Vec};
+use soroban_sdk::{map, panic_with_error, vec, Address, Env, Map, Vec};
 
 /// Context for batch execution operations (keeper triggers)
 /// Caches markets, positions, and prices to minimize storage reads
@@ -19,11 +18,11 @@ pub struct ExecuteContext {
     pub vault: Address,
     pub token: Address,
     pub caller: Address,
-    pub markets: Map<Asset, Market>,
+    pub markets: Map<u32, Market>,
     pub positions: Map<u32, Position>,
     pub positions_to_update: Vec<u32>,
-    pub markets_to_update: Vec<Asset>,
-    prices: Map<Asset, i128>,
+    pub markets_to_update: Vec<u32>,
+    prices: Map<u32, i128>,
 }
 
 impl ExecuteContext {
@@ -47,11 +46,11 @@ impl ExecuteContext {
         }
     }
 
-    pub fn load_market(&mut self, e: &Env, asset: &Asset) -> Market {
-        let mut market = if let Some(market) = self.markets.get(asset.clone()) {
+    pub fn load_market(&mut self, e: &Env, asset_index: u32) -> Market {
+        let mut market = if let Some(market) = self.markets.get(asset_index) {
             market
         } else {
-            Market::load_checked(e, asset) // panics if not found or disabled
+            Market::load_checked(e, asset_index) // panics if not found or disabled
         };
         market.update_borrowing_index(e);
         market
@@ -66,9 +65,9 @@ impl ExecuteContext {
     }
 
     pub fn cache_market(&mut self, market: &Market) {
-        self.markets.set(market.asset.clone(), market.clone());
-        if !self.markets_to_update.contains(&market.asset) {
-            self.markets_to_update.push_back(market.asset.clone());
+        self.markets.set(market.asset_index, market.clone());
+        if !self.markets_to_update.contains(&market.asset_index) {
+            self.markets_to_update.push_back(market.asset_index);
         }
     }
 
@@ -80,8 +79,8 @@ impl ExecuteContext {
     }
 
     pub fn store_cached_markets(&mut self, e: &Env) {
-        for asset in self.markets_to_update.iter() {
-            let reserve = self.markets.get(asset).unwrap();
+        for asset_index in self.markets_to_update.iter() {
+            let reserve = self.markets.get(asset_index).unwrap();
             reserve.store(e);
         }
     }
@@ -93,19 +92,21 @@ impl ExecuteContext {
         }
     }
 
-    pub fn load_price(&mut self, e: &Env, asset: &Asset) -> i128 {
-        if let Some(price) = self.prices.get(asset.clone()) {
+    pub fn load_price(&mut self, e: &Env, asset_index: u32) -> i128 {
+        if let Some(price) = self.prices.get(asset_index) {
             return price;
         }
-        let price_data = match PriceFeedClient::new(e, &self.config.oracle).lastprice(asset) {
-            Some(price) => price,
-            None => panic_with_error!(e, TradingError::PriceNotFound),
-        };
+        let market_config = storage::get_market_config(e, asset_index);
+        let price_data =
+            match PriceFeedClient::new(e, &self.config.oracle).lastprice(&market_config.asset) {
+                Some(price) => price,
+                None => panic_with_error!(e, TradingError::PriceNotFound),
+            };
         if price_data.timestamp + MAX_PRICE_AGE < e.ledger().timestamp() {
             panic_with_error!(e, TradingError::PriceStale);
         }
 
-        self.prices.set(asset.clone(), price_data.price);
+        self.prices.set(asset_index, price_data.price);
         price_data.price
     }
 
@@ -186,26 +187,8 @@ pub fn execute_trigger(
     // STEP 3: Contract pays to vault if needed
     // This is done last to ensure the contract has enough balance
     if vault_transfer > 0 {
-        // Vault receives: deposit from this contract to vault
-        // Authorize the token transfer that happens inside strategy_deposit
-        let args: Vec<Val> = vec![
-            e,
-            e.current_contract_address().into_val(e),
-            vault_client.address.into_val(e),
-            vault_transfer.into_val(e),
-        ];
-        e.authorize_as_current_contract(vec![
-            e,
-            InvokerContractAuthEntry::Contract(SubContractInvocation {
-                context: ContractContext {
-                    contract: token_client.address.clone(),
-                    fn_name: Symbol::new(e, "transfer"),
-                    args: args.clone(),
-                },
-                sub_invocations: vec![e],
-            })
-        ]);
-        vault_client.strategy_deposit(&e.current_contract_address(), &vault_transfer);
+        // Vault receives: direct transfer from this contract to vault
+        token_client.transfer(&e.current_contract_address(), &ctx.vault, &vault_transfer);
     }
 
     processing_result.results
@@ -273,8 +256,9 @@ fn handle_close(
     ctx: &mut ExecuteContext,
     position: &mut Position,
 ) -> (i128, i128) {
-    let mut market = ctx.load_market(e, &position.asset);
-    let calc = position.calculate_close(e, ctx, &market);
+    let mut market = ctx.load_market(e, position.asset_index);
+    let price = ctx.load_price(e, position.asset_index);
+    let calc = position.calculate_close(e, price, ctx.config.caller_take_rate, &market);
 
     // User receives their payout (if positive)
     if calc.user_payout > 0 {
@@ -312,7 +296,7 @@ fn apply_fill(
     ctx: &mut ExecuteContext,
     position: &mut Position,
 ) -> u32 {
-    let current_price = ctx.load_price(e, &position.asset);
+    let current_price = ctx.load_price(e, position.asset_index);
 
     let can_fill = if position.is_long {
         current_price <= position.entry_price
@@ -327,7 +311,7 @@ fn apply_fill(
     position.status = PositionStatus::Open;
     position.entry_price = current_price;
 
-    let mut market = ctx.load_market(e, &position.asset);
+    let mut market = ctx.load_market(e, position.asset_index);
 
     // Check if position is balancing BEFORE updating market stats
     let should_pay_base_fee = if position.is_long {
@@ -369,12 +353,12 @@ fn apply_fill(
     ctx.cache_market(&market);
     ctx.cache_position(position);
 
-    emit_fill_position(
-        e,
-        position.user.clone(),
-        position.asset.clone(),
-        position.id,
-    );
+    FillPosition {
+        asset_index: position.asset_index,
+        user: position.user.clone(),
+        position_id: position.id,
+    }
+    .publish(e);
 
     0
 }
@@ -386,21 +370,21 @@ fn apply_stop_loss(
     ctx: &mut ExecuteContext,
     position: &mut Position,
 ) -> u32 {
-    let current_price = ctx.load_price(e, &position.asset);
+    let current_price = ctx.load_price(e, position.asset_index);
     if !position.check_stop_loss(current_price) {
         return TradingError::StopLossNotTriggered as u32;
     }
 
     let (price, fee) = handle_close(e, result, ctx, position);
 
-    emit_stop_loss(
-        e,
-        position.user.clone(),
-        position.asset.clone(),
-        position.id,
+    StopLoss {
+        asset_index: position.asset_index,
+        user: position.user.clone(),
+        position_id: position.id,
         price,
         fee,
-    );
+    }
+    .publish(e);
 
     0
 }
@@ -412,21 +396,21 @@ fn apply_take_profit(
     ctx: &mut ExecuteContext,
     position: &mut Position,
 ) -> u32 {
-    let current_price = ctx.load_price(e, &position.asset);
+    let current_price = ctx.load_price(e, position.asset_index);
     if !position.check_take_profit(current_price) {
         return TradingError::TakeProfitNotTriggered as u32;
     }
 
     let (price, fee) = handle_close(e, result, ctx, position);
 
-    emit_take_profit(
-        e,
-        position.user.clone(),
-        position.asset.clone(),
-        position.id,
+    TakeProfit {
+        asset_index: position.asset_index,
+        user: position.user.clone(),
+        position_id: position.id,
         price,
         fee,
-    );
+    }
+    .publish(e);
 
     0
 }
@@ -438,8 +422,8 @@ fn apply_liquidation(
     ctx: &mut ExecuteContext,
     position: &mut Position,
 ) -> u32 {
-    let current_price = ctx.load_price(e, &position.asset);
-    let mut market = ctx.load_market(e, &position.asset);
+    let current_price = ctx.load_price(e, position.asset_index);
+    let mut market = ctx.load_market(e, position.asset_index);
 
     let pnl = position.calculate_pnl(e, current_price);
     let fee = position.calculate_fee(e, &market);
@@ -460,14 +444,14 @@ fn apply_liquidation(
     let vault_amount = position.collateral - caller_fee;
     result.add_transfer(&ctx.vault, vault_amount);
 
-    emit_liquidation(
-        e,
-        position.user.clone(),
-        position.asset.clone(),
-        position.id,
-        current_price,
+    Liquidation {
+        asset_index: position.asset_index,
+        user: position.user.clone(),
+        position_id: position.id,
+        price: current_price,
         fee,
-    );
+    }
+    .publish(e);
 
     market.update_stats(
         -position.collateral,

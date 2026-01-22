@@ -1,52 +1,45 @@
-use crate::constants::{MAX_PRICE_AGE, SCALAR_7, STATUS_ACTIVE, STATUS_ON_ICE, STATUS_SETUP};
+use crate::constants::{MAX_PRICE_AGE, SCALAR_7, STATUS_ACTIVE, STATUS_ON_ICE};
 use crate::dependencies::VaultClient;
 use crate::errors::TradingError;
 use crate::events::{
-    emit_cancel_position, emit_close_position, emit_deposit_collateral, emit_open_position,
-    emit_set_stop_loss, emit_set_take_profit, emit_withdraw_collateral,
+    CancelPosition, ClosePosition, DepositCollateral, OpenPosition, SetStopLoss, SetTakeProfit,
+    WithdrawCollateral,
 };
 use crate::storage;
 use crate::trading::market::Market;
 use crate::trading::position::Position;
-use crate::types::{PositionStatus, TradingConfig};
-use sep_40_oracle::{Asset, PriceFeedClient};
+use crate::types::PositionStatus;
+use sep_40_oracle::PriceFeedClient;
 use soroban_fixed_point_math::SorobanFixedPoint;
-use soroban_sdk::auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation};
 use soroban_sdk::token::TokenClient;
-use soroban_sdk::{panic_with_error, vec, Address, Env, IntoVal, Symbol, Val, Vec};
+use soroban_sdk::{panic_with_error, Address, Env};
 
-/// Lightweight context for single-operation user actions
-/// Unlike ExecuteContext, does not cache markets/positions (not needed for single ops)
-pub struct ActionContext {
-    pub config: TradingConfig,
-    pub vault: Address,
-    pub token: Address,
-    pub status: u32,
+/// Load the current price for an asset from the oracle
+pub fn load_price(e: &Env, oracle: &Address, asset_index: u32) -> i128 {
+    let market_config = storage::get_market_config(e, asset_index);
+    let price_data = match PriceFeedClient::new(e, oracle).lastprice(&market_config.asset) {
+        Some(price) => price,
+        None => panic_with_error!(e, TradingError::PriceNotFound),
+    };
+    if price_data.timestamp + MAX_PRICE_AGE < e.ledger().timestamp() {
+        panic_with_error!(e, TradingError::PriceStale);
+    }
+    price_data.price
 }
 
-impl ActionContext {
-    pub fn load(e: &Env) -> Self {
-        let status = storage::get_status(e);
-        if status == STATUS_SETUP {
-            panic_with_error!(e, TradingError::ContractPaused);
-        }
-        ActionContext {
-            config: storage::get_config(e),
-            vault: storage::get_vault(e),
-            token: storage::get_token(e),
-            status,
-        }
+/// Check status allows user actions (not Setup or Frozen)
+fn require_active_or_on_ice(e: &Env) {
+    let status = storage::get_status(e);
+    if status != STATUS_ACTIVE && status != STATUS_ON_ICE {
+        panic_with_error!(e, TradingError::ContractPaused);
     }
+}
 
-    pub fn load_price(&self, e: &Env, asset: &Asset) -> i128 {
-        let price_data = match PriceFeedClient::new(e, &self.config.oracle).lastprice(asset) {
-            Some(price) => price,
-            None => panic_with_error!(e, TradingError::PriceNotFound),
-        };
-        if price_data.timestamp + MAX_PRICE_AGE < e.ledger().timestamp() {
-            panic_with_error!(e, TradingError::PriceStale);
-        }
-        price_data.price
+/// Check status is Active (for opening new positions)
+fn require_active(e: &Env) {
+    let status = storage::get_status(e);
+    if status != STATUS_ACTIVE {
+        panic_with_error!(e, TradingError::ContractPaused);
     }
 }
 
@@ -56,17 +49,11 @@ impl ActionContext {
 pub fn execute_close_position(e: &Env, position_id: u32) -> (i128, i128) {
     let mut position = Position::load(e, position_id);
     position.user.require_auth();
-
-    let ctx = ActionContext::load(e);
-
-    // Allow closing in Active (0) and OnIce (1), block in Frozen (2)
-    if ctx.status != STATUS_ACTIVE && ctx.status != STATUS_ON_ICE {
-        panic_with_error!(e, TradingError::ContractPaused);
-    }
+    require_active_or_on_ice(e);
 
     match position.status {
-        PositionStatus::Pending => execute_cancel(e, &ctx, &mut position),
-        PositionStatus::Open => execute_close(e, &ctx, &mut position),
+        PositionStatus::Pending => execute_cancel(e, &mut position),
+        PositionStatus::Open => execute_close(e, &mut position),
         PositionStatus::Closed => {
             panic_with_error!(e, TradingError::PositionAlreadyClosed);
         }
@@ -75,9 +62,10 @@ pub fn execute_close_position(e: &Env, position_id: u32) -> (i128, i128) {
 
 /// Internal cancel logic for pending positions
 /// Refunds collateral + base_fee + price_impact that were charged at open
-fn execute_cancel(e: &Env, ctx: &ActionContext, position: &mut Position) -> (i128, i128) {
-    let token_client = TokenClient::new(e, &ctx.token);
-    let mut market = Market::load_checked(e, &position.asset);
+fn execute_cancel(e: &Env, position: &mut Position) -> (i128, i128) {
+    let token = storage::get_token(e);
+    let token_client = TokenClient::new(e, &token);
+    let mut market = Market::load_checked(e, position.asset_index);
     market.update_borrowing_index(e);
 
     // Calculate fees using the same formula as open (notional_size based)
@@ -96,50 +84,39 @@ fn execute_cancel(e: &Env, ctx: &ActionContext, position: &mut Position) -> (i12
     storage::remove_user_position(e, &position.user, position.id);
     position.store(e);
 
-    emit_cancel_position(
-        e,
-        position.user.clone(),
-        position.asset.clone(),
-        position.id,
-    );
+    CancelPosition {
+        asset_index: position.asset_index,
+        user: position.user.clone(),
+        position_id: position.id,
+    }
+    .publish(e);
 
     // For cancelled pending orders: no PnL, no fee
     (0, 0)
 }
 
 /// Internal close logic for open positions
-fn execute_close(e: &Env, ctx: &ActionContext, position: &mut Position) -> (i128, i128) {
-    let mut market = Market::load_checked(e, &position.asset);
-    market.update_borrowing_index(e);
-    let calc = position.calculate_close_for_user(e, ctx, &market);
+fn execute_close(e: &Env, position: &mut Position) -> (i128, i128) {
+    let config = storage::get_config(e);
+    let vault = storage::get_vault(e);
+    let token = storage::get_token(e);
 
-    let token_client = TokenClient::new(e, &ctx.token);
-    let vault_client = VaultClient::new(e, &ctx.vault);
+    let mut market = Market::load_checked(e, position.asset_index);
+    market.update_borrowing_index(e);
+
+    let price = load_price(e, &config.oracle, position.asset_index);
+    let calc = position.calculate_close(e, price, 0, &market);
+
+    let token_client = TokenClient::new(e, &token);
+    let vault_client = VaultClient::new(e, &vault);
 
     // Handle vault transfer (negative = vault pays, positive = vault receives)
     if calc.vault_transfer < 0 {
         // Vault pays: withdraw from vault to this contract
         vault_client.strategy_withdraw(&e.current_contract_address(), &(-calc.vault_transfer));
     } else if calc.vault_transfer > 0 {
-        // Vault receives: deposit from this contract to vault
-        let args: Vec<Val> = vec![
-            e,
-            e.current_contract_address().into_val(e),
-            vault_client.address.into_val(e),
-            calc.vault_transfer.into_val(e),
-        ];
-        e.authorize_as_current_contract(vec![
-            e,
-            InvokerContractAuthEntry::Contract(SubContractInvocation {
-                context: ContractContext {
-                    contract: token_client.address.clone(),
-                    fn_name: Symbol::new(e, "transfer"),
-                    args: args.clone(),
-                },
-                sub_invocations: vec![e],
-            }),
-        ]);
-        vault_client.strategy_deposit(&e.current_contract_address(), &calc.vault_transfer);
+        // Vault receives: direct transfer from this contract to vault
+        token_client.transfer(&e.current_contract_address(), &vault, &calc.vault_transfer);
     }
 
     // Pay user their payout
@@ -157,14 +134,14 @@ fn execute_close(e: &Env, ctx: &ActionContext, position: &mut Position) -> (i128
     position.status = PositionStatus::Closed;
     storage::remove_user_position(e, &position.user, position.id);
 
-    emit_close_position(
-        e,
-        position.user.clone(),
-        position.asset.clone(),
-        position.id,
-        calc.price,
-        calc.fee,
-    );
+    ClosePosition {
+        asset_index: position.asset_index,
+        user: position.user.clone(),
+        position_id: position.id,
+        price: calc.price,
+        fee: calc.fee,
+    }
+    .publish(e);
 
     market.store(e);
     position.store(e);
@@ -176,13 +153,7 @@ fn execute_close(e: &Env, ctx: &ActionContext, position: &mut Position) -> (i128
 pub fn execute_modify_collateral(e: &Env, position_id: u32, new_collateral: i128) {
     let mut position = Position::load(e, position_id);
     position.user.require_auth();
-
-    let ctx = ActionContext::load(e);
-
-    // Allow modifying in Active (0) and OnIce (1), block in Frozen (2)
-    if ctx.status != STATUS_ACTIVE && ctx.status != STATUS_ON_ICE {
-        panic_with_error!(e, TradingError::ContractPaused);
-    }
+    require_active_or_on_ice(e);
 
     // Must be open position
     if position.status != PositionStatus::Open {
@@ -193,11 +164,14 @@ pub fn execute_modify_collateral(e: &Env, position_id: u32, new_collateral: i128
         panic_with_error!(e, TradingError::NegativeValueNotAllowed);
     }
 
-    let mut market = Market::load_checked(e, &position.asset);
-    market.update_borrowing_index(e);
-    let current_price = ctx.load_price(e, &position.asset);
+    let config = storage::get_config(e);
+    let token = storage::get_token(e);
 
-    let token_client = TokenClient::new(e, &ctx.token);
+    let mut market = Market::load_checked(e, position.asset_index);
+    market.update_borrowing_index(e);
+    let current_price = load_price(e, &config.oracle, position.asset_index);
+
+    let token_client = TokenClient::new(e, &token);
 
     // Calculate the difference between new and current collateral
     let collateral_diff = new_collateral - position.collateral;
@@ -208,13 +182,13 @@ pub fn execute_modify_collateral(e: &Env, position_id: u32, new_collateral: i128
         position.collateral = new_collateral;
         market.update_stats(collateral_diff, 0, position.is_long);
 
-        emit_deposit_collateral(
-            e,
-            position.user.clone(),
-            position.asset.clone(),
-            position.id,
-            collateral_diff,
-        );
+        DepositCollateral {
+            asset_index: position.asset_index,
+            user: position.user.clone(),
+            position_id: position.id,
+            amount: collateral_diff,
+        }
+        .publish(e);
     } else if collateral_diff < 0 {
         // Withdraw collateral
         let withdraw_amount = -collateral_diff;
@@ -233,13 +207,13 @@ pub fn execute_modify_collateral(e: &Env, position_id: u32, new_collateral: i128
         token_client.transfer(&e.current_contract_address(), &position.user, &withdraw_amount);
         market.update_stats(-withdraw_amount, 0, position.is_long);
 
-        emit_withdraw_collateral(
-            e,
-            position.user.clone(),
-            position.asset.clone(),
-            position.id,
-            withdraw_amount,
-        );
+        WithdrawCollateral {
+            asset_index: position.asset_index,
+            user: position.user.clone(),
+            position_id: position.id,
+            amount: withdraw_amount,
+        }
+        .publish(e);
     }
     // If collateral_diff == 0, no transfer needed
 
@@ -252,20 +226,15 @@ pub fn execute_modify_collateral(e: &Env, position_id: u32, new_collateral: i128
 pub fn execute_set_triggers(e: &Env, position_id: u32, take_profit: i128, stop_loss: i128) {
     let mut position = Position::load(e, position_id);
     position.user.require_auth();
-
-    let ctx = ActionContext::load(e);
-
-    // Allow setting triggers in Active (0) and OnIce (1), block in Frozen (2)
-    if ctx.status != STATUS_ACTIVE && ctx.status != STATUS_ON_ICE {
-        panic_with_error!(e, TradingError::ContractPaused);
-    }
+    require_active_or_on_ice(e);
 
     // Must be open position
     if position.status != PositionStatus::Open {
         panic_with_error!(e, TradingError::PositionNotOpen);
     }
 
-    let current_price = ctx.load_price(e, &position.asset);
+    let oracle = storage::get_config(e).oracle;
+    let current_price = load_price(e, &oracle, position.asset_index);
 
     // Validate and set take profit
     if take_profit > 0 {
@@ -282,13 +251,13 @@ pub fn execute_set_triggers(e: &Env, position_id: u32, take_profit: i128, stop_l
         }
         position.take_profit = take_profit;
 
-        emit_set_take_profit(
-            e,
-            position.user.clone(),
-            position.asset.clone(),
-            position.id,
-            take_profit,
-        );
+        SetTakeProfit {
+            asset_index: position.asset_index,
+            user: position.user.clone(),
+            position_id: position.id,
+            price: take_profit,
+        }
+        .publish(e);
     } else if take_profit == 0 {
         // Clear take profit
         position.take_profit = 0;
@@ -309,13 +278,13 @@ pub fn execute_set_triggers(e: &Env, position_id: u32, take_profit: i128, stop_l
         }
         position.stop_loss = stop_loss;
 
-        emit_set_stop_loss(
-            e,
-            position.user.clone(),
-            position.asset.clone(),
-            position.id,
-            stop_loss,
-        );
+        SetStopLoss {
+            asset_index: position.asset_index,
+            user: position.user.clone(),
+            position_id: position.id,
+            price: stop_loss,
+        }
+        .publish(e);
     } else if stop_loss == 0 {
         // Clear stop loss
         position.stop_loss = 0;
@@ -328,7 +297,7 @@ pub fn execute_set_triggers(e: &Env, position_id: u32, take_profit: i128, stop_l
 pub fn execute_create_position(
     e: &Env,
     user: &Address,
-    asset: &Asset,
+    asset_index: u32,
     collateral: i128,
     notional_size: i128,
     is_long: bool,
@@ -337,15 +306,13 @@ pub fn execute_create_position(
     stop_loss: i128,
 ) -> (u32, i128) {
     user.require_auth();
+    require_active(e);
 
-    let ctx = ActionContext::load(e);
+    let config = storage::get_config(e);
+    let vault = storage::get_vault(e);
+    let token = storage::get_token(e);
 
-    // Only allow opening new positions when contract is Active
-    if ctx.status != STATUS_ACTIVE {
-        panic_with_error!(e, TradingError::ContractPaused);
-    }
-
-    let mut market = Market::load_checked(e, asset);
+    let mut market = Market::load_checked(e, asset_index);
     market.update_borrowing_index(e);
 
     if collateral < 0 || notional_size < 0 || entry_price < 0 {
@@ -353,15 +320,15 @@ pub fn execute_create_position(
     }
 
     // Check utilization limit: total_notional must not exceed vault_assets * max_utilization
-    if ctx.config.max_utilization > 0 {
-        let vault_client = VaultClient::new(e, &ctx.vault);
+    if config.max_utilization > 0 {
+        let vault_client = VaultClient::new(e, &vault);
         let vault_assets = vault_client.total_assets();
         let current_total_notional =
             market.data.long_notional_size + market.data.short_notional_size;
         let new_total_notional = current_total_notional + notional_size;
 
         let max_allowed_notional =
-            vault_assets.fixed_mul_floor(e, &ctx.config.max_utilization, &SCALAR_7);
+            vault_assets.fixed_mul_floor(e, &config.max_utilization, &SCALAR_7);
         if new_total_notional > max_allowed_notional {
             panic_with_error!(e, TradingError::UtilizationLimitExceeded);
         }
@@ -377,11 +344,11 @@ pub fn execute_create_position(
 
     // Check user position count limit
     let positions = storage::get_user_positions(e, user);
-    if positions.len() >= ctx.config.max_positions {
+    if positions.len() >= config.max_positions {
         panic_with_error!(e, TradingError::MaxPositionsReached)
     }
 
-    let current_price = ctx.load_price(e, asset);
+    let current_price = load_price(e, &config.oracle, asset_index);
     let market_order = entry_price == 0;
     let status = if market_order {
         PositionStatus::Open
@@ -429,7 +396,7 @@ pub fn execute_create_position(
         id,
         user.clone(),
         status,
-        asset.clone(),
+        asset_index,
         is_long,
         stop_loss,
         take_profit,
@@ -449,7 +416,7 @@ pub fn execute_create_position(
         notional_size.fixed_div_ceil(e, &market.config.price_impact_scalar, &SCALAR_7);
 
     // Transfer tokens from user to contract
-    let token_client = TokenClient::new(e, &ctx.token);
+    let token_client = TokenClient::new(e, &token);
     token_client.transfer(
         user,
         &e.current_contract_address(),
@@ -458,28 +425,9 @@ pub fn execute_create_position(
 
     // Only pay fee to vault when the position fills
     if market_order {
-        let vault_client = VaultClient::new(e, &ctx.vault);
         let vault_transfer = open_fee + price_impact_scalar;
-
-        let args: Vec<Val> = vec![
-            e,
-            e.current_contract_address().into_val(e),
-            vault_client.address.into_val(e),
-            vault_transfer.into_val(e),
-        ];
-        e.authorize_as_current_contract(vec![
-            e,
-            InvokerContractAuthEntry::Contract(SubContractInvocation {
-                context: ContractContext {
-                    contract: token_client.address.clone(),
-                    fn_name: Symbol::new(e, "transfer"),
-                    args: args.clone(),
-                },
-                sub_invocations: vec![e],
-            }),
-        ]);
-
-        vault_client.strategy_deposit(&e.current_contract_address(), &vault_transfer);
+        // Direct transfer to vault
+        token_client.transfer(&e.current_contract_address(), &vault, &vault_transfer);
     }
 
     market.store(e);
@@ -487,7 +435,12 @@ pub fn execute_create_position(
 
     storage::add_user_position(e, user, id);
 
-    emit_open_position(e, user.clone(), asset.clone(), id);
+    OpenPosition {
+        asset_index,
+        user: user.clone(),
+        position_id: id,
+    }
+    .publish(e);
 
     (id, open_fee + price_impact_scalar)
 }

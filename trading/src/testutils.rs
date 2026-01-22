@@ -2,7 +2,8 @@
 
 use crate::constants::SCALAR_7;
 use crate::{MarketConfig, TradingContract};
-use soroban_sdk::{testutils::Address as _, Address, Env};
+use sep_40_oracle::Asset;
+use soroban_sdk::{testutils::Address as _, Address, Env, Symbol};
 
 #[allow(dead_code)]
 pub(crate) fn create_trading(e: &Env) -> Address {
@@ -28,8 +29,11 @@ pub(crate) fn create_trading(e: &Env) -> Address {
 //     )
 // }
 
-pub fn default_market() -> MarketConfig {
+/// Create a default market config for testing
+/// The asset field is a placeholder - the actual asset is set by execute_set_market
+pub fn default_market(e: &Env) -> MarketConfig {
     MarketConfig {
+        asset: Asset::Other(Symbol::new(e, "PLACEHOLDER")), // Placeholder - set during set_market
         enabled: true,
         max_payout: 10 * SCALAR_7,          // 10.0 (1000% max payout)
         min_collateral: SCALAR_7,           // 10 tokens minimum

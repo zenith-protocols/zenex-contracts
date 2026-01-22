@@ -35,7 +35,7 @@ fn test_long_position_liquidation_after_week() {
     // Open long position: 10k collateral, 100k notional (10x leverage)
     let (position_id, _) = fixture.trading.open_position(
         &user,
-        &fixture.assets[AssetIndex::BTC],
+        &(AssetIndex::BTC as u32),
         &(10_000 * SCALAR_7),  // 10k collateral
         &(100_000 * SCALAR_7), // 100k notional (10x leverage)
         &true,                 // long
@@ -122,7 +122,7 @@ fn test_long_position_not_liquidatable_at_threshold() {
     // Open long position: 10k collateral, 100k notional (10x leverage)
     let (position_id, _) = fixture.trading.open_position(
         &user,
-        &fixture.assets[AssetIndex::BTC],
+        &(AssetIndex::BTC as u32),
         &(10_000 * SCALAR_7),  // 10k collateral
         &(100_000 * SCALAR_7), // 100k notional (10x leverage)
         &true,                 // long

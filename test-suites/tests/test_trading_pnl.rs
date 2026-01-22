@@ -26,7 +26,7 @@ fn test_profitable_long_position_small_gain() {
     // Open long position at 100K
     let (position_id, _) = fixture.trading.open_position(
         &user,
-        &fixture.assets[AssetIndex::BTC],
+        &(AssetIndex::BTC as u32),
         &(1_000 * SCALAR_7), // 1000 tokens collateral
         &(2_000 * SCALAR_7), // 1000 tokens collateral, // 2x leverage
         &true,
@@ -36,7 +36,7 @@ fn test_profitable_long_position_small_gain() {
     );
 
     let balance_after_open = fixture.token.balance(&user);
-    let market = default_market();
+    let market = default_market(&fixture.env);
     // Base fee is charged on notional_size (2000), not collateral (1000)
     let base_fee = (2_000 * SCALAR_7)
         .fixed_mul_ceil(market.base_fee, SCALAR_7)
@@ -116,7 +116,7 @@ fn test_long_short_week_5pct_move_print_balances() {
     // Choose collateral = 25k -> notional size = 50k (2x)
     let (user1_position_id, _) = fixture.trading.open_position(
         &user1,
-        &fixture.assets[AssetIndex::BTC],
+        &(AssetIndex::BTC as u32),
         &(25_000 * SCALAR_7),
         &(50_000 * SCALAR_7),
         &true,
@@ -128,7 +128,7 @@ fn test_long_short_week_5pct_move_print_balances() {
     // User2 opens a short position of 100k notional with 10x leverage -> collateral = 10k
     let (user2_position_id, _) = fixture.trading.open_position(
         &user2,
-        &fixture.assets[AssetIndex::BTC],
+        &(AssetIndex::BTC as u32),
         &(10_000 * SCALAR_7),
         &(100_000 * SCALAR_7),
         &false,
@@ -272,7 +272,7 @@ fn test_equal_short_long_notional() {
     // User1 opens a SHORT at 100k
     let (user1_position_id, _) = fixture.trading.open_position(
         &user1,
-        &fixture.assets[AssetIndex::BTC],
+        &(AssetIndex::BTC as u32),
         &collateral,
         &notional,
         &false,
@@ -284,7 +284,7 @@ fn test_equal_short_long_notional() {
     // User2 opens a LONG at 100k
     let (user2_position_id, _) = fixture.trading.open_position(
         &user2,
-        &fixture.assets[AssetIndex::BTC],
+        &(AssetIndex::BTC as u32),
         &collateral,
         &notional,
         &true,
@@ -403,7 +403,7 @@ fn test_changing_long_short_ratio() {
     // User1 opens LONG 100k
     let (user1_position_id, _) = fixture.trading.open_position(
         &user1,
-        &fixture.assets[AssetIndex::BTC],
+        &(AssetIndex::BTC as u32),
         &collateral_100k,
         &notional_100k,
         &true,
@@ -415,7 +415,7 @@ fn test_changing_long_short_ratio() {
     // User2 opens SHORT 50k
     let (user2_position_id, _) = fixture.trading.open_position(
         &user2,
-        &fixture.assets[AssetIndex::BTC],
+        &(AssetIndex::BTC as u32),
         &collateral_50k,
         &notional_50k,
         &false,
@@ -439,7 +439,7 @@ fn test_changing_long_short_ratio() {
     // User3 opens SHORT 100k
     let (user3_position_id, _) = fixture.trading.open_position(
         &user3,
-        &fixture.assets[AssetIndex::BTC],
+        &(AssetIndex::BTC as u32),
         &collateral_100k,
         &notional_100k,
         &false,
@@ -568,7 +568,7 @@ fn test_long_then_short_sequential_weeks() {
     // User1 opens a long position with 50k collateral and 2x leverage (100k notional)
     let (user1_position_id, _) = fixture.trading.open_position(
         &user1,
-        &fixture.assets[AssetIndex::BTC],
+        &(AssetIndex::BTC as u32),
         &(50_000 * SCALAR_7), // 50k collateral
         &(100_000 * SCALAR_7), // 100k notional (2x leverage)
         &true, // long
@@ -592,7 +592,7 @@ fn test_long_then_short_sequential_weeks() {
     // User2 opens a short position with 50k collateral and 2x leverage (100k notional)
     let (user2_position_id, _) = fixture.trading.open_position(
         &user2,
-        &fixture.assets[AssetIndex::BTC],
+        &(AssetIndex::BTC as u32),
         &(50_000 * SCALAR_7), // 50k collateral
         &(100_000 * SCALAR_7), // 100k notional (2x leverage)
         &false, // short
@@ -698,7 +698,7 @@ fn test_long_short_sequential_closes() {
     // User1 opens a long position with 10k collateral and 10x leverage (100k notional)
     let (user1_position_id, _) = fixture.trading.open_position(
         &user1,
-        &fixture.assets[AssetIndex::BTC],
+        &(AssetIndex::BTC as u32),
         &(10_000 * SCALAR_7), // 10k collateral
         &(100_000 * SCALAR_7), // 100k notional (10x leverage)
         &true, // long
@@ -710,7 +710,7 @@ fn test_long_short_sequential_closes() {
     // User2 opens a short position with 10k collateral and 10x leverage (100k notional)
     let (user2_position_id, _) = fixture.trading.open_position(
         &user2,
-        &fixture.assets[AssetIndex::BTC],
+        &(AssetIndex::BTC as u32),
         &(10_000 * SCALAR_7), // 10k collateral
         &(100_000 * SCALAR_7), // 100k notional (10x leverage)
         &false, // short
@@ -826,7 +826,7 @@ fn test_close_when_loss_exceeds_collateral() {
     // 1k collateral, 20k notional (20x leverage)
     let (position_id, _) = fixture.trading.open_position(
         &user,
-        &fixture.assets[AssetIndex::BTC],
+        &(AssetIndex::BTC as u32),
         &(1_000 * SCALAR_7),  // 1k collateral
         &(20_000 * SCALAR_7), // 20k notional (20x leverage)
         &true,                // long
