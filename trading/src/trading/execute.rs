@@ -1,10 +1,10 @@
 use crate::constants::SCALAR_7;
 use crate::dependencies::VaultClient;
 use crate::errors::TradingError;
-use crate::events::{FillPosition, Liquidation, StopLoss, TakeProfit};
+use crate::events::{FillLimit, Liquidation, StopLoss, TakeProfit};
 use crate::storage;
 use crate::trading::market::Market;
-use crate::trading::position::Position;
+use crate::trading::position::{CloseCalculation, Position};
 use crate::types::{ContractStatus, ExecuteRequest, ExecuteRequestType, TradingConfig};
 use sep_40_oracle::PriceFeedClient;
 use soroban_fixed_point_math::SorobanFixedPoint;
@@ -250,7 +250,7 @@ fn handle_close(
     result: &mut ProcessingResult,
     ctx: &mut ExecuteContext,
     position: &mut Position,
-) -> (i128, i128) {
+) -> CloseCalculation {
     let mut market = ctx.load_market(e, position.asset_index);
     let price = ctx.load_price(e, position.asset_index);
     let calc = position.calculate_close(e, price, ctx.config.caller_take_rate, &market);
@@ -280,7 +280,7 @@ fn handle_close(
     );
     ctx.cache_market(&market);
 
-    (calc.price, calc.fee)
+    calc
 }
 
 /// Fill a pending limit order
@@ -330,27 +330,32 @@ fn apply_fill(
         .notional_size
         .fixed_div_ceil(e, &market.config.price_impact_scalar, &SCALAR_7);
 
-    if should_pay_base_fee {
+    // Actual base_fee charged (0 if refunded for balancing trades)
+    let actual_base_fee = if should_pay_base_fee {
         // Position increases imbalance: send fees to vault (minus caller fee)
         let total_fee = base_fee + price_impact;
         let caller_fee = ctx.calculate_caller_fee(e, total_fee);
         result.add_transfer(&ctx.caller, caller_fee);
         result.add_transfer(&ctx.vault, total_fee - caller_fee);
+        base_fee
     } else {
         // Position is balancing: refund base_fee to user, only price_impact goes to vault
         result.add_transfer(&position.user, base_fee);
         let caller_fee = ctx.calculate_caller_fee(e, price_impact);
         result.add_transfer(&ctx.caller, caller_fee);
         result.add_transfer(&ctx.vault, price_impact - caller_fee);
-    }
+        0
+    };
 
     ctx.cache_market(&market);
     ctx.cache_position(position);
 
-    FillPosition {
+    FillLimit {
         asset_index: position.asset_index,
         user: position.user.clone(),
         position_id: position.id,
+        base_fee: actual_base_fee,
+        impact_fee: price_impact,
     }
     .publish(e);
 
@@ -369,14 +374,16 @@ fn apply_stop_loss(
         return TradingError::StopLossNotTriggered as u32;
     }
 
-    let (price, fee) = handle_close(e, result, ctx, position);
+    let calc = handle_close(e, result, ctx, position);
 
     StopLoss {
         asset_index: position.asset_index,
         user: position.user.clone(),
         position_id: position.id,
-        price,
-        fee,
+        price: calc.price,
+        base_fee: calc.base_fee,
+        impact_fee: calc.impact_fee,
+        interest: calc.interest,
     }
     .publish(e);
 
@@ -395,14 +402,16 @@ fn apply_take_profit(
         return TradingError::TakeProfitNotTriggered as u32;
     }
 
-    let (price, fee) = handle_close(e, result, ctx, position);
+    let calc = handle_close(e, result, ctx, position);
 
     TakeProfit {
         asset_index: position.asset_index,
         user: position.user.clone(),
         position_id: position.id,
-        price,
-        fee,
+        price: calc.price,
+        base_fee: calc.base_fee,
+        impact_fee: calc.impact_fee,
+        interest: calc.interest,
     }
     .publish(e);
 
@@ -420,7 +429,8 @@ fn apply_liquidation(
     let mut market = ctx.load_market(e, position.asset_index);
 
     let pnl = position.calculate_pnl(e, current_price);
-    let fee = position.calculate_fee(e, &market);
+    let fee_breakdown = position.calculate_fee_breakdown(e, &market);
+    let fee = fee_breakdown.base_fee + fee_breakdown.impact_fee + fee_breakdown.interest;
 
     let equity = position.collateral + pnl - fee;
     let required_margin =
@@ -443,7 +453,9 @@ fn apply_liquidation(
         user: position.user.clone(),
         position_id: position.id,
         price: current_price,
-        fee,
+        base_fee: fee_breakdown.base_fee,
+        impact_fee: fee_breakdown.impact_fee,
+        interest: fee_breakdown.interest,
     }
     .publish(e);
 

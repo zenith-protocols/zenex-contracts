@@ -1,36 +1,33 @@
 use sep_40_oracle::Asset;
 use soroban_sdk::{contractevent, Address};
 
-use crate::MarketConfig;
+use crate::TradingConfig;
 
 // Configuration Events
 
 #[contractevent]
 #[derive(Clone)]
 pub struct SetConfig {
-    pub oracle: Address,
-    pub caller_take_rate: i128,
-    pub max_positions: u32,
+    pub config: TradingConfig,
 }
 
 #[contractevent]
 #[derive(Clone)]
 pub struct QueueSetConfig {
-    pub oracle: Address,
-    pub caller_take_rate: i128,
-    pub max_positions: u32,
-    pub unlock_time: u64,
+    pub config: TradingConfig,
 }
 
 #[contractevent]
 #[derive(Clone)]
-pub struct CancelSetConfig {}
+pub struct CancelSetConfig {
+    pub config: TradingConfig,
+}
 
-// Market setup events still use Asset since index doesn't exist yet
 #[contractevent]
 #[derive(Clone)]
 pub struct QueueSetMarket {
-    pub config: MarketConfig, // Contains asset
+    #[topic]
+    pub asset: Asset,
 }
 
 #[contractevent]
@@ -44,6 +41,7 @@ pub struct CancelSetMarket {
 #[derive(Clone)]
 pub struct SetMarket {
     #[topic]
+    pub asset: Asset,
     pub asset_index: u32,
 }
 
@@ -53,16 +51,32 @@ pub struct SetStatus {
     pub status: u32,
 }
 
-// Position Events - all use asset_index
+// Position Events
 
 #[contractevent]
 #[derive(Clone)]
-pub struct OpenPosition {
+pub struct OpenMarket {
     #[topic]
     pub asset_index: u32,
     #[topic]
     pub user: Address,
+    #[topic]
     pub position_id: u32,
+    pub base_fee: i128,
+    pub impact_fee: i128,
+}
+
+#[contractevent]
+#[derive(Clone)]
+pub struct PlaceLimit {
+    #[topic]
+    pub asset_index: u32,
+    #[topic]
+    pub user: Address,
+    #[topic]
+    pub position_id: u32,
+    pub base_fee: i128,
+    pub impact_fee: i128,
 }
 
 #[contractevent]
@@ -72,19 +86,25 @@ pub struct ClosePosition {
     pub asset_index: u32,
     #[topic]
     pub user: Address,
+    #[topic]
     pub position_id: u32,
     pub price: i128,
-    pub fee: i128,
+    pub base_fee: i128,
+    pub impact_fee: i128,
+    pub interest: i128,
 }
 
 #[contractevent]
 #[derive(Clone)]
-pub struct FillPosition {
+pub struct FillLimit {
     #[topic]
     pub asset_index: u32,
     #[topic]
     pub user: Address,
+    #[topic]
     pub position_id: u32,
+    pub base_fee: i128,
+    pub impact_fee: i128,
 }
 
 #[contractevent]
@@ -94,9 +114,12 @@ pub struct Liquidation {
     pub asset_index: u32,
     #[topic]
     pub user: Address,
+    #[topic]
     pub position_id: u32,
     pub price: i128,
-    pub fee: i128,
+    pub base_fee: i128,
+    pub impact_fee: i128,
+    pub interest: i128,
 }
 
 #[contractevent]
@@ -106,9 +129,12 @@ pub struct TakeProfit {
     pub asset_index: u32,
     #[topic]
     pub user: Address,
+    #[topic]
     pub position_id: u32,
     pub price: i128,
-    pub fee: i128,
+    pub base_fee: i128,
+    pub impact_fee: i128,
+    pub interest: i128,
 }
 
 #[contractevent]
@@ -118,19 +144,25 @@ pub struct StopLoss {
     pub asset_index: u32,
     #[topic]
     pub user: Address,
+    #[topic]
     pub position_id: u32,
     pub price: i128,
-    pub fee: i128,
+    pub base_fee: i128,
+    pub impact_fee: i128,
+    pub interest: i128,
 }
 
 #[contractevent]
 #[derive(Clone)]
-pub struct CancelPosition {
+pub struct CancelLimit {
     #[topic]
     pub asset_index: u32,
     #[topic]
     pub user: Address,
+    #[topic]
     pub position_id: u32,
+    pub base_fee: i128,
+    pub impact_fee: i128,
 }
 
 #[contractevent]
@@ -140,6 +172,7 @@ pub struct ModifyCollateral {
     pub asset_index: u32,
     #[topic]
     pub user: Address,
+    #[topic]
     pub position_id: u32,
     pub amount: i128, // Positive = deposit, negative = withdraw
 }
@@ -151,6 +184,7 @@ pub struct SetTriggers {
     pub asset_index: u32,
     #[topic]
     pub user: Address,
+    #[topic]
     pub position_id: u32,
     pub take_profit: i128,
     pub stop_loss: i128,

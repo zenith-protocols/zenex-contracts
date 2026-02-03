@@ -1,7 +1,7 @@
 use crate::constants::SCALAR_7;
 use crate::dependencies::VaultClient;
 use crate::errors::TradingError;
-use crate::events::{CancelPosition, ClosePosition, ModifyCollateral, OpenPosition, SetTriggers};
+use crate::events::{CancelLimit, ClosePosition, ModifyCollateral, OpenMarket, PlaceLimit, SetTriggers};
 use crate::storage;
 use crate::trading::market::Market;
 use crate::trading::position::Position;
@@ -80,10 +80,12 @@ fn execute_cancel(e: &Env, position: &mut Position) -> (i128, i128) {
     storage::remove_user_position(e, &position.user, position.id);
     storage::remove_position(e, position.id);
 
-    CancelPosition {
+    CancelLimit {
         asset_index: position.asset_index,
         user: position.user.clone(),
         position_id: position.id,
+        base_fee,
+        impact_fee: price_impact,
     }
     .publish(e);
 
@@ -135,13 +137,15 @@ fn execute_close(e: &Env, position: &mut Position) -> (i128, i128) {
         user: position.user.clone(),
         position_id: position.id,
         price: calc.price,
-        fee: calc.fee,
+        base_fee: calc.base_fee,
+        impact_fee: calc.impact_fee,
+        interest: calc.interest,
     }
     .publish(e);
 
     market.store(e);
 
-    (calc.pnl, calc.fee)
+    (calc.pnl, calc.total_fee())
 }
 
 /// Modify collateral on a position to a new absolute value
@@ -404,12 +408,25 @@ pub fn execute_create_position(
 
     storage::add_user_position(e, user, id);
 
-    OpenPosition {
-        asset_index,
-        user: user.clone(),
-        position_id: id,
+    if market_order {
+        OpenMarket {
+            asset_index,
+            user: user.clone(),
+            position_id: id,
+            base_fee: open_fee,
+            impact_fee: price_impact_scalar,
+        }
+        .publish(e);
+    } else {
+        PlaceLimit {
+            asset_index,
+            user: user.clone(),
+            position_id: id,
+            base_fee: open_fee,
+            impact_fee: price_impact_scalar,
+        }
+        .publish(e);
     }
-    .publish(e);
 
     (id, open_fee + price_impact_scalar)
 }

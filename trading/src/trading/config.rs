@@ -38,18 +38,18 @@ pub fn execute_queue_set_config(e: &Env, config: &TradingConfig) {
     };
     storage::set_config_update(e, &update);
     QueueSetConfig {
-        oracle: config.oracle.clone(),
-        caller_take_rate: config.caller_take_rate,
-        max_positions: config.max_positions,
-        unlock_time,
+        config: config.clone(),
     }
     .publish(e);
 }
 
 pub fn execute_cancel_set_config(e: &Env) {
-    storage::get_config_update(e); // panics if not queued
+    let queued = storage::get_config_update(e); // panics if not queued
     storage::del_config_update(e);
-    CancelSetConfig {}.publish(e);
+    CancelSetConfig {
+        config: queued.config,
+    }
+    .publish(e);
 }
 
 pub fn execute_set_config(e: &Env) {
@@ -65,9 +65,7 @@ pub fn execute_set_config(e: &Env) {
     storage::del_config_update(e);
 
     SetConfig {
-        oracle: queued.config.oracle.clone(),
-        caller_take_rate: queued.config.caller_take_rate,
-        max_positions: queued.config.max_positions,
+        config: queued.config,
     }
     .publish(e);
 }
@@ -92,7 +90,7 @@ pub fn execute_queue_set_market(e: &Env, config: &MarketConfig) {
         },
     );
     QueueSetMarket {
-        config: config.clone(),
+        asset: config.asset.clone(),
     }
     .publish(e);
 }
@@ -134,7 +132,11 @@ pub fn execute_set_market(e: &Env, asset: &Asset) {
     // Clean up queued market
     storage::del_queued_market(e, asset);
 
-    SetMarket { asset_index }.publish(e);
+    SetMarket {
+        asset: asset.clone(),
+        asset_index,
+    }
+    .publish(e);
 }
 
 fn require_valid_market_config(e: &Env, config: &MarketConfig) {

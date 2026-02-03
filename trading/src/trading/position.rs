@@ -11,10 +11,26 @@ use soroban_sdk::{Address, Env};
 pub struct CloseCalculation {
     pub price: i128,
     pub pnl: i128,
-    pub fee: i128,
+    pub base_fee: i128,       // Fee based on notional size (may be 0 if balancing)
+    pub impact_fee: i128,     // Price impact fee
+    pub interest: i128,       // Accrued interest (can be negative for rebates)
     pub user_payout: i128,    // Amount to pay user (0 if loss > collateral)
     pub caller_fee: i128,     // Amount to pay caller/keeper
     pub vault_transfer: i128, // Positive = vault receives, negative = vault pays
+}
+
+impl CloseCalculation {
+    /// Total fee (for internal calculations)
+    pub fn total_fee(&self) -> i128 {
+        self.base_fee + self.impact_fee + self.interest
+    }
+}
+
+/// Fee breakdown for closing a position
+pub struct FeeBreakdown {
+    pub base_fee: i128,
+    pub impact_fee: i128,
+    pub interest: i128,
 }
 
 /// Implementation of position-related methods
@@ -85,7 +101,7 @@ impl Position {
             .fixed_mul_floor(e, &index_difference, &SCALAR_18)
     }
 
-    pub fn calculate_fee(&self, e: &Env, market: &Market) -> i128 {
+    pub fn calculate_fee_breakdown(&self, e: &Env, market: &Market) -> FeeBreakdown {
         // Pay base fee when closing a position on the dominant side
         // If balanced (both sides equal), both sides pay the base fee
         let is_long_dominant = market.data.long_notional_size > market.data.short_notional_size;
@@ -103,13 +119,22 @@ impl Position {
             0 // No base fee when closing on the non-dominant side
         };
 
-        let price_impact_scalar = self
+        let impact_fee = self
             .notional_size
             .fixed_div_ceil(e, &market.config.price_impact_scalar, &SCALAR_7);
 
-        let interest_fee = self.calculate_accrued_interest(e, market);
+        let interest = self.calculate_accrued_interest(e, market);
 
-        base_fee + price_impact_scalar + interest_fee
+        FeeBreakdown {
+            base_fee,
+            impact_fee,
+            interest,
+        }
+    }
+
+    pub fn calculate_fee(&self, e: &Env, market: &Market) -> i128 {
+        let breakdown = self.calculate_fee_breakdown(e, market);
+        breakdown.base_fee + breakdown.impact_fee + breakdown.interest
     }
 
     pub fn calculate_pnl(&self, e: &Env, current_price: i128) -> i128 {
@@ -163,7 +188,8 @@ impl Position {
         market: &Market,
     ) -> CloseCalculation {
         let pnl = self.calculate_pnl(e, price);
-        let fee = self.calculate_fee(e, market);
+        let fee_breakdown = self.calculate_fee_breakdown(e, market);
+        let fee = fee_breakdown.base_fee + fee_breakdown.impact_fee + fee_breakdown.interest;
         let raw_caller_fee = fee
             .fixed_mul_floor(e, &caller_take_rate, &SCALAR_7)
             .abs();
@@ -203,7 +229,9 @@ impl Position {
         CloseCalculation {
             price,
             pnl,
-            fee,
+            base_fee: fee_breakdown.base_fee,
+            impact_fee: fee_breakdown.impact_fee,
+            interest: fee_breakdown.interest,
             user_payout,
             caller_fee,
             vault_transfer,
