@@ -1,5 +1,6 @@
+use crate::errors::TradingError;
 use sep_40_oracle::Asset;
-use soroban_sdk::{contracttype, Address};
+use soroban_sdk::{contracttype, panic_with_error, Address, Env};
 
 #[contracttype]
 #[derive(Clone, Debug)]
@@ -26,6 +27,7 @@ pub struct MarketConfig {
     pub base_fee: i128,            // 0.05% = 5_000 (in SCALAR_7)
     pub price_impact_scalar: i128, // BTC: 8_000_000_000, XLM: 700_000_000
     pub base_hourly_rate: i128,    // 0.001% = 10000000000000 (in SCALAR_18)
+    pub ratio_cap: i128,           // Maximum long/short ratio for interest calculations (in SCALAR_18). E.g., 3 * SCALAR_18 = 3x cap
 }
 
 #[contracttype]
@@ -81,12 +83,11 @@ pub struct Position {
 #[contracttype]
 #[derive(Clone)]
 pub struct ExecuteRequest {
-    pub request_type: ExecuteRequestType,
+    pub request_type: u32,
     pub position_id: u32,
 }
 
 /// Types of keeper actions (permissionless)
-#[contracttype]
 #[derive(Clone, PartialEq)]
 #[repr(u32)]
 pub enum ExecuteRequestType {
@@ -94,5 +95,39 @@ pub enum ExecuteRequestType {
     StopLoss = 1,
     TakeProfit = 2,
     Liquidate = 3,
+}
+
+impl ExecuteRequestType {
+    pub fn from_u32(e: &Env, value: u32) -> Self {
+        match value {
+            0 => ExecuteRequestType::Fill,
+            1 => ExecuteRequestType::StopLoss,
+            2 => ExecuteRequestType::TakeProfit,
+            3 => ExecuteRequestType::Liquidate,
+            _ => panic_with_error!(e, TradingError::InvalidRequestType),
+        }
+    }
+}
+
+/// Contract operational status
+#[derive(Clone, PartialEq)]
+#[repr(u32)]
+pub enum ContractStatus {
+    Active = 0,
+    OnIce = 1,
+    Frozen = 2,
+    Setup = 99,
+}
+
+impl ContractStatus {
+    pub fn from_u32(e: &Env, value: u32) -> Self {
+        match value {
+            0 => ContractStatus::Active,
+            1 => ContractStatus::OnIce,
+            2 => ContractStatus::Frozen,
+            99 => ContractStatus::Setup,
+            _ => panic_with_error!(e, TradingError::InvalidStatus),
+        }
+    }
 }
 

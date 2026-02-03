@@ -14,3 +14,4 @@ pub use contract::*;
 pub use types::*;
 pub use errors::TradingError;
 pub use trading::{ExecuteRequest, ExecuteRequestType};
+pub use types::ContractStatus;

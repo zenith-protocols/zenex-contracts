@@ -1110,6 +1110,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde-json-core"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5b81787e655bd59cecadc91f7b6b8651330b2be6c33246039a65e5cd6f4e0828"
+dependencies = [
+ "ryu",
+ "serde",
+]
+
+[[package]]
 name = "serde_derive"
 version = "1.0.219"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1445,6 +1455,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "stellar-accounts"
+version = "0.6.0"
+source = "git+https://github.com/NethermindEth/stellar-contracts?branch=update-soroban25#b91f4691cee7436fa1bde326f650d5312883efdd"
+dependencies = [
+ "serde",
+ "serde-json-core",
+ "soroban-sdk",
+]
+
+[[package]]
+name = "stellar-contract-utils"
+version = "0.6.0"
+source = "git+https://github.com/NethermindEth/stellar-contracts?branch=update-soroban25#b91f4691cee7436fa1bde326f650d5312883efdd"
+dependencies = [
+ "soroban-sdk",
+]
+
+[[package]]
 name = "stellar-macros"
 version = "0.6.0"
 source = "git+https://github.com/NethermindEth/stellar-contracts?branch=update-soroban25#b91f4691cee7436fa1bde326f650d5312883efdd"
@@ -1598,6 +1626,7 @@ dependencies = [
  "soroban-fixed-point-math",
  "soroban-sdk",
  "stellar-access",
+ "stellar-contract-utils",
  "stellar-macros",
 ]
 
@@ -1788,6 +1817,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "56e6c93f3a0c3b36176cb1327a4958a0353d5d166c2a35cb268ace15e91d3b57"
 dependencies = [
  "windows-link",
+]
+
+[[package]]
+name = "zenex-account"
+version = "0.0.0"
+dependencies = [
+ "soroban-sdk",
+ "stellar-accounts",
+ "stellar-contract-utils",
+ "stellar-macros",
 ]
 
 [[package]]

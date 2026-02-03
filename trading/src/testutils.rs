@@ -1,6 +1,6 @@
 #![cfg(feature = "testutils")]
 
-use crate::constants::SCALAR_7;
+use crate::constants::{SCALAR_7, SCALAR_18};
 use crate::{MarketConfig, TradingContract};
 use sep_40_oracle::Asset;
 use soroban_sdk::{testutils::Address as _, Address, Env, Symbol};
@@ -45,5 +45,6 @@ pub fn default_market(e: &Env) -> MarketConfig {
         base_fee: 0_0005000, // 0.05% = 5_000 (in SCALAR_7)
         price_impact_scalar: 8_000_000_000 * SCALAR_7, // BTC: 8_000_000_000, XLM: 700_000_000
         base_hourly_rate: 10000000000000, // 0.001% = 10000000000000 (in SCALAR_18)
+        ratio_cap: 5 * SCALAR_18, // 5x ratio cap (in SCALAR_18)
     }
 }

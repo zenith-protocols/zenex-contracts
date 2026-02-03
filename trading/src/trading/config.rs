@@ -1,11 +1,11 @@
-use crate::constants::{SCALAR_18, SCALAR_7, STATUS_SETUP};
+use crate::constants::{SCALAR_18, SCALAR_7, SECONDS_PER_WEEK};
 use crate::dependencies::VaultClient;
 use crate::errors::TradingError;
 use crate::events::{
     CancelSetConfig, CancelSetMarket, QueueSetConfig, QueueSetMarket, SetConfig, SetMarket,
 };
-use crate::types::{ConfigUpdate, MarketConfig, QueuedMarketInit, TradingConfig};
-use crate::{constants::SECONDS_PER_WEEK, storage, MarketData};
+use crate::types::{ConfigUpdate, ContractStatus, MarketConfig, QueuedMarketInit, TradingConfig};
+use crate::{storage, MarketData};
 use sep_40_oracle::{Asset, PriceFeedClient};
 use soroban_sdk::{panic_with_error, Address, Env, String};
 
@@ -21,14 +21,14 @@ pub fn execute_initialize(e: &Env, name: &String, vault: &Address, config: &Trad
     require_valid_config(e, config);
     storage::set_config(e, config);
     storage::set_market_counter(e, 0);
-    storage::set_status(e, STATUS_SETUP)
+    storage::set_status(e, &ContractStatus::Setup);
 }
 
 pub fn execute_queue_set_config(e: &Env, config: &TradingConfig) {
     require_valid_config(e, config);
     let mut unlock_time = e.ledger().timestamp();
     // 1-week delay unless in Setup mode (allows immediate config during initial setup)
-    if storage::get_status(e) != STATUS_SETUP {
+    if storage::get_status(e) != ContractStatus::Setup {
         unlock_time += SECONDS_PER_WEEK;
     }
 
@@ -79,7 +79,7 @@ pub fn execute_queue_set_market(e: &Env, config: &MarketConfig) {
 
     let mut unlock_time = e.ledger().timestamp();
     // 1-week delay unless in Setup mode (allows immediate market activation during initial setup)
-    if storage::get_status(e) != STATUS_SETUP {
+    if storage::get_status(e) != ContractStatus::Setup {
         unlock_time += SECONDS_PER_WEEK;
     }
 
@@ -155,6 +155,14 @@ fn require_valid_market_config(e: &Env, config: &MarketConfig) {
 
     // Margin relationship validation
     if config.init_margin < config.maintenance_margin {
+        panic_with_error!(e, TradingError::InvalidConfig);
+    }
+
+    // ratio_cap must be between 1x and 100x (SCALAR_18 to 100 * SCALAR_18)
+    // - Minimum 1x ensures the interest rate mechanism can function
+    // - Maximum 100x prevents overflow when squaring the ratio
+    const MAX_RATIO_CAP: i128 = 100 * SCALAR_18;
+    if config.ratio_cap < SCALAR_18 || config.ratio_cap > MAX_RATIO_CAP {
         panic_with_error!(e, TradingError::InvalidConfig);
     }
 }

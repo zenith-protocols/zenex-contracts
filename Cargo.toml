@@ -1,7 +1,9 @@
 [workspace]
 resolver = "2"
-members = [ "test-suites",
-  "trading"
+members = [
+  "account",
+  "test-suites",
+  "trading",
 ]
 
 [workspace.dependencies.soroban-sdk]
@@ -21,6 +23,14 @@ git = "https://github.com/NethermindEth/stellar-contracts"
 branch = "update-soroban25"
 
 [workspace.dependencies.stellar-macros]
+git = "https://github.com/NethermindEth/stellar-contracts"
+branch = "update-soroban25"
+
+[workspace.dependencies.stellar-accounts]
+git = "https://github.com/NethermindEth/stellar-contracts"
+branch = "update-soroban25"
+
+[workspace.dependencies.stellar-contract-utils]
 git = "https://github.com/NethermindEth/stellar-contracts"
 branch = "update-soroban25"
 

@@ -1,6 +1,6 @@
 use crate::{
     errors::TradingError,
-    types::{MarketConfig, MarketData, Position, QueuedMarketInit, TradingConfig},
+    types::{ContractStatus, MarketConfig, MarketData, Position, QueuedMarketInit, TradingConfig},
     ConfigUpdate,
 };
 use sep_40_oracle::Asset;
@@ -324,15 +324,17 @@ pub fn set_token(e: &Env, token: &Address) {
         .set(&TradingStorageKey::Token, token);
 }
 
-pub fn get_status(e: &Env) -> u32 {
-    e.storage()
+pub fn get_status(e: &Env) -> ContractStatus {
+    let status: u32 = e
+        .storage()
         .instance()
         .get(&TradingStorageKey::Status)
-        .unwrap_optimized()
+        .unwrap_optimized();
+    ContractStatus::from_u32(e, status)
 }
 
-pub fn set_status(e: &Env, status: u32) {
+pub fn set_status(e: &Env, status: &ContractStatus) {
     e.storage()
         .instance()
-        .set(&TradingStorageKey::Status, &status);
+        .set(&TradingStorageKey::Status, &(status.clone() as u32));
 }

@@ -1,17 +1,18 @@
 #![allow(clippy::too_many_arguments)]
 
-use crate::constants::{STATUS_ACTIVE, STATUS_FROZEN, STATUS_ON_ICE};
 use crate::errors::TradingError;
 use crate::events::SetStatus;
 use crate::trading::ExecuteRequest;
-use crate::types::MarketConfig;
+use crate::types::{ContractStatus, MarketConfig};
 use crate::{storage, trading, TradingConfig};
-use soroban_sdk::panic_with_error;
 use sep_40_oracle::Asset;
-use soroban_sdk::{contract, contractclient, contractimpl, Address, BytesN, Env, String, Vec};
+use soroban_sdk::panic_with_error;
+use soroban_sdk::{contract, contractclient, contractimpl, Address, Env, String, Vec};
 use stellar_access::ownable::{self as ownable, Ownable};
-use stellar_macros::only_owner;
+use stellar_contract_utils::upgradeable::UpgradeableInternal;
+use stellar_macros::{only_owner, Upgradeable};
 
+#[derive(Upgradeable)]
 #[contract]
 pub struct TradingContract;
 
@@ -157,8 +158,6 @@ pub trait Trading {
     /// # Returns
     /// Vec<u32> with result codes for each action (0 = success, error code otherwise)
     fn execute(e: Env, caller: Address, requests: Vec<ExecuteRequest>) -> Vec<u32>;
-
-    fn upgrade(e: Env, wasm_hash: BytesN<32>);
 }
 
 #[contractimpl]
@@ -212,11 +211,13 @@ impl Trading for TradingContract {
 
     #[only_owner]
     fn set_status(e: Env, status: u32) {
-        if status != STATUS_ACTIVE && status != STATUS_ON_ICE && status != STATUS_FROZEN {
-            panic_with_error!(&e, TradingError::InvalidStatus);
+        let status_enum = ContractStatus::from_u32(&e, status);
+        match status_enum {
+            ContractStatus::Setup => panic_with_error!(&e, TradingError::InvalidStatus),
+            _ => {}
         }
         storage::extend_instance(&e);
-        storage::set_status(&e, status);
+        storage::set_status(&e, &status_enum);
         SetStatus { status }.publish(&e);
     }
 
@@ -264,13 +265,17 @@ impl Trading for TradingContract {
         storage::extend_instance(&e);
         trading::execute_trigger(&e, &caller, requests)
     }
-
-    #[only_owner]
-    fn upgrade(e: Env, wasm_hash: BytesN<32>) {
-        storage::extend_instance(&e);
-        e.deployer().update_current_contract_wasm(wasm_hash.clone());
-    }
 }
 
 #[contractimpl(contracttrait)]
 impl Ownable for TradingContract {}
+
+impl UpgradeableInternal for TradingContract {
+    fn _require_auth(e: &Env, operator: &Address) {
+        operator.require_auth();
+        let owner = ownable::get_owner(e).expect("owner not set");
+        if *operator != owner {
+            panic_with_error!(e, TradingError::Unauthorized)
+        }
+    }
+}

@@ -3,7 +3,7 @@ use soroban_sdk::{vec as svec, Address};
 use test_suites::setup::create_fixture_with_data;
 use test_suites::test_fixture::{AssetIndex, TestFixture};
 use test_suites::SCALAR_7;
-use trading::{ExecuteRequest, ExecuteRequestType};
+use trading::ExecuteRequest;
 
 const SECONDS_IN_WEEK: u64 = 604800; // 7 days in seconds
 
@@ -66,7 +66,7 @@ fn test_long_position_liquidation_after_week() {
         &svec![
             &fixture.env,
             ExecuteRequest {
-                request_type: ExecuteRequestType::Liquidate,
+                request_type: 3, // Liquidate
                 position_id,
             },
         ],
@@ -148,7 +148,7 @@ fn test_long_position_not_liquidatable_at_threshold() {
         &svec![
             &fixture.env,
             ExecuteRequest {
-                request_type: ExecuteRequestType::Liquidate,
+                request_type: 3, // Liquidate
                 position_id,
             },
         ],

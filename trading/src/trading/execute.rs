@@ -1,11 +1,11 @@
-use crate::constants::{SCALAR_7, STATUS_ACTIVE, STATUS_ON_ICE};
+use crate::constants::SCALAR_7;
 use crate::dependencies::VaultClient;
 use crate::errors::TradingError;
 use crate::events::{FillPosition, Liquidation, StopLoss, TakeProfit};
 use crate::storage;
 use crate::trading::market::Market;
 use crate::trading::position::Position;
-use crate::types::{ExecuteRequest, ExecuteRequestType, TradingConfig};
+use crate::types::{ContractStatus, ExecuteRequest, ExecuteRequestType, TradingConfig};
 use sep_40_oracle::PriceFeedClient;
 use soroban_fixed_point_math::SorobanFixedPoint;
 use soroban_sdk::token::TokenClient;
@@ -147,8 +147,9 @@ pub fn execute_trigger(
 ) -> Vec<u32> {
     // Allow keeper actions in Active and OnIce
     let status = storage::get_status(e);
-    if status != STATUS_ACTIVE && status != STATUS_ON_ICE {
-        panic_with_error!(e, TradingError::ContractPaused);
+    match status {
+        ContractStatus::Active | ContractStatus::OnIce => {}
+        _ => panic_with_error!(e, TradingError::ContractPaused),
     }
 
     let mut ctx = ExecuteContext::load(e, caller.clone());
@@ -198,10 +199,11 @@ fn process_execute_requests(
     let mut result = ProcessingResult::new(e);
 
     for request in requests.iter() {
+        let request_type = ExecuteRequestType::from_u32(e, request.request_type);
         let mut position = ctx.load_position(e, request.position_id);
 
         // Validate position filled status for the requested action
-        let (is_valid, specific_error) = match request.request_type {
+        let (is_valid, specific_error) = match request_type {
             ExecuteRequestType::Fill => {
                 if position.filled {
                     (false, TradingError::PositionNotPending as u32)
@@ -225,7 +227,7 @@ fn process_execute_requests(
             continue;
         }
 
-        let action_result = match request.request_type {
+        let action_result = match request_type {
             ExecuteRequestType::Fill => apply_fill(e, &mut result, ctx, &mut position),
             ExecuteRequestType::StopLoss => apply_stop_loss(e, &mut result, ctx, &mut position),
             ExecuteRequestType::TakeProfit => apply_take_profit(e, &mut result, ctx, &mut position),

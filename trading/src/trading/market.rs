@@ -54,6 +54,7 @@ impl Market {
             self.config.base_hourly_rate,
             self.data.long_notional_size,
             self.data.short_notional_size,
+            self.config.ratio_cap,
         );
 
         // Update indices with compound interest over the time period

@@ -4,6 +4,9 @@ use soroban_sdk::contracterror;
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum TradingError {
+    // Access
+    Unauthorized = 1,
+
     // Configuration
     AlreadyInitialized = 300,
     NotInitialized = 301,
@@ -40,6 +43,7 @@ pub enum TradingError {
 
     // Action/Request
     ActionNotAllowedForStatus = 351,
+    InvalidRequestType = 352,
 
     // Status
     InvalidStatus = 381,

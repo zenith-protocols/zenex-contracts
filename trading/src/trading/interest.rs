@@ -10,6 +10,7 @@ pub fn calculate_long_short_hourly_rates(
     base_hourly_rate: i128, // Base hourly rate (in SCALAR_18)
     long_notional: i128,    // Total long notional size
     short_notional: i128,   // Total short notional size
+    ratio_cap: i128,        // Maximum ratio cap for interest calculations (in SCALAR_18)
 ) -> (i128, i128) {
     // If no positions, return zero rates
     if long_notional == 0 && short_notional == 0 {
@@ -41,17 +42,23 @@ pub fn calculate_long_short_hourly_rates(
         return (base_hourly_rate, base_hourly_rate);
     }
 
+    // Calculate ratios and apply cap to prevent extreme interest rates
     let short_ratio = short_notional.fixed_div_floor(e, &long_notional, &SCALAR_18);
     let long_ratio = long_notional.fixed_div_floor(e, &short_notional, &SCALAR_18);
-    let squared_long_ratio = long_ratio.fixed_mul_floor(e, &long_ratio, &SCALAR_18);
-    let squared_short_ratio = short_ratio.fixed_mul_floor(e, &short_ratio, &SCALAR_18);
+
+    // Apply ratio cap to both sides
+    let capped_long_ratio = long_ratio.min(ratio_cap);
+    let capped_short_ratio = short_ratio.min(ratio_cap);
+
+    let squared_long_ratio = capped_long_ratio.fixed_mul_floor(e, &capped_long_ratio, &SCALAR_18);
+    let squared_short_ratio = capped_short_ratio.fixed_mul_floor(e, &capped_short_ratio, &SCALAR_18);
 
     // Calculate interest rates based on long/short dominance
     let (long_rate, short_rate) = if long_notional > short_notional {
         // When longs ≥ shorts:
         // hourlyRateLong = hourlyRate * (notionalLongs / notionalShorts)
         // hourlyRateShort = -0.8 * hourlyRate * (notionalLongs / notionalShorts)^2
-        let long_rate = base_hourly_rate.fixed_mul_floor(e, &long_ratio, &SCALAR_18);
+        let long_rate = base_hourly_rate.fixed_mul_floor(e, &capped_long_ratio, &SCALAR_18);
         let short_rate = -base_hourly_rate
             .fixed_mul_floor(e, &discount_multiplier, &SCALAR_18)
             .fixed_mul_floor(e, &squared_long_ratio, &SCALAR_18);
@@ -63,7 +70,7 @@ pub fn calculate_long_short_hourly_rates(
         let long_rate = -base_hourly_rate
             .fixed_mul_floor(e, &discount_multiplier, &SCALAR_18)
             .fixed_mul_floor(e, &squared_short_ratio, &SCALAR_18);
-        let short_rate = base_hourly_rate.fixed_mul_floor(e, &short_ratio, &SCALAR_18);
+        let short_rate = base_hourly_rate.fixed_mul_floor(e, &capped_short_ratio, &SCALAR_18);
         (long_rate, short_rate)
     };
 

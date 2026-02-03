@@ -1,10 +1,11 @@
-use crate::constants::{SCALAR_7, STATUS_ACTIVE, STATUS_ON_ICE};
+use crate::constants::SCALAR_7;
 use crate::dependencies::VaultClient;
 use crate::errors::TradingError;
 use crate::events::{CancelPosition, ClosePosition, ModifyCollateral, OpenPosition, SetTriggers};
 use crate::storage;
 use crate::trading::market::Market;
 use crate::trading::position::Position;
+use crate::types::ContractStatus;
 use sep_40_oracle::PriceFeedClient;
 use soroban_fixed_point_math::SorobanFixedPoint;
 use soroban_sdk::token::TokenClient;
@@ -26,16 +27,18 @@ pub fn load_price(e: &Env, oracle: &Address, asset_index: u32, max_price_age: u3
 /// Check status allows user actions (not Setup or Frozen)
 fn require_active_or_on_ice(e: &Env) {
     let status = storage::get_status(e);
-    if status != STATUS_ACTIVE && status != STATUS_ON_ICE {
-        panic_with_error!(e, TradingError::ContractPaused);
+    match status {
+        ContractStatus::Active | ContractStatus::OnIce => {}
+        _ => panic_with_error!(e, TradingError::ContractPaused),
     }
 }
 
 /// Check status is Active (for opening new positions)
 fn require_active(e: &Env) {
     let status = storage::get_status(e);
-    if status != STATUS_ACTIVE {
-        panic_with_error!(e, TradingError::ContractPaused);
+    match status {
+        ContractStatus::Active => {}
+        _ => panic_with_error!(e, TradingError::ContractPaused),
     }
 }
 
