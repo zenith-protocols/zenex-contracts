@@ -1,27 +1,23 @@
-use crate::constants::{MAX_PRICE_AGE, SCALAR_7, STATUS_ACTIVE, STATUS_ON_ICE};
+use crate::constants::{SCALAR_7, STATUS_ACTIVE, STATUS_ON_ICE};
 use crate::dependencies::VaultClient;
 use crate::errors::TradingError;
-use crate::events::{
-    CancelPosition, ClosePosition, DepositCollateral, OpenPosition, SetStopLoss, SetTakeProfit,
-    WithdrawCollateral,
-};
+use crate::events::{CancelPosition, ClosePosition, ModifyCollateral, OpenPosition, SetTriggers};
 use crate::storage;
 use crate::trading::market::Market;
 use crate::trading::position::Position;
-use crate::types::PositionStatus;
 use sep_40_oracle::PriceFeedClient;
 use soroban_fixed_point_math::SorobanFixedPoint;
 use soroban_sdk::token::TokenClient;
 use soroban_sdk::{panic_with_error, Address, Env};
 
 /// Load the current price for an asset from the oracle
-pub fn load_price(e: &Env, oracle: &Address, asset_index: u32) -> i128 {
+pub fn load_price(e: &Env, oracle: &Address, asset_index: u32, max_price_age: u32) -> i128 {
     let market_config = storage::get_market_config(e, asset_index);
     let price_data = match PriceFeedClient::new(e, oracle).lastprice(&market_config.asset) {
         Some(price) => price,
         None => panic_with_error!(e, TradingError::PriceNotFound),
     };
-    if price_data.timestamp + MAX_PRICE_AGE < e.ledger().timestamp() {
+    if price_data.timestamp + (max_price_age as u64) < e.ledger().timestamp() {
         panic_with_error!(e, TradingError::PriceStale);
     }
     price_data.price
@@ -51,12 +47,10 @@ pub fn execute_close_position(e: &Env, position_id: u32) -> (i128, i128) {
     position.user.require_auth();
     require_active_or_on_ice(e);
 
-    match position.status {
-        PositionStatus::Pending => execute_cancel(e, &mut position),
-        PositionStatus::Open => execute_close(e, &mut position),
-        PositionStatus::Closed => {
-            panic_with_error!(e, TradingError::PositionAlreadyClosed);
-        }
+    if position.filled {
+        execute_close(e, &mut position)
+    } else {
+        execute_cancel(e, &mut position)
     }
 }
 
@@ -80,9 +74,8 @@ fn execute_cancel(e: &Env, position: &mut Position) -> (i128, i128) {
     let total_refund = position.collateral + base_fee + price_impact;
     token_client.transfer(&e.current_contract_address(), &position.user, &total_refund);
 
-    position.status = PositionStatus::Closed;
     storage::remove_user_position(e, &position.user, position.id);
-    position.store(e);
+    storage::remove_position(e, position.id);
 
     CancelPosition {
         asset_index: position.asset_index,
@@ -104,7 +97,7 @@ fn execute_close(e: &Env, position: &mut Position) -> (i128, i128) {
     let mut market = Market::load_checked(e, position.asset_index);
     market.update_borrowing_index(e);
 
-    let price = load_price(e, &config.oracle, position.asset_index);
+    let price = load_price(e, &config.oracle, position.asset_index, config.max_price_age);
     let calc = position.calculate_close(e, price, 0, &market);
 
     let token_client = TokenClient::new(e, &token);
@@ -131,8 +124,8 @@ fn execute_close(e: &Env, position: &mut Position) -> (i128, i128) {
         position.is_long,
     );
 
-    position.status = PositionStatus::Closed;
     storage::remove_user_position(e, &position.user, position.id);
+    storage::remove_position(e, position.id);
 
     ClosePosition {
         asset_index: position.asset_index,
@@ -144,7 +137,6 @@ fn execute_close(e: &Env, position: &mut Position) -> (i128, i128) {
     .publish(e);
 
     market.store(e);
-    position.store(e);
 
     (calc.pnl, calc.fee)
 }
@@ -156,7 +148,7 @@ pub fn execute_modify_collateral(e: &Env, position_id: u32, new_collateral: i128
     require_active_or_on_ice(e);
 
     // Must be open position
-    if position.status != PositionStatus::Open {
+    if !position.filled {
         panic_with_error!(e, TradingError::PositionNotOpen);
     }
 
@@ -169,7 +161,7 @@ pub fn execute_modify_collateral(e: &Env, position_id: u32, new_collateral: i128
 
     let mut market = Market::load_checked(e, position.asset_index);
     market.update_borrowing_index(e);
-    let current_price = load_price(e, &config.oracle, position.asset_index);
+    let current_price = load_price(e, &config.oracle, position.asset_index, config.max_price_age);
 
     let token_client = TokenClient::new(e, &token);
 
@@ -181,20 +173,13 @@ pub fn execute_modify_collateral(e: &Env, position_id: u32, new_collateral: i128
         token_client.transfer(&position.user, &e.current_contract_address(), &collateral_diff);
         position.collateral = new_collateral;
         market.update_stats(collateral_diff, 0, position.is_long);
-
-        DepositCollateral {
-            asset_index: position.asset_index,
-            user: position.user.clone(),
-            position_id: position.id,
-            amount: collateral_diff,
-        }
-        .publish(e);
     } else if collateral_diff < 0 {
         // Withdraw collateral
         let withdraw_amount = -collateral_diff;
 
         let pnl = position.calculate_pnl(e, current_price);
-        let equity = new_collateral + pnl;
+        let fee = position.calculate_fee(e, &market);
+        let equity = new_collateral + pnl - fee;
         let required_margin = position
             .notional_size
             .fixed_mul_floor(e, &market.config.init_margin, &SCALAR_7);
@@ -206,16 +191,15 @@ pub fn execute_modify_collateral(e: &Env, position_id: u32, new_collateral: i128
         position.collateral = new_collateral;
         token_client.transfer(&e.current_contract_address(), &position.user, &withdraw_amount);
         market.update_stats(-withdraw_amount, 0, position.is_long);
-
-        WithdrawCollateral {
-            asset_index: position.asset_index,
-            user: position.user.clone(),
-            position_id: position.id,
-            amount: withdraw_amount,
-        }
-        .publish(e);
     }
-    // If collateral_diff == 0, no transfer needed
+
+    ModifyCollateral {
+        asset_index: position.asset_index,
+        user: position.user.clone(),
+        position_id: position.id,
+        amount: collateral_diff, // Positive = deposit, negative = withdraw
+    }
+    .publish(e);
 
     market.store(e);
     position.store(e);
@@ -229,12 +213,12 @@ pub fn execute_set_triggers(e: &Env, position_id: u32, take_profit: i128, stop_l
     require_active_or_on_ice(e);
 
     // Must be open position
-    if position.status != PositionStatus::Open {
+    if !position.filled {
         panic_with_error!(e, TradingError::PositionNotOpen);
     }
 
-    let oracle = storage::get_config(e).oracle;
-    let current_price = load_price(e, &oracle, position.asset_index);
+    let config = storage::get_config(e);
+    let current_price = load_price(e, &config.oracle, position.asset_index, config.max_price_age);
 
     // Validate and set take profit
     if take_profit > 0 {
@@ -249,19 +233,8 @@ pub fn execute_set_triggers(e: &Env, position_id: u32, take_profit: i128, stop_l
                 panic_with_error!(e, TradingError::InvalidTakeProfitPrice);
             }
         }
-        position.take_profit = take_profit;
-
-        SetTakeProfit {
-            asset_index: position.asset_index,
-            user: position.user.clone(),
-            position_id: position.id,
-            price: take_profit,
-        }
-        .publish(e);
-    } else if take_profit == 0 {
-        // Clear take profit
-        position.take_profit = 0;
     }
+    position.take_profit = take_profit;
 
     // Validate and set stop loss
     if stop_loss > 0 {
@@ -276,19 +249,17 @@ pub fn execute_set_triggers(e: &Env, position_id: u32, take_profit: i128, stop_l
                 panic_with_error!(e, TradingError::InvalidStopLossPrice);
             }
         }
-        position.stop_loss = stop_loss;
-
-        SetStopLoss {
-            asset_index: position.asset_index,
-            user: position.user.clone(),
-            position_id: position.id,
-            price: stop_loss,
-        }
-        .publish(e);
-    } else if stop_loss == 0 {
-        // Clear stop loss
-        position.stop_loss = 0;
     }
+    position.stop_loss = stop_loss;
+
+    SetTriggers {
+        asset_index: position.asset_index,
+        user: position.user.clone(),
+        position_id: position.id,
+        take_profit,
+        stop_loss,
+    }
+    .publish(e);
 
     position.store(e);
 }
@@ -348,13 +319,8 @@ pub fn execute_create_position(
         panic_with_error!(e, TradingError::MaxPositionsReached)
     }
 
-    let current_price = load_price(e, &config.oracle, asset_index);
+    let current_price = load_price(e, &config.oracle, asset_index, config.max_price_age);
     let market_order = entry_price == 0;
-    let status = if market_order {
-        PositionStatus::Open
-    } else {
-        PositionStatus::Pending
-    };
 
     let actual_entry_price = if market_order {
         current_price
@@ -395,7 +361,7 @@ pub fn execute_create_position(
         e,
         id,
         user.clone(),
-        status,
+        market_order, // filled = true for market orders, false for limit orders
         asset_index,
         is_long,
         stop_loss,

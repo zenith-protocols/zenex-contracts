@@ -2,7 +2,7 @@ use crate::constants::{SCALAR_18, SCALAR_7};
 use crate::storage;
 use crate::trading::market::Market;
 use crate::types::ExecuteRequestType;
-pub(crate) use crate::types::{Position, PositionStatus};
+pub(crate) use crate::types::Position;
 use soroban_fixed_point_math::SorobanFixedPoint;
 use soroban_sdk::{Address, Env};
 
@@ -24,7 +24,7 @@ impl Position {
         e: &Env,
         id: u32,
         user: Address,
-        status: PositionStatus,
+        filled: bool,
         asset_index: u32,
         is_long: bool,
         stop_loss: i128,
@@ -37,7 +37,7 @@ impl Position {
         Position {
             id,
             user,
-            status,
+            filled,
             asset_index,
             is_long,
             stop_loss,
@@ -62,13 +62,13 @@ impl Position {
         self.user.require_auth();
     }
 
-    /// Check if the requested keeper action is allowed based on this position's status
+    /// Check if the requested keeper action is allowed based on this position's filled status
     pub fn validate_keeper_action(&self, action: &ExecuteRequestType) -> bool {
         match action {
-            ExecuteRequestType::Fill => self.status == PositionStatus::Pending,
-            ExecuteRequestType::StopLoss => self.status == PositionStatus::Open,
-            ExecuteRequestType::TakeProfit => self.status == PositionStatus::Open,
-            ExecuteRequestType::Liquidate => self.status == PositionStatus::Open,
+            ExecuteRequestType::Fill => !self.filled,
+            ExecuteRequestType::StopLoss => self.filled,
+            ExecuteRequestType::TakeProfit => self.filled,
+            ExecuteRequestType::Liquidate => self.filled,
         }
     }
 
@@ -175,7 +175,12 @@ impl Position {
         };
 
         let payout = self.collateral + net_pnl;
-        let user_payout = payout.max(0);
+
+        // Cap payout to max_payout (percentage of notional size)
+        let max_payout_amount = self
+            .notional_size
+            .fixed_mul_floor(e, &market.config.max_payout, &SCALAR_7);
+        let user_payout = payout.max(0).min(max_payout_amount);
 
         // Calculate remaining funds after paying user
         let remaining = (self.collateral - user_payout).max(0);

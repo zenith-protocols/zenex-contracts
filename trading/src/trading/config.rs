@@ -6,7 +6,7 @@ use crate::events::{
 };
 use crate::types::{ConfigUpdate, MarketConfig, QueuedMarketInit, TradingConfig};
 use crate::{constants::SECONDS_PER_WEEK, storage, MarketData};
-use sep_40_oracle::Asset;
+use sep_40_oracle::{Asset, PriceFeedClient};
 use soroban_sdk::{panic_with_error, Address, Env, String};
 
 pub fn execute_initialize(e: &Env, name: &String, vault: &Address, config: &TradingConfig) {
@@ -74,7 +74,7 @@ pub fn execute_set_config(e: &Env) {
 
 
 
-pub fn execute_queue_set_market(e: &Env, asset: &Asset, config: &MarketConfig) {
+pub fn execute_queue_set_market(e: &Env, config: &MarketConfig) {
     require_valid_market_config(e, config);
 
     let mut unlock_time = e.ledger().timestamp();
@@ -83,23 +83,16 @@ pub fn execute_queue_set_market(e: &Env, asset: &Asset, config: &MarketConfig) {
         unlock_time += SECONDS_PER_WEEK;
     }
 
-    // Create config with correct asset (overrides any placeholder in input config)
-    let market_config = MarketConfig {
-        asset: asset.clone(),
-        ..config.clone()
-    };
-
     storage::set_queued_market(
         e,
-        asset,
+        &config.asset,
         &QueuedMarketInit {
-            config: market_config.clone(),
+            config: config.clone(),
             unlock_time,
         },
     );
     QueueSetMarket {
-        asset: asset.clone(),
-        config: market_config,
+        config: config.clone(),
     }
     .publish(e);
 }
@@ -183,6 +176,12 @@ fn require_valid_config(e: &Env, config: &TradingConfig) {
     if config.max_utilization != 0
         && (config.max_utilization < SCALAR_7 || config.max_utilization > MAX_UTILIZATION_CAP)
     {
+        panic_with_error!(e, TradingError::InvalidConfig);
+    }
+
+    // max_price_age must be greater than oracle resolution
+    let oracle_resolution = PriceFeedClient::new(e, &config.oracle).resolution();
+    if config.max_price_age <= oracle_resolution {
         panic_with_error!(e, TradingError::InvalidConfig);
     }
 }

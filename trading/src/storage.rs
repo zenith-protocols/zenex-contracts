@@ -289,6 +289,11 @@ pub fn set_position(e: &Env, position_id: u32, position: &Position) {
         .extend_ttl(&key, LEDGER_THRESHOLD_SHARED, LEDGER_BUMP_SHARED);
 }
 
+pub fn remove_position(e: &Env, position_id: u32) {
+    let key = TradingStorageKey::Position(position_id);
+    e.storage().persistent().remove(&key);
+}
+
 /********** Vault Storage **********/
 
 pub fn get_vault(e: &Env) -> Address {

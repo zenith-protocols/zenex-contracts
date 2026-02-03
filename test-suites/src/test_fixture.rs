@@ -104,6 +104,7 @@ impl TestFixture<'_> {
             caller_take_rate: 0, // 1% in SCALAR_7
             max_positions: 10,
             max_utilization: 0, // 0 = disabled. Max leverage in SCALAR_7 (e.g., 20_000_000 = 2x, 50_000_000 = 5x)
+            max_price_age: 900, // 15 minutes (must be > oracle resolution of 300)
         };
         // Set the vault in trading contract
         // After initialize, status is Setup (99) which allows market queuing without delay
@@ -122,9 +123,9 @@ impl TestFixture<'_> {
         fixture
     }
 
-    pub fn create_market(&mut self, asset: &StellarAsset, config: MarketConfig) {
-        self.trading.queue_set_market(&asset, &config);
-        self.trading.set_market(&asset);
+    pub fn create_market(&mut self, config: &MarketConfig) {
+        self.trading.queue_set_market(config);
+        self.trading.set_market(&config.asset);
     }
 
     pub fn read_config(&self) -> trading::TradingConfig {
@@ -164,6 +165,15 @@ impl TestFixture<'_> {
                 .persistent()
                 .get(&trading::storage::TradingStorageKey::Position(position_id))
                 .unwrap()
+        })
+    }
+
+    pub fn position_exists(&self, position_id: u32) -> bool {
+        self.env.as_contract(&self.trading.address, || {
+            self.env
+                .storage()
+                .persistent()
+                .has(&trading::storage::TradingStorageKey::Position(position_id))
         })
     }
 

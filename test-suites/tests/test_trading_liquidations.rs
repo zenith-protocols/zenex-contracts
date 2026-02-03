@@ -3,7 +3,7 @@ use soroban_sdk::{vec as svec, Address};
 use test_suites::setup::create_fixture_with_data;
 use test_suites::test_fixture::{AssetIndex, TestFixture};
 use test_suites::SCALAR_7;
-use trading::{ExecuteRequest, ExecuteRequestType, PositionStatus};
+use trading::{ExecuteRequest, ExecuteRequestType};
 
 const SECONDS_IN_WEEK: u64 = 604800; // 7 days in seconds
 
@@ -73,25 +73,22 @@ fn test_long_position_liquidation_after_week() {
     );
 
     // Check if position liquidated
-    let position_after = fixture.read_position(position_id);
     let result_code = result.get(0).unwrap();
 
     // Debug output
     println!("\nTest at price: {}", current_price);
     println!("Result code: {} (0=success, 20=BadRequest/not eligible)", result_code);
-    println!("Position status: {:?}", position_after.status);
 
-    // Test passes if liquidation was successful (result code 0) and position is closed
+    // Test passes if liquidation was successful (result code 0) and position is deleted
     assert_eq!(
         result_code,
         0u32,
         "Liquidation should succeed when equity < maintenance margin (after accounting for interest). Result code {} indicates failure.",
         result_code
     );
-    assert_eq!(
-        position_after.status,
-        PositionStatus::Closed,
-        "Position should be closed after successful liquidation"
+    assert!(
+        !fixture.position_exists(position_id),
+        "Position should be deleted after successful liquidation"
     );
 
     // Verify contract balance is 0 (all funds transferred)
@@ -164,18 +161,17 @@ fn test_long_position_not_liquidatable_at_threshold() {
     // Debug output
     println!("\nTest at price: {}", current_price);
     println!("Result code: {} (0=success, 20=BadRequest/not eligible)", result_code);
-    println!("Position status: {:?}", position_after.status);
+    println!("Position filled: {}", position_after.filled);
 
-    // Test passes if liquidation FAILED (result code 345 = PositionNotLiquidatable) and position is still open
+    // Test passes if liquidation FAILED (result code 345 = PositionNotLiquidatable) and position still exists
     assert_eq!(
         result_code,
         345u32,  // TradingError::PositionNotLiquidatable
         "Liquidation should fail when equity >= maintenance margin. Result code {} indicates it succeeded when it shouldn't.",
         result_code
     );
-    assert_eq!(
-        position_after.status,
-        PositionStatus::Open,
-        "Position should remain open when equity >= maintenance margin"
+    assert!(
+        position_after.filled,
+        "Position should remain open (filled=true) when equity >= maintenance margin"
     );
 }

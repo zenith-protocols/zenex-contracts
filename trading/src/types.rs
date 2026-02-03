@@ -8,15 +8,7 @@ pub struct TradingConfig {
     pub caller_take_rate: i128, // Percentage of fee that a user gets for keeping the protocol running
     pub max_positions: u32,     // Maximum number of positions per user
     pub max_utilization: i128,  // Max leverage: total_notional / vault_assets (SCALAR_7). E.g., 20_000_000 = 2x, 50_000_000 = 5x. 0 = disabled
-}
-
-/// Position status
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum PositionStatus {
-    Pending, // Limit order not yet filled
-    Open,    // Position is open
-    Closed,  // Position closed
+    pub max_price_age: u32,     // Maximum age of oracle price in seconds. Must be > oracle resolution
 }
 
 #[contracttype]
@@ -71,10 +63,10 @@ pub struct MarketData {
 #[contracttype]
 #[derive(Clone)]
 pub struct Position {
-    pub id: u32,                // Unique identifier for the position
-    pub user: Address,          // Address of the user who owns this position
-    pub status: PositionStatus, // Current status of the position
-    pub asset_index: u32,       // Index of the asset being traded (references market list)
+    pub id: u32,         // Unique identifier for the position
+    pub user: Address,   // Address of the user who owns this position
+    pub filled: bool,    // Whether the position has been filled (false = pending limit order, true = open)
+    pub asset_index: u32, // Index of the asset being traded (references market list)
     pub is_long: bool,          // Whether position is long (true) or short (false)
     pub stop_loss: i128,        // Stop loss price level, 0 if not set
     pub take_profit: i128,      // Take profit price level, 0 if not set

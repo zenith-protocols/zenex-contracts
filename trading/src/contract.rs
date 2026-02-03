@@ -49,18 +49,18 @@ pub trait Trading {
     /// Update the trading configuration
     ///
     /// ### Panics
-    /// If the caller is not the owner or the update is not queued
+    /// If the caller is not the owner
+    /// If there is no queued configuration update
     fn set_config(e: Env);
 
     /// (Owner only) Queue setting data for a market
     ///
     /// ### Arguments
-    /// * `asset` - The underlying asset to add as a market
     /// * `config` - The MarketConfig for the market
     ///
     /// ### Panics
     /// If the caller is not the owner
-    fn queue_set_market(e: Env, asset: Asset, config: MarketConfig);
+    fn queue_set_market(e: Env, config: MarketConfig);
 
     /// (Owner only) Cancels a queued market initialization
     ///
@@ -92,11 +92,11 @@ pub trait Trading {
     /// If the caller is not the owner
     fn set_status(e: Env, status: u32);
 
-    /// Open a position (long or short)
+    /// Open a position
     ///
     /// # Arguments
     /// * `user` - User address opening position
-    /// * `asset_index` - Index of the asset to trade (from market list)
+    /// * `asset_index` - Index of the asset to trade
     /// * `collateral` - Collateral amount
     /// * `notional_size` - Notional size of the position
     /// * `is_long` - Whether position is long (true) or short (false)
@@ -194,9 +194,9 @@ impl Trading for TradingContract {
     }
 
     #[only_owner]
-    fn queue_set_market(e: Env, asset: Asset, config: MarketConfig) {
+    fn queue_set_market(e: Env, config: MarketConfig) {
         storage::extend_instance(&e);
-        trading::execute_queue_set_market(&e, &asset, &config);
+        trading::execute_queue_set_market(&e, &config);
     }
 
     #[only_owner]

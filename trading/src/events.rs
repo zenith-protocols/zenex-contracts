@@ -30,9 +30,7 @@ pub struct CancelSetConfig {}
 #[contractevent]
 #[derive(Clone)]
 pub struct QueueSetMarket {
-    #[topic]
-    pub asset: Asset,
-    pub config: MarketConfig,
+    pub config: MarketConfig, // Contains asset
 }
 
 #[contractevent]
@@ -137,44 +135,23 @@ pub struct CancelPosition {
 
 #[contractevent]
 #[derive(Clone)]
-pub struct WithdrawCollateral {
+pub struct ModifyCollateral {
     #[topic]
     pub asset_index: u32,
     #[topic]
     pub user: Address,
     pub position_id: u32,
-    pub amount: i128,
+    pub amount: i128, // Positive = deposit, negative = withdraw
 }
 
 #[contractevent]
 #[derive(Clone)]
-pub struct DepositCollateral {
+pub struct SetTriggers {
     #[topic]
     pub asset_index: u32,
     #[topic]
     pub user: Address,
     pub position_id: u32,
-    pub amount: i128,
-}
-
-#[contractevent]
-#[derive(Clone)]
-pub struct SetTakeProfit {
-    #[topic]
-    pub asset_index: u32,
-    #[topic]
-    pub user: Address,
-    pub position_id: u32,
-    pub price: i128,
-}
-
-#[contractevent]
-#[derive(Clone)]
-pub struct SetStopLoss {
-    #[topic]
-    pub asset_index: u32,
-    #[topic]
-    pub user: Address,
-    pub position_id: u32,
-    pub price: i128,
+    pub take_profit: i128,
+    pub stop_loss: i128,
 }

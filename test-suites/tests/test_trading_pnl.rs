@@ -5,7 +5,6 @@ use test_suites::setup::create_fixture_with_data;
 use test_suites::test_fixture::{AssetIndex, TestFixture};
 use test_suites::SCALAR_7;
 use trading::testutils::default_market;
-use trading::PositionStatus;
 
 const SECONDS_IN_WEEK: u64 = 604800; // 7 days in seconds
 const SECONDS_IN_HOUR: u64 = 3600; // 1 hour in seconds
@@ -64,9 +63,8 @@ fn test_profitable_long_position_small_gain() {
     // Close position using the new close_position function
     fixture.trading.close_position(&position_id);
 
-    // Verify position is closed
-    let position = fixture.read_position(position_id);
-    assert_eq!(position.status, PositionStatus::Closed);
+    // Verify position is deleted
+    assert!(!fixture.position_exists(position_id));
 
     // Calculate expected profit: 5% price increase on notional (2000) = 100 tokens
     // User pays fees on open and close:
@@ -155,15 +153,9 @@ fn test_long_short_week_5pct_move_print_balances() {
     // User2 closes the short using new close_position function
     fixture.trading.close_position(&user2_position_id);
 
-    // Ensure positions are closed
-    assert_eq!(
-        fixture.read_position(user1_position_id).status,
-        PositionStatus::Closed
-    );
-    assert_eq!(
-        fixture.read_position(user2_position_id).status,
-        PositionStatus::Closed
-    );
+    // Ensure positions are deleted
+    assert!(!fixture.position_exists(user1_position_id));
+    assert!(!fixture.position_exists(user2_position_id));
 
     // Print final balances of User1, User2 and the Vault (token balances)
     let user1_balance = fixture.token.balance(&user1);
@@ -309,15 +301,9 @@ fn test_equal_short_long_notional() {
     fixture.trading.close_position(&user1_position_id);
     fixture.trading.close_position(&user2_position_id);
 
-    // Ensure positions are closed
-    assert_eq!(
-        fixture.read_position(user1_position_id).status,
-        PositionStatus::Closed
-    );
-    assert_eq!(
-        fixture.read_position(user2_position_id).status,
-        PositionStatus::Closed
-    );
+    // Ensure positions are deleted
+    assert!(!fixture.position_exists(user1_position_id));
+    assert!(!fixture.position_exists(user2_position_id));
 
     // Print final balances of User1, User2 and the Vault (token balances) and deltas
     let user1_balance = fixture.token.balance(&user1);
@@ -465,19 +451,10 @@ fn test_changing_long_short_ratio() {
     fixture.trading.close_position(&user2_position_id);
     fixture.trading.close_position(&user3_position_id);
 
-    // Ensure positions are closed
-    assert_eq!(
-        fixture.read_position(user1_position_id).status,
-        PositionStatus::Closed
-    );
-    assert_eq!(
-        fixture.read_position(user2_position_id).status,
-        PositionStatus::Closed
-    );
-    assert_eq!(
-        fixture.read_position(user3_position_id).status,
-        PositionStatus::Closed
-    );
+    // Ensure positions are deleted
+    assert!(!fixture.position_exists(user1_position_id));
+    assert!(!fixture.position_exists(user2_position_id));
+    assert!(!fixture.position_exists(user3_position_id));
 
     // Balances and deltas
     let user1_balance = fixture.token.balance(&user1);
@@ -619,15 +596,9 @@ fn test_long_then_short_sequential_weeks() {
     // User2 closes the short position using new close_position function
     fixture.trading.close_position(&user2_position_id);
 
-    // Ensure positions are closed
-    assert_eq!(
-        fixture.read_position(user1_position_id).status,
-        PositionStatus::Closed
-    );
-    assert_eq!(
-        fixture.read_position(user2_position_id).status,
-        PositionStatus::Closed
-    );
+    // Ensure positions are deleted
+    assert!(!fixture.position_exists(user1_position_id));
+    assert!(!fixture.position_exists(user2_position_id));
 
     // Calculate deltas
     let user1_balance = fixture.token.balance(&user1);
@@ -749,15 +720,9 @@ fn test_long_short_sequential_closes() {
     // User2 closes the short position using new close_position function
     fixture.trading.close_position(&user2_position_id);
 
-    // Ensure positions are closed
-    assert_eq!(
-        fixture.read_position(user1_position_id).status,
-        PositionStatus::Closed
-    );
-    assert_eq!(
-        fixture.read_position(user2_position_id).status,
-        PositionStatus::Closed
-    );
+    // Ensure positions are deleted
+    assert!(!fixture.position_exists(user1_position_id));
+    assert!(!fixture.position_exists(user2_position_id));
 
     // Calculate deltas
     let user1_balance = fixture.token.balance(&user1);
@@ -852,9 +817,8 @@ fn test_close_when_loss_exceeds_collateral() {
     // Close position - this should NOT panic even though loss > collateral
     let (pnl, fee) = fixture.trading.close_position(&position_id);
 
-    // Verify position is closed
-    let position = fixture.read_position(position_id);
-    assert_eq!(position.status, PositionStatus::Closed);
+    // Verify position is deleted
+    assert!(!fixture.position_exists(position_id));
 
     // Verify PnL is negative (loss)
     assert!(pnl < 0, "Expected negative PnL (loss), got {}", pnl);

@@ -1,11 +1,11 @@
-use crate::constants::{MAX_PRICE_AGE, SCALAR_7, STATUS_ACTIVE, STATUS_ON_ICE};
+use crate::constants::{SCALAR_7, STATUS_ACTIVE, STATUS_ON_ICE};
 use crate::dependencies::VaultClient;
 use crate::errors::TradingError;
 use crate::events::{FillPosition, Liquidation, StopLoss, TakeProfit};
 use crate::storage;
 use crate::trading::market::Market;
 use crate::trading::position::Position;
-use crate::types::{ExecuteRequest, ExecuteRequestType, PositionStatus, TradingConfig};
+use crate::types::{ExecuteRequest, ExecuteRequestType, TradingConfig};
 use sep_40_oracle::PriceFeedClient;
 use soroban_fixed_point_math::SorobanFixedPoint;
 use soroban_sdk::token::TokenClient;
@@ -16,7 +16,6 @@ use soroban_sdk::{map, panic_with_error, vec, Address, Env, Map, Vec};
 pub struct ExecuteContext {
     pub config: TradingConfig,
     pub vault: Address,
-    pub token: Address,
     pub caller: Address,
     pub markets: Map<u32, Market>,
     pub positions: Map<u32, Position>,
@@ -32,11 +31,9 @@ impl ExecuteContext {
         }
         let config = storage::get_config(e);
         let vault = storage::get_vault(e);
-        let token = storage::get_token(e);
         ExecuteContext {
             config,
             vault,
-            token,
             caller,
             markets: map![e],
             positions: map![e],
@@ -102,7 +99,7 @@ impl ExecuteContext {
                 Some(price) => price,
                 None => panic_with_error!(e, TradingError::PriceNotFound),
             };
-        if price_data.timestamp + MAX_PRICE_AGE < e.ledger().timestamp() {
+        if price_data.timestamp + (self.config.max_price_age as u64) < e.ledger().timestamp() {
             panic_with_error!(e, TradingError::PriceStale);
         }
 
@@ -113,10 +110,6 @@ impl ExecuteContext {
     pub fn calculate_caller_fee(&self, e: &Env, fee: i128) -> i128 {
         let caller_fee = fee.fixed_mul_floor(e, &self.config.caller_take_rate, &SCALAR_7);
         if caller_fee > 0 { caller_fee } else { 0 }
-    }
-
-    pub fn check_max_positions(&self, positions: Vec<u32>) -> bool {
-        positions.len() < self.config.max_positions
     }
 }
 
@@ -207,10 +200,10 @@ fn process_execute_requests(
     for request in requests.iter() {
         let mut position = ctx.load_position(e, request.position_id);
 
-        // Validate position status for the requested action
+        // Validate position filled status for the requested action
         let (is_valid, specific_error) = match request.request_type {
             ExecuteRequestType::Fill => {
-                if position.status != PositionStatus::Pending {
+                if position.filled {
                     (false, TradingError::PositionNotPending as u32)
                 } else {
                     (true, 0)
@@ -219,7 +212,7 @@ fn process_execute_requests(
             ExecuteRequestType::StopLoss
             | ExecuteRequestType::TakeProfit
             | ExecuteRequestType::Liquidate => {
-                if position.status != PositionStatus::Open {
+                if !position.filled {
                     (false, TradingError::ActionNotAllowedForStatus as u32)
                 } else {
                     (true, 0)
@@ -276,7 +269,7 @@ fn handle_close(
     }
 
     storage::remove_user_position(e, &position.user, position.id);
-    position.status = PositionStatus::Closed;
+    storage::remove_position(e, position.id);
 
     market.update_stats(
         -position.collateral,
@@ -284,7 +277,6 @@ fn handle_close(
         position.is_long,
     );
     ctx.cache_market(&market);
-    ctx.cache_position(position);
 
     (calc.price, calc.fee)
 }
@@ -308,7 +300,7 @@ fn apply_fill(
         return TradingError::LimitOrderNotFillable as u32;
     }
 
-    position.status = PositionStatus::Open;
+    position.filled = true;
     position.entry_price = current_price;
 
     let mut market = ctx.load_market(e, position.asset_index);
@@ -459,10 +451,8 @@ fn apply_liquidation(
         position.is_long,
     );
 
-    position.status = PositionStatus::Closed;
-
     storage::remove_user_position(e, &position.user, position.id);
+    storage::remove_position(e, position.id);
     ctx.cache_market(&market);
-    ctx.cache_position(position);
     0
 }
