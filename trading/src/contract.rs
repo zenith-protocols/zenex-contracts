@@ -3,7 +3,7 @@
 use crate::errors::TradingError;
 use crate::events::SetStatus;
 use crate::trading::ExecuteRequest;
-use crate::types::{ContractStatus, MarketConfig};
+use crate::types::{ContractStatus, MarketConfig, MarketData, Position};
 use crate::{storage, trading, TradingConfig};
 use sep_40_oracle::Asset;
 use soroban_sdk::panic_with_error;
@@ -158,6 +158,75 @@ pub trait Trading {
     /// # Returns
     /// Vec<u32> with result codes for each action (0 = success, error code otherwise)
     fn execute(e: Env, caller: Address, requests: Vec<ExecuteRequest>) -> Vec<u32>;
+
+    /// Get a position by ID
+    ///
+    /// # Arguments
+    /// * `position_id` - The unique identifier of the position
+    ///
+    /// # Returns
+    /// The Position struct containing all position data
+    ///
+    /// # Panics
+    /// If the position does not exist
+    fn get_position(e: Env, position_id: u32) -> Position;
+
+    /// Get all position IDs for a user
+    ///
+    /// # Arguments
+    /// * `user` - The address of the user
+    ///
+    /// # Returns
+    /// Vector of position IDs owned by the user
+    fn get_user_positions(e: Env, user: Address) -> Vec<u32>;
+
+    /// Get market configuration by asset index
+    ///
+    /// # Arguments
+    /// * `asset_index` - The index of the market
+    ///
+    /// # Returns
+    /// The MarketConfig struct containing market parameters
+    ///
+    /// # Panics
+    /// If the market does not exist
+    fn get_market_config(e: Env, asset_index: u32) -> MarketConfig;
+
+    /// Get market data (open interest, funding indices) by asset index
+    ///
+    /// # Arguments
+    /// * `asset_index` - The index of the market
+    ///
+    /// # Returns
+    /// The MarketData struct containing current market state
+    ///
+    /// # Panics
+    /// * `MarketNotFound` - If no market exists at the given asset_index
+    fn get_market_data(e: Env, asset_index: u32) -> MarketData;
+
+    /// Get the trading configuration
+    ///
+    /// # Returns
+    /// The TradingConfig struct containing global trading parameters
+    fn get_config(e: Env) -> TradingConfig;
+
+    /// Get the contract status
+    ///
+    /// # Returns
+    /// The current status code (0: Active, 1: OnIce, 2: Frozen, 99: Setup)
+    fn get_status(e: Env) -> u32;
+
+    /// Get the vault address
+    ///
+    /// # Returns
+    /// The address of the vault contract
+    fn get_vault(e: Env) -> Address;
+
+    /// Get the collateral token address
+    ///
+    /// # Returns
+    /// The address of the collateral token contract
+    fn get_token(e: Env) -> Address;
 }
 
 #[contractimpl]
@@ -217,7 +286,7 @@ impl Trading for TradingContract {
             _ => {}
         }
         storage::extend_instance(&e);
-        storage::set_status(&e, &status_enum);
+        storage::set_status(&e, status);
         SetStatus { status }.publish(&e);
     }
 
@@ -264,6 +333,38 @@ impl Trading for TradingContract {
     fn execute(e: Env, caller: Address, requests: Vec<ExecuteRequest>) -> Vec<u32> {
         storage::extend_instance(&e);
         trading::execute_trigger(&e, &caller, requests)
+    }
+
+    fn get_position(e: Env, position_id: u32) -> Position {
+        storage::get_position(&e, position_id)
+    }
+
+    fn get_user_positions(e: Env, user: Address) -> Vec<u32> {
+        storage::get_user_positions(&e, &user)
+    }
+
+    fn get_market_config(e: Env, asset_index: u32) -> MarketConfig {
+        storage::get_market_config(&e, asset_index)
+    }
+
+    fn get_market_data(e: Env, asset_index: u32) -> MarketData {
+        storage::get_market_data(&e, asset_index)
+    }
+
+    fn get_config(e: Env) -> TradingConfig {
+        storage::get_config(&e)
+    }
+
+    fn get_status(e: Env) -> u32 {
+        storage::get_status(&e)
+    }
+
+    fn get_vault(e: Env) -> Address {
+        storage::get_vault(&e)
+    }
+
+    fn get_token(e: Env) -> Address {
+        storage::get_token(&e)
     }
 }
 

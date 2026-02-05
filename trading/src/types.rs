@@ -6,28 +6,10 @@ use soroban_sdk::{contracttype, panic_with_error, Address, Env};
 #[derive(Clone, Debug)]
 pub struct TradingConfig {
     pub oracle: Address,        // Address of the oracle contract
-    pub caller_take_rate: i128, // Percentage of fee that a user gets for keeping the protocol running
+    pub max_price_age: u32,     // Maximum age of oracle price in seconds
+    pub caller_take_rate: i128, // Percentage of fee given to caller (SCALAR_7)
     pub max_positions: u32,     // Maximum number of positions per user
-    pub max_utilization: i128,  // Max leverage: total_notional / vault_assets (SCALAR_7). E.g., 20_000_000 = 2x, 50_000_000 = 5x. 0 = disabled
-    pub max_price_age: u32,     // Maximum age of oracle price in seconds. Must be > oracle resolution
-}
-
-#[contracttype]
-#[derive(Clone)]
-pub struct MarketConfig {
-    pub asset: Asset,         // The asset this market trades (immutable once set)
-    pub enabled: bool,        // Whether trading is enabled for this asset
-    pub max_payout: i128,     // Maximum payout percentage (with 7 decimals)
-    pub min_collateral: i128, // Minimum collateral required for a position
-    pub max_collateral: i128, // Maximum collateral allowed for a position
-
-    pub init_margin: i128,        // Initial margin percentage (with 7 decimals)
-    pub maintenance_margin: i128, // Maintenance margin percentage (with 7 decimals)
-
-    pub base_fee: i128,            // 0.05% = 5_000 (in SCALAR_7)
-    pub price_impact_scalar: i128, // BTC: 8_000_000_000, XLM: 700_000_000
-    pub base_hourly_rate: i128,    // 0.001% = 10000000000000 (in SCALAR_18)
-    pub ratio_cap: i128,           // Maximum long/short ratio for interest calculations (in SCALAR_18). E.g., 3 * SCALAR_18 = 3x cap
+    pub max_utilization: i128,  // Max total_notional / vault_assets ratio (SCALAR_7)
 }
 
 #[contracttype]
@@ -46,40 +28,47 @@ pub struct QueuedMarketInit {
 
 #[contracttype]
 #[derive(Clone)]
-pub struct MarketData {
-    // Long position data
-    pub long_collateral: i128,    // Total collateral in long positions
-    pub long_notional_size: i128, // Total notional size of long positions
-
-    // Short position data
-    pub short_collateral: i128,    // Total collateral in short positions
-    pub short_notional_size: i128, // Total notional size of short positions
-
-    // Interest rate tracking
-    pub long_interest_index: i128, // Cumulative interest rate index for longs (with 18 decimals, starting at 10^18)
-    pub short_interest_index: i128, // Cumulative interest rate index for shorts (with 18 decimals, starting at 10^18)
-    pub last_update: u64,           // Last time the market data was updated
+pub struct MarketConfig {
+    pub asset: Asset,             // The asset this market trades (immutable once set)
+    pub enabled: bool,            // Whether trading is enabled for this asset
+    pub max_payout: i128,         // Maximum payout as ratio of collateral (SCALAR_7)
+    pub min_collateral: i128,     // Minimum collateral required (SCALAR_7)
+    pub max_collateral: i128,     // Maximum collateral allowed (SCALAR_7)
+    pub init_margin: i128,        // Initial margin requirement, determines max leverage (1/init_margin) (SCALAR_7)
+    pub maintenance_margin: i128, // Maintenance margin threshold, determines liquidation price (SCALAR_7)
+    pub base_fee: i128,           // Base trading fee percentage (SCALAR_7)
+    pub price_impact_scalar: i128, // Divisor for price impact calculation (SCALAR_7)
+    pub base_hourly_rate: i128,   // Base hourly interest rate (SCALAR_18)
+    pub ratio_cap: i128,          // Maximum long/short ratio for interest (SCALAR_18)
 }
 
-/// Structure to store information about a position
+#[contracttype]
+#[derive(Clone)]
+pub struct MarketData {
+    pub long_notional_size: i128,   // Total notional size of long positions (SCALAR_7)
+    pub short_notional_size: i128,  // Total notional size of short positions (SCALAR_7)
+    pub long_interest_index: i128,  // Cumulative interest index for longs (SCALAR_18)
+    pub short_interest_index: i128, // Cumulative interest index for shorts (SCALAR_18)
+    pub last_update: u64,           // Last update timestamp
+}
+
 #[contracttype]
 #[derive(Clone)]
 pub struct Position {
-    pub id: u32,         // Unique identifier for the position
-    pub user: Address,   // Address of the user who owns this position
-    pub filled: bool,    // Whether the position has been filled (false = pending limit order, true = open)
-    pub asset_index: u32, // Index of the asset being traded (references market list)
-    pub is_long: bool,          // Whether position is long (true) or short (false)
-    pub stop_loss: i128,        // Stop loss price level, 0 if not set
-    pub take_profit: i128,      // Take profit price level, 0 if not set
-    pub entry_price: i128,      // Price at which position was opened
-    pub collateral: i128,       // Amount of collateral provided by user
-    pub notional_size: i128,    // Notional size of the position
-    pub interest_index: i128,   // Interest index value when position was created or last updated
-    pub created_at: u64,        // Timestamp when position was created
+    pub id: u32,              // Unique identifier
+    pub user: Address,        // Owner address
+    pub filled: bool,         // Whether filled (false = pending limit order)
+    pub asset_index: u32,     // Index of the traded asset
+    pub is_long: bool,        // Long (true) or short (false)
+    pub stop_loss: i128,      // Stop loss price, 0 if not set (SCALAR_7)
+    pub take_profit: i128,    // Take profit price, 0 if not set (SCALAR_7)
+    pub entry_price: i128,    // Entry price (SCALAR_7)
+    pub collateral: i128,     // Collateral amount (SCALAR_7)
+    pub notional_size: i128,  // Notional size (SCALAR_7)
+    pub interest_index: i128, // Interest index at creation (SCALAR_18)
+    pub created_at: u64,      // Creation timestamp
 }
 
-/// Request for keeper execution
 #[contracttype]
 #[derive(Clone)]
 pub struct ExecuteRequest {
@@ -87,8 +76,7 @@ pub struct ExecuteRequest {
     pub position_id: u32,
 }
 
-/// Types of keeper actions (permissionless)
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Debug)]
 #[repr(u32)]
 pub enum ExecuteRequestType {
     Fill = 0,
@@ -109,8 +97,7 @@ impl ExecuteRequestType {
     }
 }
 
-/// Contract operational status
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Debug)]
 #[repr(u32)]
 pub enum ContractStatus {
     Active = 0,
@@ -130,4 +117,3 @@ impl ContractStatus {
         }
     }
 }
-

@@ -1,7 +1,6 @@
 mod actions;
 mod config;
 mod execute;
-mod interest;
 mod market;
 mod position;
 

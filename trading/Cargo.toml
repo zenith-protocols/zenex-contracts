@@ -11,11 +11,14 @@ doctest = false
 [features]
 testutils = [
     "soroban-sdk/testutils",
+    "sep-40-oracle/testutils",
+    "sep-41-token/testutils",
 ]
 
 [dependencies]
 soroban-sdk = { workspace = true }
 sep-40-oracle = { workspace = true }
+sep-41-token = { workspace = true }
 soroban-fixed-point-math = { workspace = true }
 stellar-access = { workspace = true }
 stellar-contract-utils = { workspace = true }
@@ -23,3 +26,5 @@ stellar-macros = { workspace = true }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
+sep-40-oracle = { workspace = true, features = ["testutils"] }
+sep-41-token = { workspace = true, features = ["testutils"] }

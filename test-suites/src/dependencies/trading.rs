@@ -1,3 +1,3 @@
 pub(crate) mod trading_contract_wasm {
-    soroban_sdk::contractimport!(file = "../wasm/trading.wasm");
+    pub const WASM: &[u8] = include_bytes!("../../../wasm/trading.wasm");
 }

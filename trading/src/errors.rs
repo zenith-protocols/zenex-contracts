@@ -32,6 +32,7 @@ pub enum TradingError {
     NegativeValueNotAllowed = 330,
     CollateralBelowMinimum = 331,
     CollateralAboveMaximum = 332,
+    LeverageBelowMinimum = 333,
     InvalidEntryPrice = 334,
     WithdrawalBreaksMargin = 337,
     InvalidTakeProfitPrice = 340,

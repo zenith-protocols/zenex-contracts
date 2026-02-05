@@ -9,6 +9,9 @@ mod types;
 mod dependencies;
 pub mod testutils;
 mod events;
+mod validation;
+#[cfg(test)]
+mod test;
 
 pub use contract::*;
 pub use types::*;

@@ -133,7 +133,7 @@ impl TestFixture<'_> {
             self.env
                 .storage()
                 .instance()
-                .get(&Symbol::new(&self.env, "Config"))
+                .get(&trading::storage::TradingStorageKey::Config)
                 .unwrap()
         })
     }
@@ -182,7 +182,7 @@ impl TestFixture<'_> {
     pub fn jump(&self, time: u64) {
         self.env.ledger().set(LedgerInfo {
             timestamp: self.env.ledger().timestamp().saturating_add(time),
-            protocol_version: 23,
+            protocol_version: 25,
             sequence_number: self.env.ledger().sequence(),
             network_id: Default::default(),
             base_reserve: 10,
@@ -196,7 +196,7 @@ impl TestFixture<'_> {
         let blocks = time / 5;
         self.env.ledger().set(LedgerInfo {
             timestamp: self.env.ledger().timestamp().saturating_add(time),
-            protocol_version: 23,
+            protocol_version: 25,
             sequence_number: self.env.ledger().sequence().saturating_add(blocks as u32),
             network_id: Default::default(),
             base_reserve: 10,

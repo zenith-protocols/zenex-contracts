@@ -1623,6 +1623,7 @@ name = "trading"
 version = "0.0.0"
 dependencies = [
  "sep-40-oracle",
+ "sep-41-token",
  "soroban-fixed-point-math",
  "soroban-sdk",
  "stellar-access",

@@ -89,6 +89,7 @@ pub struct ClosePosition {
     #[topic]
     pub position_id: u32,
     pub price: i128,
+    pub pnl: i128,
     pub base_fee: i128,
     pub impact_fee: i128,
     pub interest: i128,
@@ -117,6 +118,7 @@ pub struct Liquidation {
     #[topic]
     pub position_id: u32,
     pub price: i128,
+    pub pnl: i128,
     pub base_fee: i128,
     pub impact_fee: i128,
     pub interest: i128,
@@ -132,6 +134,7 @@ pub struct TakeProfit {
     #[topic]
     pub position_id: u32,
     pub price: i128,
+    pub pnl: i128,
     pub base_fee: i128,
     pub impact_fee: i128,
     pub interest: i128,
@@ -147,6 +150,7 @@ pub struct StopLoss {
     #[topic]
     pub position_id: u32,
     pub price: i128,
+    pub pnl: i128,
     pub base_fee: i128,
     pub impact_fee: i128,
     pub interest: i128,
