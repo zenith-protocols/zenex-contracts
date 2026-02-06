@@ -15,7 +15,7 @@ const SECONDS_PER_WEEK: u64 = 604800;
 fn test_initialize_success() {
     // create_fixture_with_data already initializes the contract
     let fixture = create_fixture_with_data(false);
-    let config = fixture.read_config();
+    let config = fixture.trading.get_config();
     assert_eq!(config.max_positions, 10);
     assert_eq!(config.max_price_age, 900);
 }
@@ -28,7 +28,7 @@ fn test_initialize_already_initialized() {
     // Try to initialize again - should panic
     fixture
         .trading
-        .initialize(&soroban_sdk::String::from_str(&fixture.env, "Test"), &fixture.vault.address, &fixture.read_config());
+        .initialize(&soroban_sdk::String::from_str(&fixture.env, "Test"), &fixture.vault.address, &fixture.trading.get_config());
 }
 
 #[test]
@@ -40,8 +40,9 @@ fn test_initialize_invalid_config_caller_take_rate_over_100() {
         oracle: fixture.oracle.address.clone(),
         caller_take_rate: SCALAR_7 + 1, // Over 100%
         max_positions: 10,
-        max_utilization: 0,
+        max_utilization: 10 * SCALAR_7, // 10x
         max_price_age: 900,
+        min_open_time: 0,
     };
 
     // queue_set_config validates the config
@@ -57,8 +58,9 @@ fn test_initialize_invalid_config_negative_caller_take_rate() {
         oracle: fixture.oracle.address.clone(),
         caller_take_rate: -1,
         max_positions: 10,
-        max_utilization: 0,
+        max_utilization: 10 * SCALAR_7, // 10x
         max_price_age: 900,
+        min_open_time: 0,
     };
 
     fixture.trading.queue_set_config(&config);
@@ -75,28 +77,27 @@ fn test_initialize_invalid_config_max_utilization_below_1x() {
         max_positions: 10,
         max_utilization: SCALAR_7 - 1, // Below 1x (but not 0)
         max_price_age: 900,
+        min_open_time: 0,
     };
 
     fixture.trading.queue_set_config(&config);
 }
 
 #[test]
-fn test_initialize_max_utilization_disabled() {
+#[should_panic(expected = "Error(Contract, #330)")]
+fn test_initialize_max_utilization_zero_not_allowed() {
     let fixture = TestFixture::create(false);
 
     let config = trading::TradingConfig {
         oracle: fixture.oracle.address.clone(),
         caller_take_rate: 1_000_000,
         max_positions: 10,
-        max_utilization: 0, // Disabled
+        max_utilization: 0, // Zero not allowed
         max_price_age: 900,
+        min_open_time: 0,
     };
 
     fixture.trading.queue_set_config(&config);
-    fixture.trading.set_config();
-
-    let stored_config = fixture.read_config();
-    assert_eq!(stored_config.max_utilization, 0);
 }
 
 #[test]
@@ -109,12 +110,13 @@ fn test_initialize_max_utilization_100x() {
         max_positions: 10,
         max_utilization: 100 * SCALAR_7, // Max allowed
         max_price_age: 900,
+        min_open_time: 0,
     };
 
     fixture.trading.queue_set_config(&config);
     fixture.trading.set_config();
 
-    let stored_config = fixture.read_config();
+    let stored_config = fixture.trading.get_config();
     assert_eq!(stored_config.max_utilization, 100 * SCALAR_7);
 }
 
@@ -130,15 +132,16 @@ fn test_queue_set_config_in_setup_mode() {
         oracle: fixture.oracle.address.clone(),
         caller_take_rate: 1_000_000,
         max_positions: 20, // Different value
-        max_utilization: 0,
+        max_utilization: 10 * SCALAR_7, // 10x
         max_price_age: 900,
+        min_open_time: 0,
     };
 
     // In Setup mode, should be immediately applyable
     fixture.trading.queue_set_config(&config);
     fixture.trading.set_config();
 
-    let stored_config = fixture.read_config();
+    let stored_config = fixture.trading.get_config();
     assert_eq!(stored_config.max_positions, 20);
 }
 
@@ -151,14 +154,15 @@ fn test_queue_set_config_with_timelock() {
         oracle: fixture.oracle.address.clone(),
         caller_take_rate: 1_000_000,
         max_positions: 20,
-        max_utilization: 0,
+        max_utilization: 10 * SCALAR_7, // 10x
         max_price_age: 900,
+        min_open_time: 0,
     };
 
     fixture.trading.queue_set_config(&config);
 
     // Config should still be old (10)
-    let stored_config = fixture.read_config();
+    let stored_config = fixture.trading.get_config();
     assert_eq!(stored_config.max_positions, 10);
 }
 
@@ -172,8 +176,9 @@ fn test_set_config_before_unlock() {
         oracle: fixture.oracle.address.clone(),
         caller_take_rate: 1_000_000,
         max_positions: 20,
-        max_utilization: 0,
+        max_utilization: 10 * SCALAR_7, // 10x
         max_price_age: 900,
+        min_open_time: 0,
     };
 
     fixture.trading.queue_set_config(&config);
@@ -191,8 +196,9 @@ fn test_set_config_after_unlock() {
         oracle: fixture.oracle.address.clone(),
         caller_take_rate: 1_000_000,
         max_positions: 20,
-        max_utilization: 0,
+        max_utilization: 10 * SCALAR_7, // 10x
         max_price_age: 900,
+        min_open_time: 0,
     };
 
     fixture.trading.queue_set_config(&config);
@@ -202,7 +208,7 @@ fn test_set_config_after_unlock() {
 
     fixture.trading.set_config();
 
-    let stored_config = fixture.read_config();
+    let stored_config = fixture.trading.get_config();
     assert_eq!(stored_config.max_positions, 20);
 }
 
@@ -215,15 +221,16 @@ fn test_cancel_set_config() {
         oracle: fixture.oracle.address.clone(),
         caller_take_rate: 1_000_000,
         max_positions: 20,
-        max_utilization: 0,
+        max_utilization: 10 * SCALAR_7, // 10x
         max_price_age: 900,
+        min_open_time: 0,
     };
 
     fixture.trading.queue_set_config(&config);
     fixture.trading.cancel_set_config();
 
     // Original config should remain
-    let stored_config = fixture.read_config();
+    let stored_config = fixture.trading.get_config();
     assert_eq!(stored_config.max_positions, 10);
 }
 
@@ -258,12 +265,10 @@ fn test_queue_set_market_in_setup_mode() {
     fixture.trading.set_market(&market_config.asset);
 
     // Market should exist at index 0
-    let stored_config = fixture.read_market_config(0);
-    assert!(stored_config.enabled);
-
-    let market_data = fixture.read_market_data(0);
-    assert_eq!(market_data.long_collateral, 0);
-    assert_eq!(market_data.short_collateral, 0);
+    let market = fixture.trading.get_market(&0u32);
+    assert!(market.config.enabled);
+    assert_eq!(market.data.long_notional_size, 0);
+    assert_eq!(market.data.short_notional_size, 0);
 }
 
 #[test]
@@ -283,11 +288,11 @@ fn test_queue_multiple_markets() {
     fixture.trading.set_market(&eth_config.asset);
 
     // Both markets should exist
-    let btc_stored = fixture.read_market_config(0);
-    let eth_stored = fixture.read_market_config(1);
+    let btc_market = fixture.trading.get_market(&0u32);
+    let eth_market = fixture.trading.get_market(&1u32);
 
-    assert!(matches!(btc_stored.asset, sep_40_oracle::Asset::Other(ref s) if s == &Symbol::new(&fixture.env, "BTC")));
-    assert!(matches!(eth_stored.asset, sep_40_oracle::Asset::Other(ref s) if s == &Symbol::new(&fixture.env, "ETH")));
+    assert!(matches!(btc_market.config.asset, sep_40_oracle::Asset::Other(ref s) if s == &Symbol::new(&fixture.env, "BTC")));
+    assert!(matches!(eth_market.config.asset, sep_40_oracle::Asset::Other(ref s) if s == &Symbol::new(&fixture.env, "ETH")));
 }
 
 #[test]
@@ -319,8 +324,8 @@ fn test_set_market_after_unlock() {
 
     fixture.trading.set_market(&market_config.asset);
 
-    let stored_config = fixture.read_market_config(0);
-    assert!(stored_config.enabled);
+    let market = fixture.trading.get_market(&0u32);
+    assert!(market.config.enabled);
 }
 
 #[test]

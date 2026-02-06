@@ -1,7 +1,9 @@
 mod actions;
 mod config;
 mod execute;
-mod market;
+mod interest;
+pub mod market;
+mod oracle;
 mod position;
 
 pub use actions::{
@@ -12,5 +14,6 @@ pub use crate::types::{ExecuteRequest, ExecuteRequestType};
 pub use config::{
     execute_cancel_queued_market, execute_cancel_set_config, execute_initialize,
     execute_queue_set_config, execute_queue_set_market, execute_set_config, execute_set_market,
+    execute_set_status,
 };
 pub use execute::execute_trigger;

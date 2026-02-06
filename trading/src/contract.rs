@@ -1,9 +1,9 @@
 #![allow(clippy::too_many_arguments)]
 
 use crate::errors::TradingError;
-use crate::events::SetStatus;
 use crate::trading::ExecuteRequest;
-use crate::types::{ContractStatus, MarketConfig, MarketData, Position};
+use crate::trading::market::Market;
+use crate::types::{MarketConfig, Position};
 use crate::{storage, trading, TradingConfig};
 use sep_40_oracle::Asset;
 use soroban_sdk::panic_with_error;
@@ -186,23 +186,11 @@ pub trait Trading {
     /// * `asset_index` - The index of the market
     ///
     /// # Returns
-    /// The MarketConfig struct containing market parameters
-    ///
-    /// # Panics
-    /// If the market does not exist
-    fn get_market_config(e: Env, asset_index: u32) -> MarketConfig;
-
-    /// Get market data (open interest, funding indices) by asset index
-    ///
-    /// # Arguments
-    /// * `asset_index` - The index of the market
-    ///
-    /// # Returns
-    /// The MarketData struct containing current market state
+    /// The Market struct containing config and data
     ///
     /// # Panics
     /// * `MarketNotFound` - If no market exists at the given asset_index
-    fn get_market_data(e: Env, asset_index: u32) -> MarketData;
+    fn get_market(e: Env, asset_index: u32) -> Market;
 
     /// Get the trading configuration
     ///
@@ -280,14 +268,8 @@ impl Trading for TradingContract {
 
     #[only_owner]
     fn set_status(e: Env, status: u32) {
-        let status_enum = ContractStatus::from_u32(&e, status);
-        match status_enum {
-            ContractStatus::Setup => panic_with_error!(&e, TradingError::InvalidStatus),
-            _ => {}
-        }
         storage::extend_instance(&e);
-        storage::set_status(&e, status);
-        SetStatus { status }.publish(&e);
+        trading::execute_set_status(&e, status);
     }
 
     fn open_position(
@@ -343,12 +325,8 @@ impl Trading for TradingContract {
         storage::get_user_positions(&e, &user)
     }
 
-    fn get_market_config(e: Env, asset_index: u32) -> MarketConfig {
-        storage::get_market_config(&e, asset_index)
-    }
-
-    fn get_market_data(e: Env, asset_index: u32) -> MarketData {
-        storage::get_market_data(&e, asset_index)
+    fn get_market(e: Env, asset_index: u32) -> Market {
+        Market::load(&e, asset_index)
     }
 
     fn get_config(e: Env) -> TradingConfig {

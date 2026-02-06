@@ -1,11 +1,12 @@
-use crate::constants::{MIN_LEVERAGE, SCALAR_7};
+use crate::constants::MIN_LEVERAGE;
 use crate::dependencies::VaultClient;
 use crate::errors::TradingError;
 use crate::events::{CancelLimit, ClosePosition, ModifyCollateral, OpenMarket, PlaceLimit, SetTriggers};
 use crate::storage;
-use crate::trading::market::{load_price, Market};
+use crate::trading::market::Market;
+use crate::trading::oracle::load_price;
 use crate::trading::position::Position;
-use crate::validation::{require_active, require_not_frozen, require_market_enabled};
+use crate::validation::{require_active, require_min_open_time, require_not_frozen, require_market_enabled};
 use soroban_fixed_point_math::SorobanFixedPoint;
 use soroban_sdk::token::TokenClient;
 use soroban_sdk::{panic_with_error, Address, Env};
@@ -22,6 +23,7 @@ pub fn execute_close_position(e: &Env, position_id: u32) -> (i128, i128) {
     market.accrue_interest(e);
 
     let result = if position.filled {
+        require_min_open_time(e, &position);
         close_filled_position(e, &position, &mut market)
     } else {
         cancel_pending_position(e, &position, &market)
@@ -38,14 +40,15 @@ pub fn execute_close_position(e: &Env, position_id: u32) -> (i128, i128) {
 fn cancel_pending_position(e: &Env, position: &Position, market: &Market) -> (i128, i128) {
     let token = storage::get_token(e);
     let token_client = TokenClient::new(e, &token);
+    let token_scalar = storage::get_token_scalar(e);
 
     // Calculate fees using the same formula as open (notional_size based)
     let base_fee = position
         .notional_size
-        .fixed_mul_ceil(e, &market.config.base_fee, &SCALAR_7);
+        .fixed_mul_ceil(e, &market.config.base_fee, &token_scalar);
     let price_impact = position
         .notional_size
-        .fixed_div_ceil(e, &market.config.price_impact_scalar, &SCALAR_7);
+        .fixed_div_ceil(e, &market.config.price_impact_scalar, &token_scalar);
 
     // Refund collateral + fees to user
     let total_refund = position.collateral + base_fee + price_impact;
@@ -68,16 +71,18 @@ fn close_filled_position(e: &Env, position: &Position, market: &mut Market) -> (
     let config = storage::get_config(e);
     let vault = storage::get_vault(e);
     let token = storage::get_token(e);
+    let token_scalar = storage::get_token_scalar(e);
 
     let price = load_price(e, &config.oracle, &market.config.asset, config.max_price_age);
-    let pnl = position.calculate_pnl(e, price);
+    let price_scalar = storage::get_price_scalar(e);
+    let pnl = position.calculate_pnl(e, price, price_scalar);
     let fees = position.calculate_fee_breakdown(e, market);
 
     // Calculate payouts
     let equity = position.collateral + pnl - fees.total_fee();
     let max_payout = position
         .collateral
-        .fixed_mul_floor(e, &market.config.max_payout, &SCALAR_7);
+        .fixed_mul_floor(e, &market.config.max_payout, &token_scalar);
     let user_payout = equity.max(0).min(max_payout);
     let vault_transfer = position.collateral - user_payout;
 
@@ -126,6 +131,7 @@ pub fn execute_modify_collateral(e: &Env, position_id: u32, new_collateral: i128
     }
 
     let market_config = storage::get_market_config(e, position.asset_index);
+    let token_scalar = storage::get_token_scalar(e);
 
     // Check collateral bounds
     if new_collateral < market_config.min_collateral {
@@ -136,7 +142,7 @@ pub fn execute_modify_collateral(e: &Env, position_id: u32, new_collateral: i128
     }
 
     // Check minimum leverage
-    let min_notional = new_collateral.fixed_mul_ceil(e, &MIN_LEVERAGE, &SCALAR_7);
+    let min_notional = new_collateral.fixed_mul_ceil(e, &(MIN_LEVERAGE * token_scalar), &token_scalar);
     if position.notional_size < min_notional {
         panic_with_error!(e, TradingError::LeverageBelowMinimum);
     }
@@ -144,6 +150,10 @@ pub fn execute_modify_collateral(e: &Env, position_id: u32, new_collateral: i128
     let token = storage::get_token(e);
     let token_client = TokenClient::new(e, &token);
     let collateral_diff = new_collateral - position.collateral;
+
+    if collateral_diff == 0 {
+        panic_with_error!(e, TradingError::CollateralUnchanged);
+    }
 
     if position.filled {
         // Filled position: need to check margin and update market stats
@@ -153,15 +163,16 @@ pub fn execute_modify_collateral(e: &Env, position_id: u32, new_collateral: i128
 
         if collateral_diff > 0 {
             token_client.transfer(&position.user, &e.current_contract_address(), &collateral_diff);
-        } else if collateral_diff < 0 {
+        } else {
             let current_price =
                 load_price(e, &config.oracle, &market.config.asset, config.max_price_age);
-            let pnl = position.calculate_pnl(e, current_price);
+            let price_scalar = storage::get_price_scalar(e);
+            let pnl = position.calculate_pnl(e, current_price, price_scalar);
             let fees = position.calculate_fee_breakdown(e, &market);
             let equity = new_collateral + pnl - fees.total_fee();
             let required_margin = position
                 .notional_size
-                .fixed_mul_floor(e, &market.config.init_margin, &SCALAR_7);
+                .fixed_mul_floor(e, &market.config.init_margin, &token_scalar);
 
             if equity < required_margin {
                 panic_with_error!(e, TradingError::WithdrawalBreaksMargin);
@@ -175,10 +186,10 @@ pub fn execute_modify_collateral(e: &Env, position_id: u32, new_collateral: i128
         // Pending limit order: check margin requirement for when it fills
         if collateral_diff > 0 {
             token_client.transfer(&position.user, &e.current_contract_address(), &collateral_diff);
-        } else if collateral_diff < 0 {
+        } else {
             let required_margin = position
                 .notional_size
-                .fixed_mul_floor(e, &market_config.init_margin, &SCALAR_7);
+                .fixed_mul_floor(e, &market_config.init_margin, &token_scalar);
 
             if new_collateral < required_margin {
                 panic_with_error!(e, TradingError::WithdrawalBreaksMargin);
@@ -206,11 +217,6 @@ pub fn execute_set_triggers(e: &Env, position_id: u32, take_profit: i128, stop_l
     require_not_frozen(e);
     let mut position = Position::load(e, position_id);
     position.user.require_auth();
-
-    // Must be open position
-    if !position.filled {
-        panic_with_error!(e, TradingError::PositionNotOpen);
-    }
 
     let config = storage::get_config(e);
     let market_config = storage::get_market_config(e, position.asset_index);
@@ -264,6 +270,7 @@ pub fn execute_create_position(
     let config = storage::get_config(e);
     let vault = storage::get_vault(e);
     let token = storage::get_token(e);
+    let token_scalar = storage::get_token_scalar(e);
 
     let mut market = Market::load(e, asset_index);
     market.accrue_interest(e);
@@ -278,7 +285,7 @@ pub fn execute_create_position(
     let vault_assets = vault_client.total_assets();
     let current_total_notional = market.data.long_notional_size + market.data.short_notional_size;
     let new_total_notional = current_total_notional + notional_size;
-    let max_allowed_notional = vault_assets.fixed_mul_floor(e, &config.max_utilization, &SCALAR_7);
+    let max_allowed_notional = vault_assets.fixed_mul_floor(e, &config.max_utilization, &token_scalar);
     if new_total_notional > max_allowed_notional {
         panic_with_error!(e, TradingError::UtilizationLimitExceeded);
     }
@@ -292,7 +299,7 @@ pub fn execute_create_position(
     }
 
     // Check minimum leverage (notional_size / collateral >= MIN_LEVERAGE)
-    let min_notional = collateral.fixed_mul_ceil(e, &MIN_LEVERAGE, &SCALAR_7);
+    let min_notional = collateral.fixed_mul_ceil(e, &(MIN_LEVERAGE * token_scalar), &token_scalar);
     if notional_size < min_notional {
         panic_with_error!(e, TradingError::LeverageBelowMinimum);
     }
@@ -357,13 +364,13 @@ pub fn execute_create_position(
     );
 
     let open_fee = if should_pay_base_fee {
-        notional_size.fixed_mul_ceil(e, &market.config.base_fee, &SCALAR_7)
+        notional_size.fixed_mul_ceil(e, &market.config.base_fee, &token_scalar)
     } else {
         0 // No base fee for balancing trades
     };
 
     let price_impact_scalar =
-        notional_size.fixed_div_ceil(e, &market.config.price_impact_scalar, &SCALAR_7);
+        notional_size.fixed_div_ceil(e, &market.config.price_impact_scalar, &token_scalar);
 
     // Transfer tokens from user to contract
     let token_client = TokenClient::new(e, &token);
@@ -411,57 +418,13 @@ pub fn execute_create_position(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::constants::SCALAR_18;
-    use crate::testutils::{
-        create_oracle, create_token, create_trading, create_vault, default_config,
-        default_market, default_market_data, BTC_PRICE,
-    };
-    use crate::types::{ContractStatus, Position as PositionType};
-    use sep_41_token::testutils::MockTokenClient;
-    use soroban_sdk::testutils::{Address as _, Ledger, LedgerInfo};
+    use crate::constants::{SCALAR_7, SCALAR_18};
+    use crate::testutils::{default_market_data, setup_contract, setup_env, BTC_PRICE};
+    use crate::types::Position as PositionType;
+    use soroban_sdk::testutils::Address as _;
 
-    fn setup_env() -> soroban_sdk::Env {
-        let e = soroban_sdk::Env::default();
-        e.mock_all_auths();
-        e.ledger().set(LedgerInfo {
-            timestamp: 1000,
-            protocol_version: 25,
-            sequence_number: 100,
-            network_id: Default::default(),
-            base_reserve: 10,
-            min_temp_entry_ttl: 10,
-            min_persistent_entry_ttl: 10,
-            max_entry_ttl: 3110400,
-        });
-        e
-    }
-
-    /// Setup full contract state for action tests
-    fn setup_contract(e: &soroban_sdk::Env) -> (Address, Address, MockTokenClient) {
-        let (contract, owner) = create_trading(e);
-        let (oracle, _) = create_oracle(e);
-        let (token, token_client) = create_token(e, &owner);
-        let (vault, _) = create_vault(e, &token, 100_000_000 * SCALAR_7);
-
-        // Initialize contract state
-        e.as_contract(&contract, || {
-            use crate::trading::config::execute_initialize;
-            use soroban_sdk::String;
-
-            execute_initialize(e, &String::from_str(e, "Test"), &vault, &default_config(&oracle));
-            storage::set_status(e, ContractStatus::Active as u32);
-
-            // Set up market
-            storage::set_market_config(e, 0, &default_market(e));
-            storage::set_market_data(e, 0, &default_market_data());
-            storage::next_market_index(e); // Advance counter to 1
-        });
-
-        // Mint tokens to contract
-        token_client.mint(&contract, &(10_000_000 * SCALAR_7));
-
-        (contract, owner, token_client)
-    }
+    // base_fee rate = 0.05% → 0.05% of 1000 tokens = 0.5 tokens
+    const BASE_FEE: i128 = 5_000_000;
 
     fn create_test_position(e: &soroban_sdk::Env, user: &Address, filled: bool) -> PositionType {
         PositionType {
@@ -481,56 +444,176 @@ mod tests {
     }
 
     // ==========================================
+    // Status restriction tests
+    // ==========================================
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #382)")]
+    fn test_open_position_onice() {
+        let e = setup_env();
+        let (contract, token_client) = setup_contract(&e);
+        let user = Address::generate(&e);
+        token_client.mint(&user, &(10_000 * SCALAR_7));
+
+        e.as_contract(&contract, || {
+            storage::set_status(&e, 1); // OnIce
+            execute_create_position(&e, &user, 0, 100 * SCALAR_7, 1000 * SCALAR_7, true, 0, 0, 0);
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #312)")]
+    fn test_open_position_market_disabled() {
+        let e = setup_env();
+        let (contract, token_client) = setup_contract(&e);
+        let user = Address::generate(&e);
+        token_client.mint(&user, &(10_000 * SCALAR_7));
+
+        e.as_contract(&contract, || {
+            let mut config = storage::get_market_config(&e, 0);
+            config.enabled = false;
+            storage::set_market_config(&e, 0, &config);
+            execute_create_position(&e, &user, 0, 100 * SCALAR_7, 1000 * SCALAR_7, true, 0, 0, 0);
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #383)")]
+    fn test_close_position_frozen() {
+        let e = setup_env();
+        let (contract, _) = setup_contract(&e);
+        let user = Address::generate(&e);
+
+        e.as_contract(&contract, || {
+            let position = create_test_position(&e, &user, true);
+            storage::set_position(&e, 1, &position);
+            storage::add_user_position(&e, &user, 1);
+
+            storage::set_status(&e, 2); // Frozen
+            execute_close_position(&e, 1);
+        });
+    }
+
+    // ==========================================
     // execute_create_position tests
     // ==========================================
 
     #[test]
     fn test_create_market_order_long() {
         let e = setup_env();
-        let (contract, _, token_client) = setup_contract(&e);
+        let (contract, token_client) = setup_contract(&e);
         let user = Address::generate(&e);
-        token_client.mint(&user, &(10_000 * SCALAR_7));
+        let mint_amount = 10_000 * SCALAR_7;
+        token_client.mint(&user, &mint_amount);
+
+        let collateral = 100 * SCALAR_7;
+        let notional = 1000 * SCALAR_7;
 
         e.as_contract(&contract, || {
             let (id, fee) = execute_create_position(
-                &e, &user, 0, 100 * SCALAR_7, 1000 * SCALAR_7, true, 0, 0, 0,
+                &e, &user, 0, collateral, notional, true, 0, 0, 0,
             );
-            assert_eq!(id, 1);
-            assert!(fee > 0);
+
+            // Verify returned values — first position on empty market, long is dominant, pays base fee
+            assert_eq!(id, 0);
+            assert!(fee >= BASE_FEE); // base_fee + negligible impact fee
+
+            // Verify position state
+            let pos = storage::get_position(&e, 0);
+            assert_eq!(pos.id, 0);
+            assert_eq!(pos.user, user);
+            assert!(pos.filled);
+            assert_eq!(pos.asset_index, 0);
+            assert!(pos.is_long);
+            assert_eq!(pos.entry_price, BTC_PRICE); // market order uses current price
+            assert_eq!(pos.collateral, collateral);
+            assert_eq!(pos.notional_size, notional);
+            assert_eq!(pos.interest_index, SCALAR_18);
+            assert_eq!(pos.take_profit, 0);
+            assert_eq!(pos.stop_loss, 0);
+            assert_eq!(pos.created_at, e.ledger().timestamp());
+
+            // Verify market data updated
+            let data = storage::get_market_data(&e, 0);
+            assert_eq!(data.long_notional_size, notional);
+            assert_eq!(data.short_notional_size, 0);
+
+            // Verify user position list
+            let positions = storage::get_user_positions(&e, &user);
+            assert_eq!(positions.len(), 1);
+            assert_eq!(positions.get(0), Some(0));
+
+            // Verify token balances: user paid collateral + fees
+            let user_balance = token_client.balance(&user);
+            assert_eq!(user_balance, mint_amount - collateral - fee);
         });
     }
 
     #[test]
-    fn test_create_limit_order() {
+    fn test_create_limit_order_short() {
         let e = setup_env();
-        let (contract, _, token_client) = setup_contract(&e);
+        let (contract, token_client) = setup_contract(&e);
         let user = Address::generate(&e);
-        token_client.mint(&user, &(10_000 * SCALAR_7));
+        let mint_amount = 10_000 * SCALAR_7;
+        token_client.mint(&user, &mint_amount);
+
+        let collateral = 100 * SCALAR_7;
+        let notional = 1000 * SCALAR_7;
+        let entry_price = BTC_PRICE - 1000 * SCALAR_7; // below current for short limit
 
         e.as_contract(&contract, || {
             let (id, fee) = execute_create_position(
-                &e, &user, 0, 100 * SCALAR_7, 1000 * SCALAR_7, true,
-                BTC_PRICE + 1000 * SCALAR_7, 0, 0,
+                &e, &user, 0, collateral, notional, false, entry_price, 0, 0,
             );
-            assert_eq!(id, 1);
-            assert!(fee > 0);
-        });
-    }
 
-    #[test]
-    fn test_create_short_position() {
-        let e = setup_env();
-        let (contract, _, token_client) = setup_contract(&e);
-        let user = Address::generate(&e);
-        token_client.mint(&user, &(10_000 * SCALAR_7));
+            // Verify returned values — limit orders always charge base fee upfront
+            assert_eq!(id, 0);
+            assert!(fee >= BASE_FEE);
 
-        e.as_contract(&contract, || {
-            let (id, _) = execute_create_position(
-                &e, &user, 0, 100 * SCALAR_7, 1000 * SCALAR_7, false, 0, 0, 0,
-            );
-            assert_eq!(id, 1);
-            let pos = storage::get_position(&e, 1);
+            // Verify position state
+            let pos = storage::get_position(&e, 0);
+            assert_eq!(pos.id, 0);
+            assert!(!pos.filled); // limit order is pending
             assert!(!pos.is_long);
+            assert_eq!(pos.entry_price, entry_price);
+            assert_eq!(pos.collateral, collateral);
+            assert_eq!(pos.notional_size, notional);
+            assert_eq!(pos.interest_index, SCALAR_18); // short interest index
+            assert_eq!(pos.take_profit, 0);
+            assert_eq!(pos.stop_loss, 0);
+
+            // Verify market data NOT updated (limit order hasn't filled)
+            let data = storage::get_market_data(&e, 0);
+            assert_eq!(data.long_notional_size, 0);
+            assert_eq!(data.short_notional_size, 0);
+
+            // Verify token balances: user paid collateral + fees, fees held by contract (not sent to vault)
+            let user_balance = token_client.balance(&user);
+            assert_eq!(user_balance, mint_amount - collateral - fee);
+        });
+    }
+
+    #[test]
+    fn test_create_position_balancing_trade_no_base_fee() {
+        let e = setup_env();
+        let (contract, token_client) = setup_contract(&e);
+        let user = Address::generate(&e);
+        token_client.mint(&user, &(20_000 * SCALAR_7));
+
+        let collateral = 100 * SCALAR_7;
+        let notional = 1000 * SCALAR_7;
+
+        e.as_contract(&contract, || {
+            // Pre-seed market with existing long dominance
+            let mut data = storage::get_market_data(&e, 0);
+            data.long_notional_size = 5000 * SCALAR_7;
+            storage::set_market_data(&e, 0, &data);
+
+            // Open a short (balancing trade) — should NOT pay base fee
+            let (_, fee) = execute_create_position(
+                &e, &user, 0, collateral, notional, false, 0, 0, 0,
+            );
+            assert!(fee < BASE_FEE); // only negligible impact fee, no base fee
         });
     }
 
@@ -538,7 +621,7 @@ mod tests {
     #[should_panic(expected = "Error(Contract, #330)")]
     fn test_create_position_negative_collateral() {
         let e = setup_env();
-        let (contract, _, _) = setup_contract(&e);
+        let (contract, _) = setup_contract(&e);
         let user = Address::generate(&e);
 
         e.as_contract(&contract, || {
@@ -550,7 +633,7 @@ mod tests {
     #[should_panic(expected = "Error(Contract, #331)")]
     fn test_create_position_collateral_below_min() {
         let e = setup_env();
-        let (contract, _, _) = setup_contract(&e);
+        let (contract, _) = setup_contract(&e);
         let user = Address::generate(&e);
 
         e.as_contract(&contract, || {
@@ -562,7 +645,7 @@ mod tests {
     #[should_panic(expected = "Error(Contract, #332)")]
     fn test_create_position_collateral_above_max() {
         let e = setup_env();
-        let (contract, _, _) = setup_contract(&e);
+        let (contract, _) = setup_contract(&e);
         let user = Address::generate(&e);
 
         e.as_contract(&contract, || {
@@ -571,14 +654,29 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #334)")]
-    fn test_create_position_invalid_entry_price_long() {
+    #[should_panic(expected = "Error(Contract, #333)")]
+    fn test_create_position_leverage_below_min() {
         let e = setup_env();
-        let (contract, _, token_client) = setup_contract(&e);
+        let (contract, token_client) = setup_contract(&e);
         let user = Address::generate(&e);
         token_client.mint(&user, &(10_000 * SCALAR_7));
 
         e.as_contract(&contract, || {
+            // collateral=100, notional=100 → 1x leverage, below MIN_LEVERAGE=2
+            execute_create_position(&e, &user, 0, 100 * SCALAR_7, 100 * SCALAR_7, true, 0, 0, 0);
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #334)")]
+    fn test_create_position_invalid_entry_price_long() {
+        let e = setup_env();
+        let (contract, token_client) = setup_contract(&e);
+        let user = Address::generate(&e);
+        token_client.mint(&user, &(10_000 * SCALAR_7));
+
+        e.as_contract(&contract, || {
+            // Long limit below current price is invalid
             execute_create_position(
                 &e, &user, 0, 100 * SCALAR_7, 1000 * SCALAR_7, true,
                 BTC_PRICE - 1000 * SCALAR_7, 0, 0,
@@ -587,18 +685,54 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "Error(Contract, #334)")]
+    fn test_create_position_invalid_entry_price_short() {
+        let e = setup_env();
+        let (contract, token_client) = setup_contract(&e);
+        let user = Address::generate(&e);
+        token_client.mint(&user, &(10_000 * SCALAR_7));
+
+        e.as_contract(&contract, || {
+            // Short limit above current price is invalid
+            execute_create_position(
+                &e, &user, 0, 100 * SCALAR_7, 1000 * SCALAR_7, false,
+                BTC_PRICE + 1000 * SCALAR_7, 0, 0,
+            );
+        });
+    }
+
+    #[test]
     #[should_panic(expected = "Error(Contract, #329)")]
     fn test_create_position_max_positions() {
         let e = setup_env();
-        let (contract, _, token_client) = setup_contract(&e);
+        let (contract, token_client) = setup_contract(&e);
         let user = Address::generate(&e);
         token_client.mint(&user, &(100_000 * SCALAR_7));
 
         e.as_contract(&contract, || {
-            // Fill up max positions (10)
             for i in 0..10 {
                 storage::add_user_position(&e, &user, i);
             }
+            execute_create_position(&e, &user, 0, 100 * SCALAR_7, 1000 * SCALAR_7, true, 0, 0, 0);
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #390)")]
+    fn test_create_position_utilization_limit_exceeded() {
+        let e = setup_env();
+        let (contract, token_client) = setup_contract(&e);
+        let user = Address::generate(&e);
+        token_client.mint(&user, &(10_000 * SCALAR_7));
+
+        e.as_contract(&contract, || {
+            // vault has 100M tokens, max_utilization = 50x → max notional = 5B tokens
+            // Pre-seed market right at the limit
+            let mut data = storage::get_market_data(&e, 0);
+            data.long_notional_size = 5_000_000_000 * SCALAR_7;
+            storage::set_market_data(&e, 0, &data);
+
+            // Any new position should exceed the limit
             execute_create_position(&e, &user, 0, 100 * SCALAR_7, 1000 * SCALAR_7, true, 0, 0, 0);
         });
     }
@@ -610,7 +744,7 @@ mod tests {
     #[test]
     fn test_close_filled_position() {
         let e = setup_env();
-        let (contract, _, _) = setup_contract(&e);
+        let (contract, _) = setup_contract(&e);
         let user = Address::generate(&e);
 
         e.as_contract(&contract, || {
@@ -620,6 +754,9 @@ mod tests {
 
             let mut data = default_market_data();
             data.long_notional_size = position.notional_size;
+            data.long_interest_index = SCALAR_18;
+            data.short_interest_index = SCALAR_18;
+            data.last_update = e.ledger().timestamp();
             storage::set_market_data(&e, 0, &data);
 
             let (pnl, fee) = execute_close_position(&e, 1);
@@ -629,9 +766,53 @@ mod tests {
     }
 
     #[test]
+    fn test_close_filled_position_profitable() {
+        use sep_40_oracle::testutils::MockPriceOracleClient;
+        use soroban_sdk::vec as svec;
+
+        let e = setup_env();
+        let (contract, token_client) = setup_contract(&e);
+        let user = Address::generate(&e);
+        let collateral = 100 * SCALAR_7;
+
+        // Set up position and market data, grab oracle address
+        let oracle_addr = e.as_contract(&contract, || {
+            let position = create_test_position(&e, &user, true);
+            storage::set_position(&e, 1, &position);
+            storage::add_user_position(&e, &user, 1);
+
+            let mut data = default_market_data();
+            data.long_notional_size = position.notional_size;
+            data.long_interest_index = SCALAR_18;
+            data.short_interest_index = SCALAR_18;
+            data.last_update = e.ledger().timestamp();
+            storage::set_market_data(&e, 0, &data);
+
+            storage::get_config(&e).oracle
+        });
+
+        // Move oracle price up 10% (must be outside as_contract for mock auth)
+        let oracle_client = MockPriceOracleClient::new(&e, &oracle_addr);
+        oracle_client.set_price_stable(&svec![&e, 110_000 * SCALAR_7]);
+
+        // Close — triggers strategy_withdraw (vault pays user)
+        e.as_contract(&contract, || {
+            let (pnl, fee) = execute_close_position(&e, 1);
+
+            // 10% gain on 1000 token notional = 100 tokens profit
+            assert_eq!(pnl, 100 * SCALAR_7);
+            assert!(fee >= BASE_FEE);
+
+            // User received more than their collateral (vault paid the difference)
+            let user_balance = token_client.balance(&user);
+            assert!(user_balance > collateral);
+        });
+    }
+
+    #[test]
     fn test_cancel_pending_position() {
         let e = setup_env();
-        let (contract, _, _) = setup_contract(&e);
+        let (contract, _) = setup_contract(&e);
         let user = Address::generate(&e);
 
         e.as_contract(&contract, || {
@@ -652,7 +833,7 @@ mod tests {
     #[test]
     fn test_modify_collateral_deposit() {
         let e = setup_env();
-        let (contract, _, token_client) = setup_contract(&e);
+        let (contract, token_client) = setup_contract(&e);
         let user = Address::generate(&e);
         token_client.mint(&user, &(1000 * SCALAR_7));
 
@@ -672,7 +853,7 @@ mod tests {
     #[test]
     fn test_modify_collateral_withdraw() {
         let e = setup_env();
-        let (contract, _, _) = setup_contract(&e);
+        let (contract, _) = setup_contract(&e);
         let user = Address::generate(&e);
 
         e.as_contract(&contract, || {
@@ -689,16 +870,32 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #327)")]
-    fn test_modify_collateral_not_open() {
+    fn test_modify_collateral_pending_position() {
         let e = setup_env();
-        let (contract, _, _) = setup_contract(&e);
+        let (contract, token_client) = setup_contract(&e);
+        let user = Address::generate(&e);
+        token_client.mint(&user, &(10_000 * SCALAR_7));
+
+        e.as_contract(&contract, || {
+            let position = create_test_position(&e, &user, false); // pending position
+            storage::set_position(&e, 1, &position);
+            execute_modify_collateral(&e, 1, 150 * SCALAR_7);
+            assert_eq!(storage::get_position(&e, 1).collateral, 150 * SCALAR_7);
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #335)")]
+    fn test_modify_collateral_unchanged() {
+        let e = setup_env();
+        let (contract, _) = setup_contract(&e);
         let user = Address::generate(&e);
 
         e.as_contract(&contract, || {
-            let position = create_test_position(&e, &user, false);
+            let position = create_test_position(&e, &user, true);
             storage::set_position(&e, 1, &position);
-            execute_modify_collateral(&e, 1, 150 * SCALAR_7);
+            // Same collateral as existing (100 * SCALAR_7)
+            execute_modify_collateral(&e, 1, 100 * SCALAR_7);
         });
     }
 
@@ -706,13 +903,117 @@ mod tests {
     #[should_panic(expected = "Error(Contract, #330)")]
     fn test_modify_collateral_negative() {
         let e = setup_env();
-        let (contract, _, _) = setup_contract(&e);
+        let (contract, _) = setup_contract(&e);
         let user = Address::generate(&e);
 
         e.as_contract(&contract, || {
             let position = create_test_position(&e, &user, true);
             storage::set_position(&e, 1, &position);
             execute_modify_collateral(&e, 1, -1);
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #331)")]
+    fn test_modify_collateral_below_minimum() {
+        let e = setup_env();
+        let (contract, _) = setup_contract(&e);
+        let user = Address::generate(&e);
+
+        e.as_contract(&contract, || {
+            let position = create_test_position(&e, &user, true);
+            storage::set_position(&e, 1, &position);
+            // min_collateral = SCALAR_7 (1 token), set below that
+            execute_modify_collateral(&e, 1, SCALAR_7 / 2);
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #332)")]
+    fn test_modify_collateral_above_maximum() {
+        let e = setup_env();
+        let (contract, _) = setup_contract(&e);
+        let user = Address::generate(&e);
+
+        e.as_contract(&contract, || {
+            let position = create_test_position(&e, &user, true);
+            storage::set_position(&e, 1, &position);
+            // max_collateral = 1_000_000 * SCALAR_7
+            execute_modify_collateral(&e, 1, 2_000_000 * SCALAR_7);
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #333)")]
+    fn test_modify_collateral_leverage_below_minimum() {
+        let e = setup_env();
+        let (contract, _) = setup_contract(&e);
+        let user = Address::generate(&e);
+
+        e.as_contract(&contract, || {
+            let position = create_test_position(&e, &user, true);
+            // notional_size = 1000, so max collateral for 2x = 500
+            storage::set_position(&e, 1, &position);
+            execute_modify_collateral(&e, 1, 600 * SCALAR_7);
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #337)")]
+    fn test_modify_collateral_withdraw_breaks_margin_filled() {
+        let e = setup_env();
+        let (contract, _) = setup_contract(&e);
+        let user = Address::generate(&e);
+
+        e.as_contract(&contract, || {
+            let position = create_test_position(&e, &user, true);
+            storage::set_position(&e, 1, &position);
+
+            let mut data = default_market_data();
+            data.long_notional_size = position.notional_size;
+            data.long_interest_index = SCALAR_18;
+            data.short_interest_index = SCALAR_18;
+            data.last_update = e.ledger().timestamp();
+            storage::set_market_data(&e, 0, &data);
+
+            // init_margin = 1%, notional = 1000 → required margin = 10 tokens
+            // With fees the required equity is ~10 tokens + fees
+            // Setting collateral to 2 tokens should break margin
+            execute_modify_collateral(&e, 1, 2 * SCALAR_7);
+        });
+    }
+
+    #[test]
+    fn test_modify_collateral_withdraw_pending() {
+        let e = setup_env();
+        let (contract, _) = setup_contract(&e);
+        let user = Address::generate(&e);
+
+        e.as_contract(&contract, || {
+            let position = create_test_position(&e, &user, false); // pending
+            storage::set_position(&e, 1, &position);
+
+            // init_margin = 1%, notional = 1000 → required margin = 10
+            // 90 tokens is well above 10, should succeed
+            execute_modify_collateral(&e, 1, 90 * SCALAR_7);
+            assert_eq!(storage::get_position(&e, 1).collateral, 90 * SCALAR_7);
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #337)")]
+    fn test_modify_collateral_withdraw_breaks_margin_pending() {
+        let e = setup_env();
+        let (contract, _) = setup_contract(&e);
+        let user = Address::generate(&e);
+
+        e.as_contract(&contract, || {
+            let position = create_test_position(&e, &user, false); // pending
+            storage::set_position(&e, 1, &position);
+
+            // init_margin = 1%, notional = 1000 → required margin = 10
+            // Setting collateral to 2 tokens (below 10) should break margin
+            execute_modify_collateral(&e, 1, 2 * SCALAR_7);
         });
     }
 
@@ -723,7 +1024,7 @@ mod tests {
     #[test]
     fn test_set_triggers_long() {
         let e = setup_env();
-        let (contract, _, _) = setup_contract(&e);
+        let (contract, _) = setup_contract(&e);
         let user = Address::generate(&e);
 
         e.as_contract(&contract, || {
@@ -741,7 +1042,7 @@ mod tests {
     #[test]
     fn test_set_triggers_short() {
         let e = setup_env();
-        let (contract, _, _) = setup_contract(&e);
+        let (contract, _) = setup_contract(&e);
         let user = Address::generate(&e);
 
         e.as_contract(&contract, || {
@@ -760,7 +1061,7 @@ mod tests {
     #[test]
     fn test_clear_triggers() {
         let e = setup_env();
-        let (contract, _, _) = setup_contract(&e);
+        let (contract, _) = setup_contract(&e);
         let user = Address::generate(&e);
 
         e.as_contract(&contract, || {
@@ -778,24 +1079,10 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #327)")]
-    fn test_set_triggers_not_open() {
-        let e = setup_env();
-        let (contract, _, _) = setup_contract(&e);
-        let user = Address::generate(&e);
-
-        e.as_contract(&contract, || {
-            let position = create_test_position(&e, &user, false);
-            storage::set_position(&e, 1, &position);
-            execute_set_triggers(&e, 1, BTC_PRICE + 5000 * SCALAR_7, 0);
-        });
-    }
-
-    #[test]
     #[should_panic(expected = "Error(Contract, #340)")]
     fn test_set_triggers_invalid_tp_long() {
         let e = setup_env();
-        let (contract, _, _) = setup_contract(&e);
+        let (contract, _) = setup_contract(&e);
         let user = Address::generate(&e);
 
         e.as_contract(&contract, || {
@@ -809,13 +1096,126 @@ mod tests {
     #[should_panic(expected = "Error(Contract, #341)")]
     fn test_set_triggers_invalid_sl_long() {
         let e = setup_env();
-        let (contract, _, _) = setup_contract(&e);
+        let (contract, _) = setup_contract(&e);
         let user = Address::generate(&e);
 
         e.as_contract(&contract, || {
             let position = create_test_position(&e, &user, true);
             storage::set_position(&e, 1, &position);
             execute_set_triggers(&e, 1, 0, BTC_PRICE + 1000 * SCALAR_7);
+        });
+    }
+
+    // ==========================================
+    // min_open_time tests
+    // ==========================================
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #347)")]
+    fn test_close_position_too_new() {
+        let e = setup_env();
+        let (contract, _) = setup_contract(&e);
+        let user = Address::generate(&e);
+
+        e.as_contract(&contract, || {
+            // Set min_open_time to 60 seconds
+            let mut config = storage::get_config(&e);
+            config.min_open_time = 60;
+            storage::set_config(&e, &config);
+
+            let position = create_test_position(&e, &user, true);
+            storage::set_position(&e, 1, &position);
+            storage::add_user_position(&e, &user, 1);
+
+            let mut data = default_market_data();
+            data.long_notional_size = position.notional_size;
+            data.long_interest_index = SCALAR_18;
+            data.short_interest_index = SCALAR_18;
+            data.last_update = e.ledger().timestamp();
+            storage::set_market_data(&e, 0, &data);
+
+            // Try to close immediately — should panic with PositionTooNew
+            execute_close_position(&e, 1);
+        });
+    }
+
+    #[test]
+    fn test_close_position_after_min_open_time() {
+        let e = setup_env();
+        let (contract, _) = setup_contract(&e);
+        let user = Address::generate(&e);
+
+        e.as_contract(&contract, || {
+            // Set min_open_time to 60 seconds
+            let mut config = storage::get_config(&e);
+            config.min_open_time = 60;
+            storage::set_config(&e, &config);
+
+            let position = create_test_position(&e, &user, true);
+            storage::set_position(&e, 1, &position);
+            storage::add_user_position(&e, &user, 1);
+
+            let mut data = default_market_data();
+            data.long_notional_size = position.notional_size;
+            data.long_interest_index = SCALAR_18;
+            data.short_interest_index = SCALAR_18;
+            data.last_update = e.ledger().timestamp();
+            storage::set_market_data(&e, 0, &data);
+
+            // Advance time past min_open_time
+            crate::testutils::jump(&e, e.ledger().timestamp() + 61);
+
+            // Should succeed
+            let (pnl, _fee) = execute_close_position(&e, 1);
+            assert_eq!(pnl, 0);
+        });
+    }
+
+    #[test]
+    fn test_cancel_pending_ignores_min_open_time() {
+        let e = setup_env();
+        let (contract, _) = setup_contract(&e);
+        let user = Address::generate(&e);
+
+        e.as_contract(&contract, || {
+            // Set min_open_time to 60 seconds
+            let mut config = storage::get_config(&e);
+            config.min_open_time = 60;
+            storage::set_config(&e, &config);
+
+            let position = create_test_position(&e, &user, false); // pending
+            storage::set_position(&e, 1, &position);
+            storage::add_user_position(&e, &user, 1);
+
+            // Cancel immediately — should succeed (pending positions exempt)
+            let (pnl, fee) = execute_close_position(&e, 1);
+            assert_eq!(pnl, 0);
+            assert_eq!(fee, 0);
+        });
+    }
+
+    #[test]
+    fn test_close_position_min_open_time_disabled() {
+        let e = setup_env();
+        let (contract, _) = setup_contract(&e);
+        let user = Address::generate(&e);
+
+        e.as_contract(&contract, || {
+            // min_open_time = 0 (disabled, which is the default)
+            let position = create_test_position(&e, &user, true);
+            storage::set_position(&e, 1, &position);
+            storage::add_user_position(&e, &user, 1);
+
+            let mut data = default_market_data();
+            data.long_notional_size = position.notional_size;
+            data.long_interest_index = SCALAR_18;
+            data.short_interest_index = SCALAR_18;
+            data.last_update = e.ledger().timestamp();
+            storage::set_market_data(&e, 0, &data);
+
+            // Close immediately — should succeed (min_open_time disabled)
+            let (pnl, _fee) = execute_close_position(&e, 1);
+            assert_eq!(pnl, 0);
         });
     }
 }

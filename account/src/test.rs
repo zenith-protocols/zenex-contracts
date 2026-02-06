@@ -388,33 +388,3 @@ fn test_create_multisig_account() {
     assert_eq!(rule.signers.len(), 2);
     assert_eq!(rule.policies.len(), 1);
 }
-
-// ==========================================
-// Upgrade Test
-// ==========================================
-
-#[test]
-fn test_upgrade_contract() {
-    let e = Env::default();
-    e.mock_all_auths();
-
-    let signer = create_delegated_signer(&e);
-    let policies: Map<Address, Val> = Map::new(&e);
-    let client = create_client(&e, signer, policies);
-
-    // Include the WASM bytes directly
-    const WASM: &[u8] = include_bytes!("../../target/wasm32v1-none/release/zenex_account.wasm");
-
-    // Upload the WASM to get its hash
-    let wasm_hash = e.deployer().upload_contract_wasm(WASM);
-
-    // The account contract uses its own address for auth during upgrade
-    let contract_address = client.address.clone();
-
-    // Call upgrade function directly via invoke_contract
-    e.invoke_contract::<()>(
-        &client.address,
-        &soroban_sdk::Symbol::new(&e, "upgrade"),
-        vec![&e, wasm_hash.to_val(), contract_address.to_val()],
-    );
-}

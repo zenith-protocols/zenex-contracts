@@ -36,7 +36,8 @@ pub enum TradingStorageKey {
     Vault,
     Token,
     Config,
-    Decimals,
+    PriceDecimals,
+    TokenDecimals,
     MarketCounter,
     PositionCounter,
     // Temporary storage
@@ -99,17 +100,38 @@ pub fn set_config(e: &Env, config: &TradingConfig) {
         .set(&TradingStorageKey::Config, config);
 }
 
-pub fn get_decimals(e: &Env) -> u32 {
+pub fn get_price_decimals(e: &Env) -> u32 {
     e.storage()
         .instance()
-        .get(&TradingStorageKey::Decimals)
+        .get(&TradingStorageKey::PriceDecimals)
         .unwrap_optimized()
 }
 
-pub fn set_decimals(e: &Env, decimals: u32) {
+pub fn set_price_decimals(e: &Env, decimals: u32) {
     e.storage()
         .instance()
-        .set(&TradingStorageKey::Decimals, &decimals);
+        .set(&TradingStorageKey::PriceDecimals, &decimals);
+}
+
+pub fn get_token_decimals(e: &Env) -> u32 {
+    e.storage()
+        .instance()
+        .get(&TradingStorageKey::TokenDecimals)
+        .unwrap_optimized()
+}
+
+pub fn set_token_decimals(e: &Env, decimals: u32) {
+    e.storage()
+        .instance()
+        .set(&TradingStorageKey::TokenDecimals, &decimals);
+}
+
+pub fn get_price_scalar(e: &Env) -> i128 {
+    10i128.pow(get_price_decimals(e))
+}
+
+pub fn get_token_scalar(e: &Env) -> i128 {
+    10i128.pow(get_token_decimals(e))
 }
 
 pub fn get_vault(e: &Env) -> Address {

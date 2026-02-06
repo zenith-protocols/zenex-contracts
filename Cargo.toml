@@ -2,8 +2,11 @@
 resolver = "2"
 members = [
   "account",
+  "ed25519-verifier",
+  "strategy-vault",
   "test-suites",
   "trading",
+  "webauthn-verifier",
 ]
 
 [workspace.dependencies.soroban-sdk]
@@ -19,20 +22,28 @@ version = "1.4.0"
 version = "1.4.0"
 
 [workspace.dependencies.stellar-access]
-git = "https://github.com/NethermindEth/stellar-contracts"
-branch = "update-soroban25"
+git = "https://github.com/OpenZeppelin/stellar-contracts"
 
 [workspace.dependencies.stellar-macros]
-git = "https://github.com/NethermindEth/stellar-contracts"
-branch = "update-soroban25"
+git = "https://github.com/OpenZeppelin/stellar-contracts"
 
 [workspace.dependencies.stellar-accounts]
-git = "https://github.com/NethermindEth/stellar-contracts"
-branch = "update-soroban25"
+git = "https://github.com/OpenZeppelin/stellar-contracts"
 
 [workspace.dependencies.stellar-contract-utils]
-git = "https://github.com/NethermindEth/stellar-contracts"
-branch = "update-soroban25"
+git = "https://github.com/OpenZeppelin/stellar-contracts"
+
+[workspace.dependencies.stellar-tokens]
+git = "https://github.com/OpenZeppelin/stellar-contracts"
+
+[workspace.dependencies.p256]
+version = "0.13.2"
+
+[workspace.dependencies.hex-literal]
+version = "1.1.0"
+
+[workspace.dependencies.ed25519-dalek]
+version = "2.1.1"
 
 [profile.release]
 opt-level = "z"

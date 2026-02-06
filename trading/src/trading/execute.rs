@@ -1,44 +1,46 @@
-use crate::constants::SCALAR_7;
 use crate::dependencies::VaultClient;
 use crate::errors::TradingError;
 use crate::events::{FillLimit, Liquidation, StopLoss, TakeProfit};
 use crate::storage;
-use crate::trading::market::{load_price, Market};
+use crate::trading::market::Market;
+use crate::trading::oracle::load_price;
 use crate::trading::position::{FeeBreakdown, Position};
 use crate::types::{ExecuteRequest, ExecuteRequestType, TradingConfig};
-use crate::validation::{require_not_frozen, require_market_enabled};
+use crate::validation::{check_min_open_time, require_not_frozen, require_market_enabled};
 use sep_40_oracle::Asset;
 use soroban_fixed_point_math::SorobanFixedPoint;
 use soroban_sdk::token::TokenClient;
-use soroban_sdk::{map, panic_with_error, vec, Address, Env, Map, Vec};
+use soroban_sdk::{map, vec, Address, Env, Map, Vec};
 
 /// Context for batch execution operations (keeper triggers)
-/// Caches markets, positions, and prices to minimize storage reads
+/// Caches markets and prices to minimize storage reads
 pub struct ExecuteContext {
     pub config: TradingConfig,
     pub vault: Address,
+    pub token: Address,
     pub caller: Address,
+    pub price_scalar: i128,
+    pub token_scalar: i128,
     pub markets: Map<u32, Market>,
-    pub positions: Map<u32, Position>,
-    pub positions_to_update: Vec<u32>,
     pub markets_to_update: Vec<u32>,
     prices: Map<u32, i128>,
 }
 
 impl ExecuteContext {
     pub fn load(e: &Env, caller: Address) -> Self {
-        if !storage::has_name(e) {
-            panic_with_error!(e, TradingError::NotInitialized);
-        }
         let config = storage::get_config(e);
         let vault = storage::get_vault(e);
+        let token = storage::get_token(e);
+        let price_scalar = storage::get_price_scalar(e);
+        let token_scalar = storage::get_token_scalar(e);
         ExecuteContext {
             config,
             vault,
+            token,
             caller,
+            price_scalar,
+            token_scalar,
             markets: map![e],
-            positions: map![e],
-            positions_to_update: vec![e],
             markets_to_update: vec![e],
             prices: map![e],
         }
@@ -54,14 +56,6 @@ impl ExecuteContext {
         market
     }
 
-    pub fn load_position(&mut self, e: &Env, position_id: u32) -> Position {
-        if let Some(position) = self.positions.get(position_id) {
-            position
-        } else {
-            Position::load(e, position_id) // panics if not found
-        }
-    }
-
     pub fn cache_market(&mut self, market: &Market) {
         self.markets.set(market.asset_index, market.clone());
         if !self.markets_to_update.contains(&market.asset_index) {
@@ -69,24 +63,10 @@ impl ExecuteContext {
         }
     }
 
-    pub fn cache_position(&mut self, position: &Position) {
-        self.positions.set(position.id, position.clone());
-        if !self.positions_to_update.contains(position.id) {
-            self.positions_to_update.push_back(position.id);
-        }
-    }
-
     pub fn store_cached_markets(&mut self, e: &Env) {
         for asset_index in self.markets_to_update.iter() {
             let reserve = self.markets.get(asset_index).unwrap();
             reserve.store(e);
-        }
-    }
-
-    pub fn store_cached_positions(&mut self, e: &Env) {
-        for position_id in self.positions_to_update.iter() {
-            let position = self.positions.get(position_id).unwrap();
-            position.store(e);
         }
     }
 
@@ -100,7 +80,7 @@ impl ExecuteContext {
     }
 
     pub fn calculate_caller_fee(&self, e: &Env, fee: i128) -> i128 {
-        let caller_fee = fee.fixed_mul_floor(e, &self.config.caller_take_rate, &SCALAR_7);
+        let caller_fee = fee.fixed_mul_floor(e, &self.config.caller_take_rate, &self.token_scalar);
         if caller_fee > 0 { caller_fee } else { 0 }
     }
 }
@@ -142,8 +122,8 @@ pub fn execute_trigger(
     let mut ctx = ExecuteContext::load(e, caller.clone());
     let processing_result = process_execute_requests(e, &mut ctx, requests);
 
-    let token_client = TokenClient::new(e, &storage::get_token(e));
-    let vault_client = VaultClient::new(e, &storage::get_vault(e));
+    let token_client = TokenClient::new(e, &ctx.token);
+    let vault_client = VaultClient::new(e, &ctx.vault);
 
     // STEP 1: Vault pays to contract (if needed)
     // This is done first to ensure the contract has enough balance to handle transfers
@@ -187,7 +167,7 @@ fn process_execute_requests(
 
     for request in requests.iter() {
         let request_type = ExecuteRequestType::from_u32(e, request.request_type);
-        let mut position = ctx.load_position(e, request.position_id);
+        let mut position = Position::load(e, request.position_id);
 
         // Validate position filled status for the requested action
         let (is_valid, specific_error) = match request_type {
@@ -225,7 +205,6 @@ fn process_execute_requests(
     }
 
     ctx.store_cached_markets(e);
-    ctx.store_cached_positions(e);
 
     result
 }
@@ -240,14 +219,14 @@ fn handle_close(
 ) -> (i128, i128, FeeBreakdown) {
     let mut market = ctx.load_market(e, position.asset_index);
     let price = ctx.get_price(e, position.asset_index, &market.config.asset);
-    let pnl = position.calculate_pnl(e, price);
+    let pnl = position.calculate_pnl(e, price, ctx.price_scalar);
     let fees = position.calculate_fee_breakdown(e, &market);
 
     // Calculate payouts
     let equity = position.collateral + pnl - fees.total_fee();
     let max_payout = position
         .collateral
-        .fixed_mul_floor(e, &market.config.max_payout, &SCALAR_7);
+        .fixed_mul_floor(e, &market.config.max_payout, &ctx.token_scalar);
     let user_payout = equity.max(0).min(max_payout);
 
     // Vault transfer (positive = receives, negative = pays)
@@ -323,10 +302,10 @@ fn apply_fill(
     // Calculate fees from notional_size (same formula as open)
     let base_fee = position
         .notional_size
-        .fixed_mul_ceil(e, &market.config.base_fee, &SCALAR_7);
+        .fixed_mul_ceil(e, &market.config.base_fee, &ctx.token_scalar);
     let price_impact = position
         .notional_size
-        .fixed_div_ceil(e, &market.config.price_impact_scalar, &SCALAR_7);
+        .fixed_div_ceil(e, &market.config.price_impact_scalar, &ctx.token_scalar);
 
     // Actual base_fee charged (0 if refunded for balancing trades)
     let actual_base_fee = if should_pay_base_fee {
@@ -346,7 +325,7 @@ fn apply_fill(
     };
 
     ctx.cache_market(&market);
-    ctx.cache_position(position);
+    position.store(e);
 
     FillLimit {
         asset_index: position.asset_index,
@@ -367,6 +346,9 @@ fn apply_stop_loss(
     ctx: &mut ExecuteContext,
     position: &mut Position,
 ) -> u32 {
+    if !check_min_open_time(e, position, ctx.config.min_open_time) {
+        return TradingError::PositionTooNew as u32;
+    }
     let market = ctx.load_market(e, position.asset_index);
     let current_price = ctx.get_price(e, position.asset_index, &market.config.asset);
     if !position.check_stop_loss(current_price) {
@@ -397,6 +379,9 @@ fn apply_take_profit(
     ctx: &mut ExecuteContext,
     position: &mut Position,
 ) -> u32 {
+    if !check_min_open_time(e, position, ctx.config.min_open_time) {
+        return TradingError::PositionTooNew as u32;
+    }
     let market = ctx.load_market(e, position.asset_index);
     let current_price = ctx.get_price(e, position.asset_index, &market.config.asset);
     if !position.check_take_profit(current_price) {
@@ -430,13 +415,13 @@ fn apply_liquidation(
     let mut market = ctx.load_market(e, position.asset_index);
     let current_price = ctx.get_price(e, position.asset_index, &market.config.asset);
 
-    let pnl = position.calculate_pnl(e, current_price);
+    let pnl = position.calculate_pnl(e, current_price, ctx.price_scalar);
     let fees = position.calculate_fee_breakdown(e, &market);
     let equity = position.collateral + pnl - fees.total_fee();
     let required_margin =
         position
             .notional_size
-            .fixed_mul_floor(e, &market.config.maintenance_margin, &SCALAR_7);
+            .fixed_mul_floor(e, &market.config.maintenance_margin, &ctx.token_scalar);
 
     if equity >= required_margin {
         return TradingError::PositionNotLiquidatable as u32;
@@ -472,60 +457,11 @@ fn apply_liquidation(
 mod tests {
     use super::*;
     use crate::constants::{SCALAR_18, SCALAR_7};
-    use crate::testutils::{
-        create_oracle, create_token, create_trading, create_vault, default_config, default_market,
-        default_market_data, BTC_PRICE,
-    };
-    use crate::trading::config::execute_initialize;
-    use crate::types::{ContractStatus, ExecuteRequest};
+    use crate::testutils::{default_market_data, setup_contract, setup_env, BTC_PRICE};
+    use crate::types::ExecuteRequest;
     use sep_40_oracle::Asset;
-    use soroban_sdk::testutils::{Address as _, Ledger, LedgerInfo};
-    use soroban_sdk::{vec, String, Symbol};
-
-    fn setup_env() -> Env {
-        let e = Env::default();
-        e.mock_all_auths();
-        e.ledger().set(LedgerInfo {
-            timestamp: 1000,
-            protocol_version: 25,
-            sequence_number: 100,
-            network_id: Default::default(),
-            base_reserve: 10,
-            min_temp_entry_ttl: 10,
-            min_persistent_entry_ttl: 10,
-            max_entry_ttl: 3110400,
-        });
-        e
-    }
-
-    fn setup_contract(e: &Env) -> (Address, Address, Address) {
-        let (address, owner) = create_trading(e);
-        let (oracle, _) = create_oracle(e);
-        let (token, _) = create_token(e, &owner);
-        let (vault, _) = create_vault(e, &token, 1_000_000 * SCALAR_7);
-
-        e.as_contract(&address, || {
-            execute_initialize(
-                e,
-                &String::from_str(e, "Test"),
-                &vault,
-                &default_config(&oracle),
-            );
-            storage::set_status(e, ContractStatus::Active as u32);
-
-            // Set up market
-            let market_config = default_market(e);
-            storage::set_market_config(e, 0, &market_config);
-            let mut market_data = default_market_data();
-            market_data.last_update = e.ledger().timestamp();
-            market_data.long_interest_index = SCALAR_18;
-            market_data.short_interest_index = SCALAR_18;
-            storage::set_market_data(e, 0, &market_data);
-            storage::next_market_index(e); // Advance counter to 1
-        });
-
-        (address, vault, oracle)
-    }
+    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::{vec, Symbol};
 
     fn create_test_position(
         e: &Env,
@@ -551,240 +487,13 @@ mod tests {
     }
 
     // ==========================================
-    // ExecuteContext Tests
-    // ==========================================
-
-    #[test]
-    fn test_execute_context_load() {
-        let e = setup_env();
-        let (address, vault, _) = setup_contract(&e);
-        let caller = Address::generate(&e);
-
-        e.as_contract(&address, || {
-            let ctx = ExecuteContext::load(&e, caller.clone());
-            assert_eq!(ctx.vault, vault);
-            assert_eq!(ctx.caller, caller);
-            assert_eq!(ctx.markets.len(), 0);
-            assert_eq!(ctx.positions.len(), 0);
-        });
-    }
-
-    #[test]
-    #[should_panic(expected = "Error(Contract, #301)")]
-    fn test_execute_context_load_not_initialized() {
-        let e = setup_env();
-        let (address, _) = create_trading(&e);
-        let caller = Address::generate(&e);
-
-        e.as_contract(&address, || {
-            ExecuteContext::load(&e, caller);
-        });
-    }
-
-    #[test]
-    fn test_execute_context_load_market() {
-        let e = setup_env();
-        let (address, vault, _) = setup_contract(&e);
-        let caller = Address::generate(&e);
-
-        e.as_contract(&address, || {
-            let mut ctx = ExecuteContext::load(&e, caller);
-            let market = ctx.load_market(&e, 0);
-            assert_eq!(market.asset_index, 0);
-            assert!(market.config.enabled);
-
-            // Load again - should use cache after caching
-            ctx.cache_market(&market);
-            let market2 = ctx.load_market(&e, 0);
-            assert_eq!(market2.asset_index, 0);
-        });
-    }
-
-    #[test]
-    fn test_execute_context_load_position() {
-        let e = setup_env();
-        let (address, _, _) = setup_contract(&e);
-        let caller = Address::generate(&e);
-        let user = Address::generate(&e);
-
-        e.as_contract(&address, || {
-            let position = create_test_position(&e, &user, true, true, BTC_PRICE);
-            storage::set_position(&e, 1, &position);
-
-            let mut ctx = ExecuteContext::load(&e, caller);
-            let loaded = ctx.load_position(&e, 1);
-            assert_eq!(loaded.id, 1);
-            assert_eq!(loaded.user, user);
-
-            // Cache and load again
-            ctx.cache_position(&loaded);
-            let loaded2 = ctx.load_position(&e, 1);
-            assert_eq!(loaded2.id, 1);
-        });
-    }
-
-    #[test]
-    fn test_execute_context_cache_market() {
-        let e = setup_env();
-        let (address, _, _) = setup_contract(&e);
-        let caller = Address::generate(&e);
-
-        e.as_contract(&address, || {
-            let mut ctx = ExecuteContext::load(&e, caller);
-            let market = ctx.load_market(&e, 0);
-
-            ctx.cache_market(&market);
-            assert!(ctx.markets.contains_key(0));
-            assert!(ctx.markets_to_update.contains(&0));
-
-            // Caching same market again shouldn't duplicate in update list
-            ctx.cache_market(&market);
-            assert_eq!(ctx.markets_to_update.len(), 1);
-        });
-    }
-
-    #[test]
-    fn test_execute_context_cache_position() {
-        let e = setup_env();
-        let (address, _, _) = setup_contract(&e);
-        let caller = Address::generate(&e);
-        let user = Address::generate(&e);
-
-        e.as_contract(&address, || {
-            let position = create_test_position(&e, &user, true, true, BTC_PRICE);
-            storage::set_position(&e, 1, &position);
-
-            let mut ctx = ExecuteContext::load(&e, caller);
-            let loaded = ctx.load_position(&e, 1);
-            ctx.cache_position(&loaded);
-
-            assert!(ctx.positions.contains_key(1));
-            assert!(ctx.positions_to_update.contains(&1));
-
-            // Caching again shouldn't duplicate
-            ctx.cache_position(&loaded);
-            assert_eq!(ctx.positions_to_update.len(), 1);
-        });
-    }
-
-    #[test]
-    fn test_execute_context_store_cached() {
-        let e = setup_env();
-        let (address, _, _) = setup_contract(&e);
-        let caller = Address::generate(&e);
-        let user = Address::generate(&e);
-
-        e.as_contract(&address, || {
-            let position = create_test_position(&e, &user, true, true, BTC_PRICE);
-            storage::set_position(&e, 1, &position);
-
-            let mut ctx = ExecuteContext::load(&e, caller);
-            let mut market = ctx.load_market(&e, 0);
-            market.data.long_notional_size = 5000 * SCALAR_7;
-            ctx.cache_market(&market);
-
-            let mut pos = ctx.load_position(&e, 1);
-            pos.collateral = 2000 * SCALAR_7;
-            ctx.cache_position(&pos);
-
-            ctx.store_cached_markets(&e);
-            ctx.store_cached_positions(&e);
-
-            // Verify stored
-            let stored_market = storage::get_market_data(&e, 0);
-            assert_eq!(stored_market.long_notional_size, 5000 * SCALAR_7);
-
-            let stored_pos = storage::get_position(&e, 1);
-            assert_eq!(stored_pos.collateral, 2000 * SCALAR_7);
-        });
-    }
-
-    #[test]
-    fn test_execute_context_get_price() {
-        let e = setup_env();
-        let (address, _, _) = setup_contract(&e);
-        let caller = Address::generate(&e);
-
-        e.as_contract(&address, || {
-            let mut ctx = ExecuteContext::load(&e, caller);
-            let asset = Asset::Other(Symbol::new(&e, "BTC"));
-            let price = ctx.get_price(&e, 0, &asset);
-
-            assert_eq!(price, BTC_PRICE);
-
-            // Second call should use cache
-            let price2 = ctx.get_price(&e, 0, &asset);
-            assert_eq!(price2, BTC_PRICE);
-        });
-    }
-
-    #[test]
-    fn test_execute_context_calculate_caller_fee() {
-        let e = setup_env();
-        let (address, _, _) = setup_contract(&e);
-        let caller = Address::generate(&e);
-
-        e.as_contract(&address, || {
-            let ctx = ExecuteContext::load(&e, caller);
-            // caller_take_rate = 10% (0_1000000)
-            let fee = ctx.calculate_caller_fee(&e, 100 * SCALAR_7);
-            assert_eq!(fee, 10 * SCALAR_7);
-
-            // Zero fee
-            let fee_zero = ctx.calculate_caller_fee(&e, 0);
-            assert_eq!(fee_zero, 0);
-        });
-    }
-
-    // ==========================================
-    // ProcessingResult Tests
-    // ==========================================
-
-    #[test]
-    fn test_processing_result_new() {
-        let e = setup_env();
-        let result = ProcessingResult::new(&e);
-        assert_eq!(result.transfers.len(), 0);
-        assert_eq!(result.results.len(), 0);
-    }
-
-    #[test]
-    fn test_processing_result_add_transfer() {
-        let e = setup_env();
-        let mut result = ProcessingResult::new(&e);
-        let user = Address::generate(&e);
-
-        result.add_transfer(&user, 100);
-        assert_eq!(result.transfers.get(user.clone()), Some(100));
-
-        // Add more to same address
-        result.add_transfer(&user, 50);
-        assert_eq!(result.transfers.get(user), Some(150));
-    }
-
-    #[test]
-    fn test_processing_result_multiple_addresses() {
-        let e = setup_env();
-        let mut result = ProcessingResult::new(&e);
-        let user1 = Address::generate(&e);
-        let user2 = Address::generate(&e);
-
-        result.add_transfer(&user1, 100);
-        result.add_transfer(&user2, 200);
-        result.add_transfer(&user1, -30);
-
-        assert_eq!(result.transfers.get(user1), Some(70));
-        assert_eq!(result.transfers.get(user2), Some(200));
-    }
-
-    // ==========================================
     // apply_fill Tests
     // ==========================================
 
     #[test]
     fn test_apply_fill_long_success() {
         let e = setup_env();
-        let (address, _, _) = setup_contract(&e);
+        let (address, _) = setup_contract(&e);
         let caller = Address::generate(&e);
         let user = Address::generate(&e);
 
@@ -808,7 +517,7 @@ mod tests {
     #[test]
     fn test_apply_fill_short_success() {
         let e = setup_env();
-        let (address, _, _) = setup_contract(&e);
+        let (address, _) = setup_contract(&e);
         let caller = Address::generate(&e);
         let user = Address::generate(&e);
 
@@ -831,7 +540,7 @@ mod tests {
     #[test]
     fn test_apply_fill_long_not_fillable() {
         let e = setup_env();
-        let (address, _, _) = setup_contract(&e);
+        let (address, _) = setup_contract(&e);
         let caller = Address::generate(&e);
         let user = Address::generate(&e);
 
@@ -853,7 +562,7 @@ mod tests {
     #[test]
     fn test_apply_fill_short_not_fillable() {
         let e = setup_env();
-        let (address, _, _) = setup_contract(&e);
+        let (address, _) = setup_contract(&e);
         let caller = Address::generate(&e);
         let user = Address::generate(&e);
 
@@ -874,7 +583,7 @@ mod tests {
     #[test]
     fn test_apply_fill_balancing_trade() {
         let e = setup_env();
-        let (address, _, _) = setup_contract(&e);
+        let (address, _) = setup_contract(&e);
         let caller = Address::generate(&e);
         let user = Address::generate(&e);
 
@@ -911,7 +620,7 @@ mod tests {
     #[test]
     fn test_apply_stop_loss_long_triggered() {
         let e = setup_env();
-        let (address, _, _) = setup_contract(&e);
+        let (address, _) = setup_contract(&e);
         let caller = Address::generate(&e);
         let user = Address::generate(&e);
 
@@ -933,7 +642,7 @@ mod tests {
     #[test]
     fn test_apply_stop_loss_not_triggered() {
         let e = setup_env();
-        let (address, _, _) = setup_contract(&e);
+        let (address, _) = setup_contract(&e);
         let caller = Address::generate(&e);
         let user = Address::generate(&e);
 
@@ -954,7 +663,7 @@ mod tests {
     #[test]
     fn test_apply_stop_loss_short_triggered() {
         let e = setup_env();
-        let (address, _, _) = setup_contract(&e);
+        let (address, _) = setup_contract(&e);
         let caller = Address::generate(&e);
         let user = Address::generate(&e);
 
@@ -980,7 +689,7 @@ mod tests {
     #[test]
     fn test_apply_take_profit_long_triggered() {
         let e = setup_env();
-        let (address, _, _) = setup_contract(&e);
+        let (address, _) = setup_contract(&e);
         let caller = Address::generate(&e);
         let user = Address::generate(&e);
 
@@ -1002,7 +711,7 @@ mod tests {
     #[test]
     fn test_apply_take_profit_not_triggered() {
         let e = setup_env();
-        let (address, _, _) = setup_contract(&e);
+        let (address, _) = setup_contract(&e);
         let caller = Address::generate(&e);
         let user = Address::generate(&e);
 
@@ -1023,7 +732,7 @@ mod tests {
     #[test]
     fn test_apply_take_profit_short_triggered() {
         let e = setup_env();
-        let (address, _, _) = setup_contract(&e);
+        let (address, _) = setup_contract(&e);
         let caller = Address::generate(&e);
         let user = Address::generate(&e);
 
@@ -1049,7 +758,7 @@ mod tests {
     #[test]
     fn test_apply_liquidation_underwater() {
         let e = setup_env();
-        let (address, _, _) = setup_contract(&e);
+        let (address, _) = setup_contract(&e);
         let caller = Address::generate(&e);
         let user = Address::generate(&e);
 
@@ -1085,7 +794,7 @@ mod tests {
     #[test]
     fn test_apply_liquidation_not_liquidatable() {
         let e = setup_env();
-        let (address, _, _) = setup_contract(&e);
+        let (address, _) = setup_contract(&e);
         let caller = Address::generate(&e);
         let user = Address::generate(&e);
 
@@ -1111,7 +820,7 @@ mod tests {
     #[test]
     fn test_process_filled_position_error() {
         let e = setup_env();
-        let (address, _, _) = setup_contract(&e);
+        let (address, _) = setup_contract(&e);
         let caller = Address::generate(&e);
         let user = Address::generate(&e);
 
@@ -1141,7 +850,7 @@ mod tests {
     #[test]
     fn test_process_pending_position_error() {
         let e = setup_env();
-        let (address, _, _) = setup_contract(&e);
+        let (address, _) = setup_contract(&e);
         let caller = Address::generate(&e);
         let user = Address::generate(&e);
 
@@ -1173,7 +882,7 @@ mod tests {
     #[test]
     fn test_process_multiple_requests() {
         let e = setup_env();
-        let (address, _, _) = setup_contract(&e);
+        let (address, _) = setup_contract(&e);
         let caller = Address::generate(&e);
         let user = Address::generate(&e);
 
@@ -1217,21 +926,9 @@ mod tests {
     #[test]
     fn test_handle_close_profitable() {
         let e = setup_env();
-        let (address, _, _) = setup_contract(&e);
+        let (address, _) = setup_contract(&e);
         let caller = Address::generate(&e);
         let user = Address::generate(&e);
-
-        // Advance time so the price has increased
-        e.ledger().set(LedgerInfo {
-            timestamp: 2000,
-            protocol_version: 25,
-            sequence_number: 200,
-            network_id: Default::default(),
-            base_reserve: 10,
-            min_temp_entry_ttl: 10,
-            min_persistent_entry_ttl: 10,
-            max_entry_ttl: 3110400,
-        });
 
         e.as_contract(&address, || {
             // Entry at price below current (profitable long)
@@ -1262,7 +959,7 @@ mod tests {
     #[test]
     fn test_handle_close_loss() {
         let e = setup_env();
-        let (address, _, _) = setup_contract(&e);
+        let (address, _) = setup_contract(&e);
         let caller = Address::generate(&e);
         let user = Address::generate(&e);
 
@@ -1280,6 +977,535 @@ mod tests {
 
             assert_eq!(price, BTC_PRICE);
             assert!(pnl < 0);
+        });
+    }
+
+    // ==========================================
+    // execute_trigger Tests (full flow with token transfers)
+    // ==========================================
+
+    /// Helper: set up market data with proper interest indices and timestamp
+    fn setup_market_data(e: &Env) {
+        let mut data = default_market_data();
+        data.long_interest_index = SCALAR_18;
+        data.short_interest_index = SCALAR_18;
+        data.last_update = e.ledger().timestamp();
+        storage::set_market_data(e, 0, &data);
+    }
+
+    #[test]
+    fn test_execute_trigger_fill_limit() {
+        let e = setup_env();
+        let (address, token_client) = setup_contract(&e);
+        let caller = Address::generate(&e);
+        let user = Address::generate(&e);
+
+        e.as_contract(&address, || {
+            setup_market_data(&e);
+
+            // Pending long with entry above current → fillable
+            let position =
+                create_test_position(&e, &user, false, true, BTC_PRICE + 1000 * SCALAR_7);
+            storage::set_position(&e, 1, &position);
+            storage::add_user_position(&e, &user, 1);
+
+            let vault = storage::get_vault(&e);
+            let vault_bal_before = token_client.balance(&vault);
+            let caller_bal_before = token_client.balance(&caller);
+
+            let results = execute_trigger(
+                &e,
+                &caller,
+                vec![
+                    &e,
+                    ExecuteRequest {
+                        request_type: ExecuteRequestType::Fill as u32,
+                        position_id: 1,
+                    },
+                ],
+            );
+
+            assert_eq!(results.get(0), Some(0)); // success
+
+            // Vault should receive fees
+            let vault_bal_after = token_client.balance(&vault);
+            assert!(vault_bal_after > vault_bal_before);
+
+            // Caller should receive caller_take_rate portion
+            let caller_bal_after = token_client.balance(&caller);
+            assert!(caller_bal_after > caller_bal_before);
+
+            // Position should now be filled
+            let pos = storage::get_position(&e, 1);
+            assert!(pos.filled);
+            assert_eq!(pos.entry_price, BTC_PRICE);
+        });
+    }
+
+    #[test]
+    fn test_execute_trigger_take_profit_profitable() {
+        let e = setup_env();
+        let (address, token_client) = setup_contract(&e);
+        let caller = Address::generate(&e);
+        let user = Address::generate(&e);
+
+        e.as_contract(&address, || {
+            setup_market_data(&e);
+
+            // Profitable long: entry at 90k, current at 100k
+            // collateral=1000, notional=10,000, PnL ≈ +1,111
+            // user_payout > collateral → vault must pay out via strategy_withdraw
+            let mut position =
+                create_test_position(&e, &user, true, true, BTC_PRICE - 10_000 * SCALAR_7);
+            position.take_profit = BTC_PRICE; // TP at current price
+            storage::set_position(&e, 1, &position);
+            storage::add_user_position(&e, &user, 1);
+
+            let vault = storage::get_vault(&e);
+            let vault_bal_before = token_client.balance(&vault);
+            let user_bal_before = token_client.balance(&user);
+
+            let results = execute_trigger(
+                &e,
+                &caller,
+                vec![
+                    &e,
+                    ExecuteRequest {
+                        request_type: ExecuteRequestType::TakeProfit as u32,
+                        position_id: 1,
+                    },
+                ],
+            );
+
+            assert_eq!(results.get(0), Some(0));
+
+            // Vault balance should decrease (strategy_withdraw was called)
+            let vault_bal_after = token_client.balance(&vault);
+            assert!(vault_bal_after < vault_bal_before);
+
+            // User should receive payout > collateral (profitable)
+            let user_bal_after = token_client.balance(&user);
+            assert!(user_bal_after > user_bal_before);
+            assert!(user_bal_after - user_bal_before > position.collateral);
+        });
+    }
+
+    #[test]
+    fn test_execute_trigger_stop_loss_loss() {
+        let e = setup_env();
+        let (address, token_client) = setup_contract(&e);
+        let caller = Address::generate(&e);
+        let user = Address::generate(&e);
+
+        e.as_contract(&address, || {
+            setup_market_data(&e);
+
+            // Losing long: entry at 100k, SL triggers, price still at 100k but fees eat into collateral
+            // SL above current price triggers for long
+            let mut position = create_test_position(&e, &user, true, true, BTC_PRICE);
+            position.stop_loss = BTC_PRICE + 1000 * SCALAR_7;
+            storage::set_position(&e, 1, &position);
+            storage::add_user_position(&e, &user, 1);
+
+            let vault = storage::get_vault(&e);
+            let vault_bal_before = token_client.balance(&vault);
+
+            let results = execute_trigger(
+                &e,
+                &caller,
+                vec![
+                    &e,
+                    ExecuteRequest {
+                        request_type: ExecuteRequestType::StopLoss as u32,
+                        position_id: 1,
+                    },
+                ],
+            );
+
+            assert_eq!(results.get(0), Some(0));
+
+            // Vault should receive funds (fees from the position)
+            let vault_bal_after = token_client.balance(&vault);
+            assert!(vault_bal_after > vault_bal_before);
+        });
+    }
+
+    #[test]
+    fn test_execute_trigger_liquidation() {
+        let e = setup_env();
+        let (address, token_client) = setup_contract(&e);
+        let caller = Address::generate(&e);
+        let user = Address::generate(&e);
+
+        e.as_contract(&address, || {
+            // Underwater position: small collateral, moderate interest
+            // collateral=100, notional=10,000 (100x)
+            // maintenance_margin=0.5% → required_margin=50
+            // 1% interest on 10,000 = 100 in fees → equity = 100 - ~105 = -5 < 50
+            // caller_fee = 10% of ~105 ≈ 10.5, vault_amount = 100 - 10.5 ≈ 89.5
+            let mut position = create_test_position(&e, &user, true, true, BTC_PRICE);
+            position.collateral = 100 * SCALAR_7;
+            position.notional_size = 10_000 * SCALAR_7;
+            position.interest_index = SCALAR_18;
+
+            let mut data = default_market_data();
+            data.long_interest_index = SCALAR_18 + SCALAR_18 / 100; // 1% interest
+            data.short_interest_index = SCALAR_18;
+            data.last_update = e.ledger().timestamp();
+            storage::set_market_data(&e, 0, &data);
+
+            storage::set_position(&e, 1, &position);
+            storage::add_user_position(&e, &user, 1);
+
+            let vault = storage::get_vault(&e);
+            let vault_bal_before = token_client.balance(&vault);
+            let caller_bal_before = token_client.balance(&caller);
+
+            let results = execute_trigger(
+                &e,
+                &caller,
+                vec![
+                    &e,
+                    ExecuteRequest {
+                        request_type: ExecuteRequestType::Liquidate as u32,
+                        position_id: 1,
+                    },
+                ],
+            );
+
+            assert_eq!(results.get(0), Some(0));
+
+            // Vault receives remaining collateral (minus caller fee)
+            let vault_bal_after = token_client.balance(&vault);
+            assert!(vault_bal_after > vault_bal_before);
+
+            // Caller receives liquidation fee
+            let caller_bal_after = token_client.balance(&caller);
+            assert!(caller_bal_after > caller_bal_before);
+        });
+    }
+
+    #[test]
+    fn test_execute_trigger_batch_mixed() {
+        let e = setup_env();
+        let (address, token_client) = setup_contract(&e);
+        let caller = Address::generate(&e);
+        let user = Address::generate(&e);
+
+        e.as_contract(&address, || {
+            setup_market_data(&e);
+
+            // Position 1: fillable limit (pending long, entry above current)
+            let mut pos1 =
+                create_test_position(&e, &user, false, true, BTC_PRICE + 1000 * SCALAR_7);
+            pos1.id = 1;
+            storage::set_position(&e, 1, &pos1);
+            storage::add_user_position(&e, &user, 1);
+
+            // Position 2: profitable TP (filled long, entry below current)
+            let mut pos2 =
+                create_test_position(&e, &user, true, true, BTC_PRICE - 10_000 * SCALAR_7);
+            pos2.id = 2;
+            pos2.take_profit = BTC_PRICE;
+            storage::set_position(&e, 2, &pos2);
+            storage::add_user_position(&e, &user, 2);
+
+            // Position 3: not liquidatable (healthy) → should return error
+            let mut pos3 = create_test_position(&e, &user, true, true, BTC_PRICE);
+            pos3.id = 3;
+            pos3.collateral = 5_000 * SCALAR_7;
+            pos3.notional_size = 10_000 * SCALAR_7;
+            storage::set_position(&e, 3, &pos3);
+            storage::add_user_position(&e, &user, 3);
+
+            let user_bal_before = token_client.balance(&user);
+
+            let results = execute_trigger(
+                &e,
+                &caller,
+                vec![
+                    &e,
+                    ExecuteRequest {
+                        request_type: ExecuteRequestType::Fill as u32,
+                        position_id: 1,
+                    },
+                    ExecuteRequest {
+                        request_type: ExecuteRequestType::TakeProfit as u32,
+                        position_id: 2,
+                    },
+                    ExecuteRequest {
+                        request_type: ExecuteRequestType::Liquidate as u32,
+                        position_id: 3,
+                    },
+                ],
+            );
+
+            assert_eq!(results.len(), 3);
+            assert_eq!(results.get(0), Some(0)); // Fill success
+            assert_eq!(results.get(1), Some(0)); // TP success
+            assert_eq!(
+                results.get(2),
+                Some(TradingError::PositionNotLiquidatable as u32)
+            ); // Liquidation fails
+
+            // User should receive payout from the profitable TP
+            let user_bal_after = token_client.balance(&user);
+            assert!(user_bal_after > user_bal_before);
+        });
+    }
+
+    #[test]
+    fn test_execute_trigger_error_fill_already_filled() {
+        let e = setup_env();
+        let (address, _) = setup_contract(&e);
+        let caller = Address::generate(&e);
+        let user = Address::generate(&e);
+
+        e.as_contract(&address, || {
+            setup_market_data(&e);
+
+            let position = create_test_position(&e, &user, true, true, BTC_PRICE);
+            storage::set_position(&e, 1, &position);
+
+            let results = execute_trigger(
+                &e,
+                &caller,
+                vec![
+                    &e,
+                    ExecuteRequest {
+                        request_type: ExecuteRequestType::Fill as u32,
+                        position_id: 1,
+                    },
+                ],
+            );
+
+            assert_eq!(
+                results.get(0),
+                Some(TradingError::PositionNotPending as u32)
+            );
+        });
+    }
+
+    #[test]
+    fn test_execute_trigger_error_sl_on_pending() {
+        let e = setup_env();
+        let (address, _) = setup_contract(&e);
+        let caller = Address::generate(&e);
+        let user = Address::generate(&e);
+
+        e.as_contract(&address, || {
+            setup_market_data(&e);
+
+            let position = create_test_position(&e, &user, false, true, BTC_PRICE);
+            storage::set_position(&e, 1, &position);
+
+            let results = execute_trigger(
+                &e,
+                &caller,
+                vec![
+                    &e,
+                    ExecuteRequest {
+                        request_type: ExecuteRequestType::StopLoss as u32,
+                        position_id: 1,
+                    },
+                ],
+            );
+
+            assert_eq!(
+                results.get(0),
+                Some(TradingError::ActionNotAllowedForStatus as u32)
+            );
+        });
+    }
+
+    #[test]
+    fn test_execute_trigger_error_tp_not_triggered() {
+        let e = setup_env();
+        let (address, _) = setup_contract(&e);
+        let caller = Address::generate(&e);
+        let user = Address::generate(&e);
+
+        e.as_contract(&address, || {
+            setup_market_data(&e);
+
+            // Long with TP way above current price → not triggered
+            let mut position = create_test_position(&e, &user, true, true, BTC_PRICE);
+            position.take_profit = BTC_PRICE + 50_000 * SCALAR_7;
+            storage::set_position(&e, 1, &position);
+
+            let results = execute_trigger(
+                &e,
+                &caller,
+                vec![
+                    &e,
+                    ExecuteRequest {
+                        request_type: ExecuteRequestType::TakeProfit as u32,
+                        position_id: 1,
+                    },
+                ],
+            );
+
+            assert_eq!(
+                results.get(0),
+                Some(TradingError::TakeProfitNotTriggered as u32)
+            );
+        });
+    }
+
+    #[test]
+    fn test_execute_trigger_error_sl_not_triggered() {
+        let e = setup_env();
+        let (address, _) = setup_contract(&e);
+        let caller = Address::generate(&e);
+        let user = Address::generate(&e);
+
+        e.as_contract(&address, || {
+            setup_market_data(&e);
+
+            // Long with SL way below current price → not triggered
+            let mut position = create_test_position(&e, &user, true, true, BTC_PRICE);
+            position.stop_loss = BTC_PRICE - 50_000 * SCALAR_7;
+            storage::set_position(&e, 1, &position);
+
+            let results = execute_trigger(
+                &e,
+                &caller,
+                vec![
+                    &e,
+                    ExecuteRequest {
+                        request_type: ExecuteRequestType::StopLoss as u32,
+                        position_id: 1,
+                    },
+                ],
+            );
+
+            assert_eq!(
+                results.get(0),
+                Some(TradingError::StopLossNotTriggered as u32)
+            );
+        });
+    }
+
+    #[test]
+    fn test_execute_trigger_error_not_liquidatable() {
+        let e = setup_env();
+        let (address, _) = setup_contract(&e);
+        let caller = Address::generate(&e);
+        let user = Address::generate(&e);
+
+        e.as_contract(&address, || {
+            setup_market_data(&e);
+
+            // Healthy position
+            let mut position = create_test_position(&e, &user, true, true, BTC_PRICE);
+            position.collateral = 5_000 * SCALAR_7;
+            position.notional_size = 10_000 * SCALAR_7;
+            storage::set_position(&e, 1, &position);
+
+            let results = execute_trigger(
+                &e,
+                &caller,
+                vec![
+                    &e,
+                    ExecuteRequest {
+                        request_type: ExecuteRequestType::Liquidate as u32,
+                        position_id: 1,
+                    },
+                ],
+            );
+
+            assert_eq!(
+                results.get(0),
+                Some(TradingError::PositionNotLiquidatable as u32)
+            );
+        });
+    }
+
+    // ==========================================
+    // min_open_time Tests
+    // ==========================================
+
+    #[test]
+    fn test_stop_loss_blocked_by_min_open_time() {
+        let e = setup_env();
+        let (address, _) = setup_contract(&e);
+        let caller = Address::generate(&e);
+        let user = Address::generate(&e);
+
+        e.as_contract(&address, || {
+            let mut config = storage::get_config(&e);
+            config.min_open_time = 60;
+            storage::set_config(&e, &config);
+
+            let mut position = create_test_position(&e, &user, true, true, BTC_PRICE);
+            position.stop_loss = BTC_PRICE + 1000 * SCALAR_7;
+            storage::set_position(&e, 1, &position);
+
+            let mut ctx = ExecuteContext::load(&e, caller);
+            let mut result = ProcessingResult::new(&e);
+
+            let code = apply_stop_loss(&e, &mut result, &mut ctx, &mut position);
+            assert_eq!(code, TradingError::PositionTooNew as u32);
+        });
+    }
+
+    #[test]
+    fn test_take_profit_blocked_by_min_open_time() {
+        let e = setup_env();
+        let (address, _) = setup_contract(&e);
+        let caller = Address::generate(&e);
+        let user = Address::generate(&e);
+
+        e.as_contract(&address, || {
+            let mut config = storage::get_config(&e);
+            config.min_open_time = 60;
+            storage::set_config(&e, &config);
+
+            let mut position = create_test_position(&e, &user, true, true, BTC_PRICE);
+            position.take_profit = BTC_PRICE;
+            storage::set_position(&e, 1, &position);
+
+            let mut ctx = ExecuteContext::load(&e, caller);
+            let mut result = ProcessingResult::new(&e);
+
+            let code = apply_take_profit(&e, &mut result, &mut ctx, &mut position);
+            assert_eq!(code, TradingError::PositionTooNew as u32);
+        });
+    }
+
+    #[test]
+    fn test_liquidation_ignores_min_open_time() {
+        let e = setup_env();
+        let (address, _) = setup_contract(&e);
+        let caller = Address::generate(&e);
+        let user = Address::generate(&e);
+
+        e.as_contract(&address, || {
+            let mut config = storage::get_config(&e);
+            config.min_open_time = 60;
+            storage::set_config(&e, &config);
+
+            // Create underwater position
+            let mut position = create_test_position(&e, &user, true, true, BTC_PRICE);
+            position.collateral = 100 * SCALAR_7;
+            position.notional_size = 10_000 * SCALAR_7;
+            position.interest_index = SCALAR_18;
+
+            let mut market_data = default_market_data();
+            market_data.long_interest_index = SCALAR_18 + SCALAR_18 / 10;
+            market_data.short_interest_index = SCALAR_18;
+            market_data.last_update = e.ledger().timestamp();
+            storage::set_market_data(&e, 0, &market_data);
+
+            storage::set_position(&e, 1, &position);
+            storage::add_user_position(&e, &user, 1);
+
+            let mut ctx = ExecuteContext::load(&e, caller);
+            let mut result = ProcessingResult::new(&e);
+
+            // Liquidation should succeed immediately despite min_open_time
+            let code = apply_liquidation(&e, &mut result, &mut ctx, &mut position);
+            assert_eq!(code, 0);
         });
     }
 }

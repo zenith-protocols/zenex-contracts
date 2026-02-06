@@ -408,6 +408,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e7c1832837b905bbfb5101e07cc24c8deddf52f93225eee6ead5f4d63d53ddcb"
 dependencies = [
  "const-oid",
+ "pem-rfc7468",
  "zeroize",
 ]
 
@@ -493,6 +494,7 @@ dependencies = [
  "elliptic-curve",
  "rfc6979",
  "signature",
+ "spki",
 ]
 
 [[package]]
@@ -521,6 +523,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ed25519-verifier"
+version = "0.0.0"
+dependencies = [
+ "ed25519-dalek",
+ "soroban-sdk",
+ "stellar-accounts",
+]
+
+[[package]]
 name = "either"
 version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -538,6 +549,8 @@ dependencies = [
  "ff",
  "generic-array",
  "group",
+ "pem-rfc7468",
+ "pkcs8",
  "rand_core",
  "sec1",
  "subtle",
@@ -679,6 +692,12 @@ name = "hex-literal"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6fe2267d4ed49bc07b63801559be28c718ea06c4738b7a03c94df7386d2cde46"
+
+[[package]]
+name = "hex-literal"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e712f64ec3850b98572bffac52e2c6f282b29fe6c5fa6d42334b30be438d95c1"
 
 [[package]]
 name = "hmac"
@@ -898,6 +917,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
+name = "pem-rfc7468"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "88b39c9bfcfc231068454382784bb460aae594343fb030d46e9f50a645418412"
+dependencies = [
+ "base64ct",
+]
+
+[[package]]
 name = "pkcs8"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1072,6 +1100,7 @@ dependencies = [
  "base16ct",
  "der",
  "generic-array",
+ "pkcs8",
  "subtle",
  "zeroize",
 ]
@@ -1275,7 +1304,7 @@ dependencies = [
  "elliptic-curve",
  "generic-array",
  "getrandom",
- "hex-literal",
+ "hex-literal 0.4.1",
  "hmac",
  "k256",
  "num-derive",
@@ -1449,7 +1478,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 [[package]]
 name = "stellar-access"
 version = "0.6.0"
-source = "git+https://github.com/NethermindEth/stellar-contracts?branch=update-soroban25#b91f4691cee7436fa1bde326f650d5312883efdd"
+source = "git+https://github.com/OpenZeppelin/stellar-contracts#63167bb707edf4ad25e46572df11d4332d10b68e"
 dependencies = [
  "soroban-sdk",
 ]
@@ -1457,7 +1486,7 @@ dependencies = [
 [[package]]
 name = "stellar-accounts"
 version = "0.6.0"
-source = "git+https://github.com/NethermindEth/stellar-contracts?branch=update-soroban25#b91f4691cee7436fa1bde326f650d5312883efdd"
+source = "git+https://github.com/OpenZeppelin/stellar-contracts#63167bb707edf4ad25e46572df11d4332d10b68e"
 dependencies = [
  "serde",
  "serde-json-core",
@@ -1467,7 +1496,7 @@ dependencies = [
 [[package]]
 name = "stellar-contract-utils"
 version = "0.6.0"
-source = "git+https://github.com/NethermindEth/stellar-contracts?branch=update-soroban25#b91f4691cee7436fa1bde326f650d5312883efdd"
+source = "git+https://github.com/OpenZeppelin/stellar-contracts#63167bb707edf4ad25e46572df11d4332d10b68e"
 dependencies = [
  "soroban-sdk",
 ]
@@ -1475,7 +1504,7 @@ dependencies = [
 [[package]]
 name = "stellar-macros"
 version = "0.6.0"
-source = "git+https://github.com/NethermindEth/stellar-contracts?branch=update-soroban25#b91f4691cee7436fa1bde326f650d5312883efdd"
+source = "git+https://github.com/OpenZeppelin/stellar-contracts#63167bb707edf4ad25e46572df11d4332d10b68e"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1504,6 +1533,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "stellar-tokens"
+version = "0.6.0"
+source = "git+https://github.com/OpenZeppelin/stellar-contracts#63167bb707edf4ad25e46572df11d4332d10b68e"
+dependencies = [
+ "soroban-sdk",
+ "stellar-contract-utils",
+]
+
+[[package]]
 name = "stellar-xdr"
 version = "25.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1520,6 +1558,14 @@ dependencies = [
  "serde_with",
  "sha2",
  "stellar-strkey 0.0.13",
+]
+
+[[package]]
+name = "strategy-vault"
+version = "0.0.0"
+dependencies = [
+ "soroban-sdk",
+ "stellar-tokens",
 ]
 
 [[package]]
@@ -1759,6 +1805,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d5a015fe95f3504a94bb1462c717aae75253e39b9dd6c3fb1062c934535c64aa"
 dependencies = [
  "indexmap-nostd",
+]
+
+[[package]]
+name = "webauthn-verifier"
+version = "0.0.0"
+dependencies = [
+ "hex-literal 1.1.0",
+ "p256",
+ "soroban-sdk",
+ "stellar-accounts",
 ]
 
 [[package]]

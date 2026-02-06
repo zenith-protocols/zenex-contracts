@@ -34,6 +34,7 @@ pub enum TradingError {
     CollateralAboveMaximum = 332,
     LeverageBelowMinimum = 333,
     InvalidEntryPrice = 334,
+    CollateralUnchanged = 335,
     WithdrawalBreaksMargin = 337,
     InvalidTakeProfitPrice = 340,
     InvalidStopLossPrice = 341,
@@ -41,6 +42,7 @@ pub enum TradingError {
     StopLossNotTriggered = 343,
     PositionNotLiquidatable = 345,
     LimitOrderNotFillable = 346,
+    PositionTooNew = 347,
 
     // Action/Request
     ActionNotAllowedForStatus = 351,
@@ -48,7 +50,8 @@ pub enum TradingError {
 
     // Status
     InvalidStatus = 381,
-    ContractPaused = 380,
+    ContractOnIce = 382,
+    ContractFrozen = 383,
 
     // Utilization
     UtilizationLimitExceeded = 390,

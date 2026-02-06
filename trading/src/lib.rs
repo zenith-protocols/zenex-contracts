@@ -7,14 +7,13 @@ mod contract;
 mod trading;
 mod types;
 mod dependencies;
+#[cfg(any(test, feature = "testutils"))]
 pub mod testutils;
 mod events;
 mod validation;
-#[cfg(test)]
-mod test;
 
 pub use contract::*;
 pub use types::*;
 pub use errors::TradingError;
 pub use trading::{ExecuteRequest, ExecuteRequestType};
-pub use types::ContractStatus;
+pub use trading::market::Market;

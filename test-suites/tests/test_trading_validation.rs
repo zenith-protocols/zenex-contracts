@@ -38,7 +38,7 @@ fn test_require_active_when_active() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #380)")]
+#[should_panic(expected = "Error(Contract, #382)")]
 fn test_require_active_when_on_ice() {
     let fixture = setup_fixture();
     fixture.trading.set_status(&1u32); // OnIce
@@ -59,7 +59,7 @@ fn test_require_active_when_on_ice() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #380)")]
+#[should_panic(expected = "Error(Contract, #382)")]
 fn test_require_active_when_frozen() {
     let fixture = setup_fixture();
     fixture.trading.set_status(&2u32); // Frozen
@@ -127,7 +127,7 @@ fn test_require_active_or_on_ice_when_on_ice() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #380)")]
+#[should_panic(expected = "Error(Contract, #383)")]
 fn test_require_active_or_on_ice_when_frozen() {
     let fixture = setup_fixture();
     let user = Address::generate(&fixture.env);
@@ -250,8 +250,9 @@ fn test_require_valid_config_caller_take_rate_over_100() {
         oracle: fixture.oracle.address.clone(),
         caller_take_rate: SCALAR_7 + 1, // Over 100%
         max_positions: 10,
-        max_utilization: 0,
+        max_utilization: 10 * SCALAR_7, // 10x
         max_price_age: 900,
+        min_open_time: 0,
     };
 
     fixture.trading.queue_set_config(&config);
@@ -266,8 +267,9 @@ fn test_require_valid_config_negative_caller_take_rate() {
         oracle: fixture.oracle.address.clone(),
         caller_take_rate: -1,
         max_positions: 10,
-        max_utilization: 0,
+        max_utilization: 10 * SCALAR_7, // 10x
         max_price_age: 900,
+        min_open_time: 0,
     };
 
     fixture.trading.queue_set_config(&config);
@@ -284,21 +286,24 @@ fn test_require_valid_config_max_utilization_below_1x() {
         max_positions: 10,
         max_utilization: SCALAR_7 - 1, // Below 1x (but not 0)
         max_price_age: 900,
+        min_open_time: 0,
     };
 
     fixture.trading.queue_set_config(&config);
 }
 
 #[test]
-fn test_require_valid_config_max_utilization_disabled() {
+#[should_panic(expected = "Error(Contract, #330)")]
+fn test_require_valid_config_max_utilization_zero_not_allowed() {
     let fixture = TestFixture::create(false);
 
     let config = trading::TradingConfig {
         oracle: fixture.oracle.address.clone(),
         caller_take_rate: 1_000_000,
         max_positions: 10,
-        max_utilization: 0, // Disabled
+        max_utilization: 0, // Zero not allowed
         max_price_age: 900,
+        min_open_time: 0,
     };
 
     fixture.trading.queue_set_config(&config);
@@ -314,6 +319,7 @@ fn test_require_valid_config_max_utilization_100x() {
         max_positions: 10,
         max_utilization: 100 * SCALAR_7, // Max allowed
         max_price_age: 900,
+        min_open_time: 0,
     };
 
     fixture.trading.queue_set_config(&config);
@@ -330,6 +336,7 @@ fn test_require_valid_config_max_utilization_over_100x() {
         max_positions: 10,
         max_utilization: 101 * SCALAR_7, // Over 100x
         max_price_age: 900,
+        min_open_time: 0,
     };
 
     fixture.trading.queue_set_config(&config);
@@ -346,6 +353,7 @@ fn test_require_valid_config_negative_max_utilization() {
         max_positions: 10,
         max_utilization: -1,
         max_price_age: 900,
+        min_open_time: 0,
     };
 
     fixture.trading.queue_set_config(&config);
@@ -361,8 +369,9 @@ fn test_require_valid_config_max_price_age_below_oracle_resolution() {
         oracle: fixture.oracle.address.clone(),
         caller_take_rate: 1_000_000,
         max_positions: 10,
-        max_utilization: 0,
-        max_price_age: 300, // Equal to oracle resolution (must be >)
+        max_utilization: 10 * SCALAR_7, // 10x
+        max_price_age: 300,              // Equal to oracle resolution (must be >)
+        min_open_time: 0,
     };
 
     fixture.trading.queue_set_config(&config);

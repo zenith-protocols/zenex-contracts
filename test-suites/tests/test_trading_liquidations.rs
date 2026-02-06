@@ -155,7 +155,7 @@ fn test_long_position_not_liquidatable_at_threshold() {
     );
 
     // Check that liquidation failed
-    let position_after = fixture.read_position(position_id);
+    let position_after = fixture.trading.get_position(&position_id);
     let result_code = result.get(0).unwrap();
 
     // Debug output

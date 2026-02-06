@@ -3,7 +3,8 @@ use soroban_sdk::Address;
 use test_suites::setup::create_fixture_with_data;
 use test_suites::test_fixture::{AssetIndex, TestFixture};
 use test_suites::SCALAR_7;
-use trading::testutils::{BTC_PRICE, SECONDS_IN_WEEK};
+const SECONDS_PER_WEEK: u64 = 604800;
+use trading::testutils::BTC_PRICE;
 
 // ==========================================
 // Helper Functions
@@ -34,11 +35,11 @@ fn test_open_market_order_long() {
         &0,                   // stop_loss
     );
 
-    assert_eq!(position_id, 1);
+    assert_eq!(position_id, 0);
     assert!(fee > 0);
 
     // Verify position was created
-    let position = fixture.read_position(position_id);
+    let position = fixture.trading.get_position(&position_id);
     assert!(position.filled);
     assert!(position.is_long);
     assert_eq!(position.collateral, 1_000 * SCALAR_7);
@@ -63,7 +64,7 @@ fn test_open_market_order_short() {
         &0,
     );
 
-    let position = fixture.read_position(position_id);
+    let position = fixture.trading.get_position(&position_id);
     assert!(!position.is_long);
     assert!(position.filled);
 }
@@ -74,8 +75,8 @@ fn test_open_market_order_updates_market_stats() {
     let user = Address::generate(&fixture.env);
     fixture.token.mint(&user, &(100_000 * SCALAR_7));
 
-    let initial_market = fixture.read_market_data(AssetIndex::BTC as u32);
-    assert_eq!(initial_market.long_collateral, 0);
+    let initial_market = fixture.trading.get_market(&(AssetIndex::BTC as u32));
+    assert_eq!(initial_market.data.long_notional_size, 0);
 
     fixture.trading.open_position(
         &user,
@@ -88,10 +89,9 @@ fn test_open_market_order_updates_market_stats() {
         &0,
     );
 
-    let market = fixture.read_market_data(AssetIndex::BTC as u32);
-    assert_eq!(market.long_collateral, 1_000 * SCALAR_7);
-    assert_eq!(market.long_notional_size, 10_000 * SCALAR_7);
-    assert_eq!(market.short_collateral, 0);
+    let market = fixture.trading.get_market(&(AssetIndex::BTC as u32));
+    assert_eq!(market.data.long_notional_size, 10_000 * SCALAR_7);
+    assert_eq!(market.data.short_notional_size, 0);
 }
 
 // ==========================================
@@ -118,14 +118,13 @@ fn test_open_limit_order_long() {
         &0,
     );
 
-    let position = fixture.read_position(position_id);
+    let position = fixture.trading.get_position(&position_id);
     assert!(!position.filled); // Limit order starts as pending
     assert_eq!(position.entry_price, entry_price);
 
     // Market stats should NOT be updated for pending limit orders
-    let market = fixture.read_market_data(AssetIndex::BTC as u32);
-    assert_eq!(market.long_collateral, 0);
-    assert_eq!(market.long_notional_size, 0);
+    let market = fixture.trading.get_market(&(AssetIndex::BTC as u32));
+    assert_eq!(market.data.long_notional_size, 0);
 }
 
 #[test]
@@ -148,7 +147,7 @@ fn test_open_limit_order_short() {
         &0,
     );
 
-    let position = fixture.read_position(position_id);
+    let position = fixture.trading.get_position(&position_id);
     assert!(!position.filled);
     assert!(!position.is_long);
 }
@@ -202,7 +201,7 @@ fn test_open_limit_order_invalid_short_entry_price() {
 // ==========================================
 
 #[test]
-#[should_panic(expected = "Error(Contract, #380)")]
+#[should_panic(expected = "Error(Contract, #382)")]
 fn test_open_position_contract_paused() {
     let fixture = setup_fixture();
     fixture.trading.set_status(&2u32); // Frozen
@@ -448,19 +447,15 @@ fn test_modify_collateral_add() {
         &0,
     );
 
-    let initial_collateral = fixture.read_position(position_id).collateral;
+    let initial_collateral = fixture.trading.get_position(&position_id).collateral;
 
     fixture
         .trading
         .modify_collateral(&position_id, &(2_000 * SCALAR_7)); // Increase to 2000
 
-    let position = fixture.read_position(position_id);
+    let position = fixture.trading.get_position(&position_id);
     assert_eq!(position.collateral, 2_000 * SCALAR_7);
     assert!(position.collateral > initial_collateral);
-
-    // Market stats should reflect increase
-    let market = fixture.read_market_data(AssetIndex::BTC as u32);
-    assert_eq!(market.long_collateral, 2_000 * SCALAR_7);
 }
 
 #[test]
@@ -484,7 +479,7 @@ fn test_modify_collateral_remove() {
         .trading
         .modify_collateral(&position_id, &(500 * SCALAR_7)); // Decrease to 500
 
-    let position = fixture.read_position(position_id);
+    let position = fixture.trading.get_position(&position_id);
     assert_eq!(position.collateral, 500 * SCALAR_7);
 }
 
@@ -515,7 +510,6 @@ fn test_modify_collateral_withdrawal_breaks_margin() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #327)")]
 fn test_modify_collateral_pending_position() {
     let fixture = setup_fixture();
     let user = Address::generate(&fixture.env);
@@ -533,10 +527,14 @@ fn test_modify_collateral_pending_position() {
         &0,
     );
 
-    // Try to modify pending position
+    // Modify collateral on pending position (now allowed)
     fixture
         .trading
         .modify_collateral(&position_id, &(2_000 * SCALAR_7));
+
+    let position = fixture.trading.get_position(&position_id);
+    assert_eq!(position.collateral, 2_000 * SCALAR_7);
+    assert!(!position.filled); // Still pending
 }
 
 #[test]
@@ -589,7 +587,7 @@ fn test_set_triggers_long() {
         .trading
         .set_triggers(&position_id, &take_profit, &stop_loss);
 
-    let position = fixture.read_position(position_id);
+    let position = fixture.trading.get_position(&position_id);
     assert_eq!(position.take_profit, 110_000 * SCALAR_7);
     assert_eq!(position.stop_loss, 95_000 * SCALAR_7);
 }
@@ -619,7 +617,7 @@ fn test_set_triggers_short() {
         .trading
         .set_triggers(&position_id, &take_profit, &stop_loss);
 
-    let position = fixture.read_position(position_id);
+    let position = fixture.trading.get_position(&position_id);
     assert_eq!(position.take_profit, 90_000 * SCALAR_7);
     assert_eq!(position.stop_loss, 105_000 * SCALAR_7);
 }
@@ -650,7 +648,7 @@ fn test_set_triggers_clear() {
     // Clear triggers
     fixture.trading.set_triggers(&position_id, &0, &0);
 
-    let position = fixture.read_position(position_id);
+    let position = fixture.trading.get_position(&position_id);
     assert_eq!(position.take_profit, 0);
     assert_eq!(position.stop_loss, 0);
 }
@@ -701,30 +699,6 @@ fn test_set_triggers_invalid_sl_long() {
     fixture.trading.set_triggers(&position_id, &0, &stop_loss);
 }
 
-#[test]
-#[should_panic(expected = "Error(Contract, #327)")]
-fn test_set_triggers_pending_position() {
-    let fixture = setup_fixture();
-    let user = Address::generate(&fixture.env);
-    fixture.token.mint(&user, &(100_000 * SCALAR_7));
-
-    let entry_price = BTC_PRICE + 1000 * SCALAR_7;
-    let (position_id, _) = fixture.trading.open_position(
-        &user,
-        &(AssetIndex::BTC as u32),
-        &(1_000 * SCALAR_7),
-        &(10_000 * SCALAR_7),
-        &true,
-        &entry_price,
-        &0,
-        &0,
-    );
-
-    fixture
-        .trading
-        .set_triggers(&position_id, &(110_000 * SCALAR_7), &(95_000 * SCALAR_7));
-}
-
 // ==========================================
 // Interest Accrual Tests
 // ==========================================
@@ -747,12 +721,12 @@ fn test_open_position_accrues_interest() {
         &0,
     );
 
-    let market_before = fixture.read_market_data(AssetIndex::BTC as u32);
+    let market_before = fixture.trading.get_market(&(AssetIndex::BTC as u32));
 
     // Time passes - need enough time for interest to accrue
     // With base_hourly_rate = 10^13 and SCALAR_18 = 10^18, need > ~28 hours
     // for the integer math to produce a non-zero result
-    fixture.jump(SECONDS_IN_WEEK);
+    fixture.jump(SECONDS_PER_WEEK);
 
     // Open another position - this should trigger interest accrual
     fixture.trading.open_position(
@@ -766,10 +740,10 @@ fn test_open_position_accrues_interest() {
         &0,
     );
 
-    let market_after = fixture.read_market_data(AssetIndex::BTC as u32);
+    let market_after = fixture.trading.get_market(&(AssetIndex::BTC as u32));
 
     // Interest index should have increased after a week
-    assert!(market_after.long_interest_index > market_before.long_interest_index);
+    assert!(market_after.data.long_interest_index > market_before.data.long_interest_index);
     // last_update should have been updated
-    assert!(market_after.last_update > market_before.last_update);
+    assert!(market_after.data.last_update > market_before.data.last_update);
 }

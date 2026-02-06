@@ -85,7 +85,7 @@ fn test_fill_limit_order_long() {
     let position_id = open_limit_order_long(&fixture, &user, entry_price);
 
     // Verify position is pending
-    assert!(!fixture.read_position(position_id).filled);
+    assert!(!fixture.trading.get_position(&position_id).filled);
 
     // Price drops to entry price - should be fillable
     fixture.oracle.set_price_stable(&svec![
@@ -108,7 +108,7 @@ fn test_fill_limit_order_long() {
     assert_eq!(results.get(0), Some(0)); // Success
 
     // Position should now be filled
-    assert!(fixture.read_position(position_id).filled);
+    assert!(fixture.trading.get_position(&position_id).filled);
 }
 
 #[test]
@@ -142,7 +142,7 @@ fn test_fill_limit_order_short() {
     let results = fixture.trading.execute(&keeper, &requests);
     assert_eq!(results.get(0), Some(0));
 
-    assert!(fixture.read_position(position_id).filled);
+    assert!(fixture.trading.get_position(&position_id).filled);
 }
 
 #[test]
@@ -180,7 +180,7 @@ fn test_fill_limit_order_not_fillable() {
     assert_eq!(results.get(0), Some(346)); // TradingError::LimitOrderNotFillable
 
     // Position should still be pending
-    assert!(!fixture.read_position(position_id).filled);
+    assert!(!fixture.trading.get_position(&position_id).filled);
 }
 
 #[test]
@@ -457,14 +457,14 @@ fn test_liquidation_underwater_position() {
         &fixture.env,
         ExecuteRequest {
             request_type: 3, // Liquidate
-            position_id: 1,
+            position_id: 0,
         },
     ];
 
     let results = fixture.trading.execute(&keeper, &requests);
     assert_eq!(results.get(0), Some(0));
 
-    assert!(!fixture.position_exists(1));
+    assert!(!fixture.position_exists(0));
 }
 
 #[test]
@@ -597,8 +597,9 @@ fn test_keeper_receives_fee() {
         oracle: fixture.oracle.address.clone(),
         caller_take_rate: 1_000_000, // 10%
         max_positions: 10,
-        max_utilization: 0,
+        max_utilization: 10 * SCALAR_7, // 10x
         max_price_age: 900,
+        min_open_time: 0,
     };
     fixture.trading.queue_set_config(&new_config);
     fixture.trading.set_config();
@@ -636,7 +637,7 @@ fn test_keeper_receives_fee() {
         &fixture.env,
         ExecuteRequest {
             request_type: 3,
-            position_id: 1,
+            position_id: 0,
         },
     ];
 
@@ -653,7 +654,7 @@ fn test_keeper_receives_fee() {
 // ==========================================
 
 #[test]
-#[should_panic(expected = "Error(Contract, #380)")]
+#[should_panic(expected = "Error(Contract, #383)")]
 fn test_execute_when_frozen() {
     let fixture = setup_fixture();
     let user = Address::generate(&fixture.env);

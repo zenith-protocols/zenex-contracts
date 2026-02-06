@@ -1,7 +1,7 @@
 use soroban_sdk::{contractclient, Address, Env};
 
 /// Vault WASM bytes
-pub const VAULT_WASM: &[u8] = include_bytes!("../../../wasm/strategy_vault.wasm");
+pub const VAULT_WASM: &[u8] = include_bytes!("../../../target/wasm32v1-none/release/strategy_vault.wasm");
 
 /// Vault client interface - manually defined to avoid duplicate type conflicts
 /// from OpenZeppelin's stellar-tokens library

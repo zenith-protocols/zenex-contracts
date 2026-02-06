@@ -101,10 +101,11 @@ impl TestFixture<'_> {
 
         let config = trading::TradingConfig {
             oracle: oracle_id.clone(),
-            caller_take_rate: 0, // 1% in SCALAR_7
+            caller_take_rate: 0,
             max_positions: 10,
-            max_utilization: 0, // 0 = disabled. Max leverage in SCALAR_7 (e.g., 20_000_000 = 2x, 50_000_000 = 5x)
-            max_price_age: 900, // 15 minutes (must be > oracle resolution of 300)
+            max_utilization: 10_0000000, // 10x in SCALAR_7 (must be >= 1x)
+            max_price_age: 900,          // 15 minutes (must be > oracle resolution of 300)
+            min_open_time: 0,
         };
         // Set the vault in trading contract
         // After initialize, status is Setup (99) which allows market queuing without delay

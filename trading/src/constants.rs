@@ -1,9 +1,10 @@
-// Token precision
-pub const SCALAR_7: i128 = 10_000_000; // 7 decimal places
-pub const SCALAR_18: i128 = 1_000_000_000_000_000_000; // 18 decimal places
+// Fixed-point precision constants
+#[cfg(any(test, feature = "testutils"))]
+pub const SCALAR_7: i128 = 10_000_000; // 7 decimal places (used in tests)
+pub const SCALAR_18: i128 = 1_000_000_000_000_000_000; // 18 decimal places (interest precision)
 
 // Trading limits
-pub const MIN_LEVERAGE: i128 = 2 * SCALAR_7; // 2x minimum leverage
+pub const MIN_LEVERAGE: i128 = 2; // 2x minimum leverage (multiply by token_scalar)
 
 // Time constants
 pub const ONE_HOUR_SECONDS: u64 = 3600;
