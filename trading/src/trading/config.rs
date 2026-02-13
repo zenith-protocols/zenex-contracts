@@ -178,7 +178,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #300)")]
+    #[should_panic(expected = "Error(Contract, #700)")]
     fn test_initialize_twice() {
         let e = setup_env();
         let (address, owner) = create_trading(&e);
@@ -240,7 +240,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #304)")]
+    #[should_panic(expected = "Error(Contract, #704)")]
     fn test_set_config_not_unlocked() {
         let e = setup_env();
         let (address, owner) = create_trading(&e);
@@ -272,7 +272,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #303)")]
+    #[should_panic(expected = "Error(Contract, #703)")]
     fn test_cancel_set_config_not_queued() {
         let e = setup_env();
         let (address, owner) = create_trading(&e);
@@ -323,7 +323,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #304)")]
+    #[should_panic(expected = "Error(Contract, #704)")]
     fn test_set_market_not_unlocked() {
         let e = setup_env();
         let (address, owner) = create_trading(&e);
@@ -346,7 +346,7 @@ mod tests {
     // ==========================================
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #381)")]
+    #[should_panic(expected = "Error(Contract, #760)")]
     fn test_set_status_invalid() {
         let e = setup_env();
         execute_set_status(&e, 42);
@@ -357,7 +357,7 @@ mod tests {
     // ==========================================
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #330)")]
+    #[should_panic(expected = "Error(Contract, #735)")]
     fn test_config_negative_caller_take_rate() {
         let e = setup_env();
         let (address, owner) = create_trading(&e);
@@ -374,7 +374,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #330)")]
+    #[should_panic(expected = "Error(Contract, #735)")]
     fn test_config_zero_max_utilization() {
         let e = setup_env();
         let (address, owner) = create_trading(&e);
@@ -391,7 +391,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #302)")]
+    #[should_panic(expected = "Error(Contract, #702)")]
     fn test_config_caller_take_rate_over_100() {
         let e = setup_env();
         let (address, owner) = create_trading(&e);
@@ -408,7 +408,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #302)")]
+    #[should_panic(expected = "Error(Contract, #702)")]
     fn test_config_max_utilization_below_1x() {
         let e = setup_env();
         let (address, owner) = create_trading(&e);
@@ -425,7 +425,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #302)")]
+    #[should_panic(expected = "Error(Contract, #702)")]
     fn test_config_max_utilization_above_100x() {
         let e = setup_env();
         let (address, owner) = create_trading(&e);
@@ -442,7 +442,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #302)")]
+    #[should_panic(expected = "Error(Contract, #702)")]
     fn test_config_max_price_age_equal_oracle_resolution() {
         let e = setup_env();
         let (address, owner) = create_trading(&e);
@@ -459,7 +459,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #302)")]
+    #[should_panic(expected = "Error(Contract, #702)")]
     fn test_config_max_price_age_below_oracle_resolution() {
         let e = setup_env();
         let (address, owner) = create_trading(&e);
@@ -480,7 +480,7 @@ mod tests {
     // ==========================================
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #330)")]
+    #[should_panic(expected = "Error(Contract, #735)")]
     fn test_market_zero_maintenance_margin() {
         let e = setup_env();
         let (address, owner) = create_trading(&e);
@@ -497,7 +497,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #330)")]
+    #[should_panic(expected = "Error(Contract, #735)")]
     fn test_market_negative_maintenance_margin() {
         let e = setup_env();
         let (address, owner) = create_trading(&e);
@@ -514,7 +514,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #330)")]
+    #[should_panic(expected = "Error(Contract, #735)")]
     fn test_market_zero_init_margin() {
         let e = setup_env();
         let (address, owner) = create_trading(&e);
@@ -531,7 +531,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #330)")]
+    #[should_panic(expected = "Error(Contract, #735)")]
     fn test_market_negative_init_margin() {
         let e = setup_env();
         let (address, owner) = create_trading(&e);
@@ -548,7 +548,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #330)")]
+    #[should_panic(expected = "Error(Contract, #735)")]
     fn test_market_negative_base_fee() {
         let e = setup_env();
         let (address, owner) = create_trading(&e);
@@ -565,7 +565,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #330)")]
+    #[should_panic(expected = "Error(Contract, #735)")]
     fn test_market_negative_base_hourly_rate() {
         let e = setup_env();
         let (address, owner) = create_trading(&e);
@@ -582,7 +582,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #330)")]
+    #[should_panic(expected = "Error(Contract, #735)")]
     fn test_market_zero_price_impact_scalar() {
         let e = setup_env();
         let (address, owner) = create_trading(&e);
@@ -599,7 +599,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #330)")]
+    #[should_panic(expected = "Error(Contract, #735)")]
     fn test_market_negative_price_impact_scalar() {
         let e = setup_env();
         let (address, owner) = create_trading(&e);
@@ -616,7 +616,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #302)")]
+    #[should_panic(expected = "Error(Contract, #702)")]
     fn test_market_min_collateral_below_scalar() {
         let e = setup_env();
         let (address, owner) = create_trading(&e);
@@ -633,7 +633,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #302)")]
+    #[should_panic(expected = "Error(Contract, #702)")]
     fn test_market_max_collateral_below_min() {
         let e = setup_env();
         let (address, owner) = create_trading(&e);
@@ -651,7 +651,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #302)")]
+    #[should_panic(expected = "Error(Contract, #702)")]
     fn test_market_max_collateral_equals_min() {
         let e = setup_env();
         let (address, owner) = create_trading(&e);
@@ -669,7 +669,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #302)")]
+    #[should_panic(expected = "Error(Contract, #702)")]
     fn test_market_init_margin_below_maintenance() {
         let e = setup_env();
         let (address, owner) = create_trading(&e);
@@ -687,7 +687,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #302)")]
+    #[should_panic(expected = "Error(Contract, #702)")]
     fn test_market_ratio_cap_below_1x() {
         let e = setup_env();
         let (address, owner) = create_trading(&e);
@@ -704,7 +704,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #302)")]
+    #[should_panic(expected = "Error(Contract, #702)")]
     fn test_market_ratio_cap_above_5x() {
         let e = setup_env();
         let (address, owner) = create_trading(&e);

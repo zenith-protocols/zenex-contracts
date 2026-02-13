@@ -448,7 +448,7 @@ mod tests {
     // ==========================================
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #382)")]
+    #[should_panic(expected = "Error(Contract, #761)")]
     fn test_open_position_onice() {
         let e = setup_env();
         let (contract, token_client) = setup_contract(&e);
@@ -462,7 +462,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #312)")]
+    #[should_panic(expected = "Error(Contract, #712)")]
     fn test_open_position_market_disabled() {
         let e = setup_env();
         let (contract, token_client) = setup_contract(&e);
@@ -478,7 +478,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #383)")]
+    #[should_panic(expected = "Error(Contract, #762)")]
     fn test_close_position_frozen() {
         let e = setup_env();
         let (contract, _) = setup_contract(&e);
@@ -618,7 +618,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #330)")]
+    #[should_panic(expected = "Error(Contract, #735)")]
     fn test_create_position_negative_collateral() {
         let e = setup_env();
         let (contract, _) = setup_contract(&e);
@@ -630,7 +630,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #331)")]
+    #[should_panic(expected = "Error(Contract, #736)")]
     fn test_create_position_collateral_below_min() {
         let e = setup_env();
         let (contract, _) = setup_contract(&e);
@@ -642,7 +642,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #332)")]
+    #[should_panic(expected = "Error(Contract, #737)")]
     fn test_create_position_collateral_above_max() {
         let e = setup_env();
         let (contract, _) = setup_contract(&e);
@@ -654,7 +654,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #333)")]
+    #[should_panic(expected = "Error(Contract, #738)")]
     fn test_create_position_leverage_below_min() {
         let e = setup_env();
         let (contract, token_client) = setup_contract(&e);
@@ -668,7 +668,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #334)")]
+    #[should_panic(expected = "Error(Contract, #739)")]
     fn test_create_position_invalid_entry_price_long() {
         let e = setup_env();
         let (contract, token_client) = setup_contract(&e);
@@ -685,7 +685,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #334)")]
+    #[should_panic(expected = "Error(Contract, #739)")]
     fn test_create_position_invalid_entry_price_short() {
         let e = setup_env();
         let (contract, token_client) = setup_contract(&e);
@@ -702,7 +702,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #329)")]
+    #[should_panic(expected = "Error(Contract, #734)")]
     fn test_create_position_max_positions() {
         let e = setup_env();
         let (contract, token_client) = setup_contract(&e);
@@ -718,7 +718,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #390)")]
+    #[should_panic(expected = "Error(Contract, #770)")]
     fn test_create_position_utilization_limit_exceeded() {
         let e = setup_env();
         let (contract, token_client) = setup_contract(&e);
@@ -885,7 +885,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #335)")]
+    #[should_panic(expected = "Error(Contract, #740)")]
     fn test_modify_collateral_unchanged() {
         let e = setup_env();
         let (contract, _) = setup_contract(&e);
@@ -900,7 +900,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #330)")]
+    #[should_panic(expected = "Error(Contract, #735)")]
     fn test_modify_collateral_negative() {
         let e = setup_env();
         let (contract, _) = setup_contract(&e);
@@ -914,7 +914,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #331)")]
+    #[should_panic(expected = "Error(Contract, #736)")]
     fn test_modify_collateral_below_minimum() {
         let e = setup_env();
         let (contract, _) = setup_contract(&e);
@@ -929,7 +929,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #332)")]
+    #[should_panic(expected = "Error(Contract, #737)")]
     fn test_modify_collateral_above_maximum() {
         let e = setup_env();
         let (contract, _) = setup_contract(&e);
@@ -944,7 +944,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #333)")]
+    #[should_panic(expected = "Error(Contract, #738)")]
     fn test_modify_collateral_leverage_below_minimum() {
         let e = setup_env();
         let (contract, _) = setup_contract(&e);
@@ -959,7 +959,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #337)")]
+    #[should_panic(expected = "Error(Contract, #741)")]
     fn test_modify_collateral_withdraw_breaks_margin_filled() {
         let e = setup_env();
         let (contract, _) = setup_contract(&e);
@@ -1001,7 +1001,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #337)")]
+    #[should_panic(expected = "Error(Contract, #741)")]
     fn test_modify_collateral_withdraw_breaks_margin_pending() {
         let e = setup_env();
         let (contract, _) = setup_contract(&e);
@@ -1079,7 +1079,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #340)")]
+    #[should_panic(expected = "Error(Contract, #742)")]
     fn test_set_triggers_invalid_tp_long() {
         let e = setup_env();
         let (contract, _) = setup_contract(&e);
@@ -1093,7 +1093,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #341)")]
+    #[should_panic(expected = "Error(Contract, #743)")]
     fn test_set_triggers_invalid_sl_long() {
         let e = setup_env();
         let (contract, _) = setup_contract(&e);
@@ -1111,7 +1111,7 @@ mod tests {
     // ==========================================
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #347)")]
+    #[should_panic(expected = "Error(Contract, #748)")]
     fn test_close_position_too_new() {
         let e = setup_env();
         let (contract, _) = setup_contract(&e);

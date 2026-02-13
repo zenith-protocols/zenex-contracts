@@ -1,7 +1,7 @@
 mod actions;
 mod config;
 mod execute;
-mod interest;
+pub(crate) mod interest;
 pub mod market;
 mod oracle;
 mod position;

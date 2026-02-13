@@ -23,14 +23,14 @@ pub struct ZenexAccount;
 
 #[contractimpl]
 impl ZenexAccount {
-    /// Initialize the account with a primary signer and optional policies.
-    pub fn __constructor(e: Env, primary_signer: Signer, policies: Map<Address, Val>) {
+    /// Initialize the account with signers and optional policies.
+    pub fn __constructor(e: Env, signers: Vec<Signer>, policies: Map<Address, Val>) {
         add_context_rule(
             &e,
             &ContextRuleType::Default,
             &String::from_str(&e, "primary"),
             None,
-            &Vec::from_array(&e, [primary_signer]),
+            &signers,
             &policies,
         );
     }

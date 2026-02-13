@@ -129,46 +129,6 @@ impl TestFixture<'_> {
         self.trading.set_market(&config.asset);
     }
 
-    pub fn read_config(&self) -> trading::TradingConfig {
-        self.env.as_contract(&self.trading.address, || {
-            self.env
-                .storage()
-                .instance()
-                .get(&trading::storage::TradingStorageKey::Config)
-                .unwrap()
-        })
-    }
-
-    pub fn read_market_config(&self, asset_index: u32) -> MarketConfig {
-        self.env.as_contract(&self.trading.address, || {
-            self.env
-                .storage()
-                .persistent()
-                .get(&trading::storage::TradingStorageKey::MarketConfig(asset_index))
-                .unwrap()
-        })
-    }
-
-    pub fn read_market_data(&self, asset_index: u32) -> trading::MarketData {
-        self.env.as_contract(&self.trading.address, || {
-            self.env
-                .storage()
-                .persistent()
-                .get(&trading::storage::TradingStorageKey::MarketData(asset_index))
-                .unwrap()
-        })
-    }
-
-    pub fn read_position(&self, position_id: u32) -> trading::Position {
-        self.env.as_contract(&self.trading.address, || {
-            self.env
-                .storage()
-                .persistent()
-                .get(&trading::storage::TradingStorageKey::Position(position_id))
-                .unwrap()
-        })
-    }
-
     pub fn position_exists(&self, position_id: u32) -> bool {
         self.env.as_contract(&self.trading.address, || {
             self.env

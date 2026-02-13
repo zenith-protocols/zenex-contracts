@@ -57,7 +57,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #320)")]
+    #[should_panic(expected = "Error(Contract, #720)")]
     fn test_load_price_not_found() {
         let e = setup_env();
         let oracle = e.register(TestOracle, ());
@@ -71,7 +71,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #321)")]
+    #[should_panic(expected = "Error(Contract, #721)")]
     fn test_load_price_stale() {
         let e = setup_env();
         let oracle = e.register(TestOracle, ());

@@ -203,3 +203,18 @@ pub fn setup_contract(e: &Env) -> (Address, MockTokenClient<'_>) {
 
     (contract, token_client)
 }
+
+//************************************************
+//           Fuzz / Property Test Wrappers
+//************************************************
+
+/// Wrapper exposing the private `calc_interest` function for fuzz targets.
+pub fn calc_interest_for_test(
+    e: &Env,
+    long_notional: i128,
+    short_notional: i128,
+    base_rate: i128,
+    ratio_cap: i128,
+) -> (i128, i128) {
+    crate::trading::interest::calc_interest(e, long_notional, short_notional, base_rate, ratio_cap)
+}

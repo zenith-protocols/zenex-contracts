@@ -35,7 +35,7 @@ pub trait Trading {
     /// ### Arguments
     /// * `config` - New trading configuration
     ///
-    /// ### Panics
+    /// ### Panics 
     /// If the caller is not the owner
     /// If the configuration is invalid
     fn queue_set_config(e: Env, config: TradingConfig);

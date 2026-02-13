@@ -1,0 +1,5 @@
+# Crash reproducer inputs (temporary debugging artifacts)
+artifacts/
+
+# Accumulated fuzz inputs (can grow very large during long runs)
+corpus/

@@ -163,10 +163,10 @@ fn test_long_position_not_liquidatable_at_threshold() {
     println!("Result code: {} (0=success, 20=BadRequest/not eligible)", result_code);
     println!("Position filled: {}", position_after.filled);
 
-    // Test passes if liquidation FAILED (result code 345 = PositionNotLiquidatable) and position still exists
+    // Test passes if liquidation FAILED (result code 746 = PositionNotLiquidatable) and position still exists
     assert_eq!(
         result_code,
-        345u32,  // TradingError::PositionNotLiquidatable
+        746u32,  // TradingError::PositionNotLiquidatable
         "Liquidation should fail when equity >= maintenance margin. Result code {} indicates it succeeded when it shouldn't.",
         result_code
     );

@@ -65,8 +65,8 @@ fn create_external_signer(e: &Env, verifier: &Address, key_data: &[u8; 64]) -> S
     Signer::External(verifier.clone(), Bytes::from_array(e, key_data))
 }
 
-fn create_client<'a>(e: &Env, primary_signer: Signer, policies: Map<Address, Val>) -> ZenexAccountClient<'a> {
-    let address = e.register(ZenexAccount, (primary_signer, policies));
+fn create_client<'a>(e: &Env, signers: Vec<Signer>, policies: Map<Address, Val>) -> ZenexAccountClient<'a> {
+    let address = e.register(ZenexAccount, (signers, policies));
     ZenexAccountClient::new(e, &address)
 }
 
@@ -80,7 +80,7 @@ fn test_create_account_with_delegated_signer() {
     let signer = create_delegated_signer(&e);
     let policies: Map<Address, Val> = Map::new(&e);
 
-    let client = create_client(&e, signer, policies);
+    let client = create_client(&e, vec![&e, signer], policies);
 
     // Verify the account was created with one context rule
     assert_eq!(client.get_context_rules_count(), 1);
@@ -94,7 +94,7 @@ fn test_create_account_with_external_signer() {
     let signer = create_external_signer(&e, &verifier, &key_data);
     let policies: Map<Address, Val> = Map::new(&e);
 
-    let client = create_client(&e, signer, policies);
+    let client = create_client(&e, vec![&e, signer], policies);
 
     assert_eq!(client.get_context_rules_count(), 1);
 }
@@ -106,7 +106,7 @@ fn test_create_account_with_policy() {
     let policy = e.register(MockPolicyContract, ());
     let policies = map![&e, (policy.clone(), Val::from_void().into())];
 
-    let client = create_client(&e, signer, policies);
+    let client = create_client(&e, vec![&e, signer], policies);
 
     assert_eq!(client.get_context_rules_count(), 1);
 
@@ -128,7 +128,7 @@ fn test_get_context_rule() {
 
     let signer = create_delegated_signer(&e);
     let policies: Map<Address, Val> = Map::new(&e);
-    let client = create_client(&e, signer, policies);
+    let client = create_client(&e, vec![&e, signer], policies);
 
     // Get the default rule (id 0)
     let rule = client.get_context_rule(&0);
@@ -143,7 +143,7 @@ fn test_get_context_rules_by_type() {
 
     let signer = create_delegated_signer(&e);
     let policies: Map<Address, Val> = Map::new(&e);
-    let client = create_client(&e, signer, policies);
+    let client = create_client(&e, vec![&e, signer], policies);
 
     let default_rules = client.get_context_rules(&ContextRuleType::Default);
     assert_eq!(default_rules.len(), 1);
@@ -160,7 +160,7 @@ fn test_add_context_rule() {
 
     let signer = create_delegated_signer(&e);
     let policies: Map<Address, Val> = Map::new(&e);
-    let client = create_client(&e, signer.clone(), policies.clone());
+    let client = create_client(&e, vec![&e, signer.clone()], policies.clone());
 
     // Add a new context rule for a specific contract
     let target_contract = Address::generate(&e);
@@ -184,7 +184,7 @@ fn test_update_context_rule_name() {
 
     let signer = create_delegated_signer(&e);
     let policies: Map<Address, Val> = Map::new(&e);
-    let client = create_client(&e, signer, policies);
+    let client = create_client(&e, vec![&e, signer], policies);
 
     let updated_rule = client.update_context_rule_name(&0, &String::from_str(&e, "main_signer"));
     assert_eq!(updated_rule.name, String::from_str(&e, "main_signer"));
@@ -197,7 +197,7 @@ fn test_update_context_rule_valid_until() {
 
     let signer = create_delegated_signer(&e);
     let policies: Map<Address, Val> = Map::new(&e);
-    let client = create_client(&e, signer, policies);
+    let client = create_client(&e, vec![&e, signer], policies);
 
     // Set expiration
     let updated_rule = client.update_context_rule_valid_until(&0, &Some(1000000));
@@ -215,7 +215,7 @@ fn test_remove_context_rule() {
 
     let signer = create_delegated_signer(&e);
     let policies: Map<Address, Val> = Map::new(&e);
-    let client = create_client(&e, signer.clone(), policies.clone());
+    let client = create_client(&e, vec![&e, signer.clone()], policies.clone());
 
     // Add a rule first
     let target = Address::generate(&e);
@@ -244,7 +244,7 @@ fn test_add_signer() {
 
     let primary_signer = create_delegated_signer(&e);
     let policies: Map<Address, Val> = Map::new(&e);
-    let client = create_client(&e, primary_signer, policies);
+    let client = create_client(&e, vec![&e, primary_signer], policies);
 
     // Add a new signer to the default rule
     let new_signer = create_delegated_signer(&e);
@@ -262,7 +262,7 @@ fn test_remove_signer() {
     let primary_signer = create_delegated_signer(&e);
     let secondary_signer = create_delegated_signer(&e);
     let policies: Map<Address, Val> = Map::new(&e);
-    let client = create_client(&e, primary_signer, policies);
+    let client = create_client(&e, vec![&e, primary_signer], policies);
 
     // Add second signer
     client.add_signer(&0, &secondary_signer.clone());
@@ -284,7 +284,7 @@ fn test_add_policy() {
 
     let signer = create_delegated_signer(&e);
     let policies: Map<Address, Val> = Map::new(&e);
-    let client = create_client(&e, signer, policies);
+    let client = create_client(&e, vec![&e, signer], policies);
 
     // Add a policy to the default rule
     let policy = e.register(MockPolicyContract, ());
@@ -303,7 +303,7 @@ fn test_remove_policy() {
     let signer = create_delegated_signer(&e);
     let policy = e.register(MockPolicyContract, ());
     let policies = map![&e, (policy.clone(), Val::from_void().into())];
-    let client = create_client(&e, signer, policies);
+    let client = create_client(&e, vec![&e, signer], policies);
 
     // Verify policy exists
     assert_eq!(client.get_context_rule(&0).policies.len(), 1);
@@ -338,7 +338,7 @@ fn test_execute() {
 
     let signer = create_delegated_signer(&e);
     let policies: Map<Address, Val> = Map::new(&e);
-    let client = create_client(&e, signer, policies);
+    let client = create_client(&e, vec![&e, signer], policies);
 
     // Register a target contract
     let target = e.register(MockTargetContract, ());
@@ -371,7 +371,7 @@ fn test_create_multisig_account() {
     );
 
     let policies = map![&e, (policy, Val::from_void().into())];
-    let client = create_client(&e, primary_signer, policies);
+    let client = create_client(&e, vec![&e, primary_signer], policies);
 
     // Add second signer
     e.mock_all_auths();
