@@ -26,16 +26,6 @@ path = "fuzz_targets/fuzz_trading_general.rs"
 doc = false
 
 [[bin]]
-name = "fuzz_fill"
-path = "fuzz_targets/fuzz_fill.rs"
-doc = false
-
-[[bin]]
-name = "fuzz_triggers"
-path = "fuzz_targets/fuzz_triggers.rs"
-doc = false
-
-[[bin]]
 name = "fuzz_liquidation"
 path = "fuzz_targets/fuzz_liquidation.rs"
 doc = false

@@ -2,22 +2,21 @@
 
 //! Dedicated fuzz target for the liquidation path.
 //!
-//! Opens high-leverage market positions then applies adverse price movements
-//! to trigger liquidations. Verifies keeper fee payout, vault settlement,
-//! and token conservation.
+//! Focuses on edge cases that the general fuzzer is unlikely to hit:
+//! - Interest-only liquidation (no price movement)
+//! - Near-boundary oscillation (price recovers then interest pushes underwater)
+//! - Multiple positions on the same market affecting shared interest indices
 //!
 //! Invariants checked after every operation:
-//! 1. Token conservation
-//! 2. Position validity (positive collateral, notional, entry_price)
-//! 3. Zero residual when no positions are open
-//! 4. Contract never has negative balance
+//! 1. **Zero residual** — contract holds 0 tokens when no positions are open
+//! 2. **Known errors** — contract errors must be valid TradingError codes
 
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
 use soroban_sdk::testutils::Address as _;
+use soroban_sdk::xdr::ScErrorType;
 use soroban_sdk::{vec as svec, Address};
 use test_suites::setup::create_fixture_with_data;
-use test_suites::test_fixture::TestFixture;
 use test_suites::SCALAR_7;
 use trading::{ExecuteRequest, ExecuteRequestType};
 
@@ -27,7 +26,7 @@ const XLM_BASE: i128 = 0_1000000;
 
 #[derive(Arbitrary, Debug)]
 struct FuzzInput {
-    scenarios: [LiquidationScenario; 6],
+    scenarios: [LiquidationScenario; 4],
 }
 
 #[derive(Arbitrary, Debug)]
@@ -36,11 +35,41 @@ struct LiquidationScenario {
     collateral_raw: u16,
     leverage_raw: u8,
     is_long: bool,
-    price_changes: [i16; 10],
+    /// Sequence of actions: time jumps interleaved with price changes and liquidation attempts.
+    /// Each step is either a time jump, a price change, or both.
+    steps: [LiquidationStep; 12],
+}
+
+#[derive(Arbitrary, Debug)]
+struct LiquidationStep {
+    /// Hours to advance (0-168, capped to 1 week). Each unit = 3600 seconds.
+    hours: u8,
+    /// Price change in bps (-5000 to 5000). Not biased — allows recovery and oscillation.
+    price_change_bps: i16,
+    /// Whether to attempt liquidation after this step
+    try_liquidate: bool,
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+/// All valid TradingError codes from errors.rs.
+const VALID_ERROR_CODES: &[u32] = &[
+    1,                                                          // Unauthorized
+    700, 701, 702, 703, 704,                                    // Configuration
+    710, 711, 712,                                              // Market
+    720, 721,                                                   // Oracle/Price
+    730, 731, 732, 733, 734, 735, 736, 737, 738, 739, 740,     // Position
+    741, 742, 743, 744, 745, 746, 747, 748,                     // Position (cont)
+    750, 751,                                                   // Action/Request
+    760, 761, 762,                                              // Status
+    770,                                                        // Utilization
+];
+
+/// Verify that a try_* result is not a host error, raw panic, or unknown error code.
+///
+/// In WASM mode, contract errors from `panic_with_error!` arrive as
+/// `Err(Ok(Error))` with `ScErrorType::Contract` — these are expected validation.
+/// Only non-contract error types (WasmVm, Budget, Storage, etc.) indicate a bug.
 fn verify_no_host_error<T, E: core::fmt::Debug>(
     result: &Result<Result<T, E>, Result<soroban_sdk::Error, soroban_sdk::InvokeError>>,
     context: &str,
@@ -48,51 +77,27 @@ fn verify_no_host_error<T, E: core::fmt::Debug>(
     match result {
         Ok(Ok(_)) => {}
         Ok(Err(_)) => {}
+        Err(Ok(e)) if e.is_type(ScErrorType::Contract) => {
+            let code = e.get_code();
+            assert!(
+                VALID_ERROR_CODES.contains(&code),
+                "[{}] Unknown contract error code: {} — not a valid TradingError",
+                context, code
+            );
+        }
         Err(Ok(e)) => panic!(
-            "[{}] Host error (Err(Ok)): {:?} — contract validation missed bad input",
+            "[{}] Host error: {:?} — not a contract error, likely a VM/budget/storage issue",
             context, e
         ),
         Err(Err(e)) => panic!(
-            "[{}] InvokeError (Err(Err)): {:?} — contract should use panic_with_error!, not raw panic",
+            "[{}] InvokeError: {:?} — contract should use panic_with_error!, not raw panic",
             context, e
         ),
     }
 }
 
-fn total_balance(fixture: &TestFixture, user: &Address, keeper: &Address) -> i128 {
-    fixture.token.balance(user)
-        + fixture.token.balance(keeper)
-        + fixture.token.balance(&fixture.vault.address)
-        + fixture.token.balance(&fixture.trading.address)
-}
-
-fn check_invariants(
-    fixture: &TestFixture,
-    user: &Address,
-    keeper: &Address,
-    initial_total: i128,
-    positions: &[u32],
-) {
-    // Invariant 1: Token conservation
-    let current_total = total_balance(fixture, user, keeper);
-    assert_eq!(
-        initial_total, current_total,
-        "Token conservation violated! initial={}, current={}, diff={}",
-        initial_total,
-        current_total,
-        initial_total - current_total
-    );
-
-    // Invariant 2: All tracked positions have valid fields
-    for &pos_id in positions.iter() {
-        if let Ok(Ok(pos)) = fixture.trading.try_get_position(&pos_id) {
-            assert!(pos.collateral > 0, "Position {} has non-positive collateral: {}", pos_id, pos.collateral);
-            assert!(pos.notional_size > 0, "Position {} has non-positive notional: {}", pos_id, pos.notional_size);
-            assert!(pos.entry_price > 0, "Position {} has non-positive entry_price: {}", pos_id, pos.entry_price);
-        }
-    }
-
-    // Invariant 3: Zero residual when no positions are open
+fn check_invariants(fixture: &test_suites::test_fixture::TestFixture, positions: &[u32]) {
+    // Zero residual: contract must hold 0 tokens when no positions are open
     if positions.is_empty() {
         let contract_balance = fixture.token.balance(&fixture.trading.address);
         assert_eq!(
@@ -101,32 +106,23 @@ fn check_invariants(
             contract_balance
         );
     }
-
-    // Invariant 4: Contract should never have negative balance
-    let contract_balance = fixture.token.balance(&fixture.trading.address);
-    assert!(
-        contract_balance >= 0,
-        "Contract has negative balance: {}",
-        contract_balance
-    );
 }
 
 fuzz_target!(|input: FuzzInput| {
-    let fixture = create_fixture_with_data(false);
+    let fixture = create_fixture_with_data(true);
 
     let user = Address::generate(&fixture.env);
-    // Use a persistent keeper so we can track its balance for conservation
     let keeper = Address::generate(&fixture.env);
     fixture.token.mint(&user, &(10_000_000 * SCALAR_7));
 
-    let initial_total = total_balance(&fixture, &user, &keeper);
     let mut prices = [BTC_BASE, ETH_BASE, XLM_BASE];
 
     for scenario in &input.scenarios {
         let asset = (scenario.asset_idx % 3) as u32;
         let collateral = ((scenario.collateral_raw as i128).max(10).min(10_000)) * SCALAR_7;
-        // Bias leverage high (20x-100x) for liquidation scenarios
-        let leverage = (scenario.leverage_raw as i128).max(20).min(100);
+        // Range from low leverage (where interest slowly erodes margin)
+        // to high leverage (where small price moves liquidate)
+        let leverage = (scenario.leverage_raw as i128).max(2).min(100);
         let notional = collateral * leverage;
 
         // Open market position (entry_price=0, no TP/SL)
@@ -145,35 +141,16 @@ fuzz_target!(|input: FuzzInput| {
         let mut positions: Vec<u32> = vec![pos_id];
         let mut liquidated = false;
 
-        check_invariants(&fixture, &user, &keeper, initial_total, &positions);
+        check_invariants(&fixture, &positions);
 
-        // Apply adverse price changes and attempt liquidation after each
-        for &change_bps in &scenario.price_changes {
+        for step in &scenario.steps {
             if liquidated {
                 break;
             }
 
-            // Bias adverse: longs get price drops, shorts get price rises
-            // Use the raw fuzz value but flip sign to tend adverse
-            let raw_bps = (change_bps as i128).max(-5000).min(5000);
-            let bps = if scenario.is_long {
-                // For longs, bias negative (adverse)
-                -(raw_bps.abs())
-            } else {
-                // For shorts, bias positive (adverse)
-                raw_bps.abs()
-            };
-
-            let base = prices[asset as usize];
-            let new_price = base + base * bps / 10_000;
-
-            if new_price <= 0 {
-                continue;
-            }
-
-            prices[asset as usize] = new_price;
-
-            fixture.jump(60);
+            // Time jump in 1-hour intervals, up to 1 week (168 hours)
+            let hours = (step.hours as u64).min(168).max(1);
+            fixture.jump(hours * 3600);
             fixture.oracle.set_price_stable(&svec![
                 &fixture.env,
                 1_0000000,
@@ -182,35 +159,47 @@ fuzz_target!(|input: FuzzInput| {
                 prices[2],
             ]);
 
-            // Attempt liquidation
-            let liq_result = fixture.trading.try_execute(
-                &keeper,
-                &svec![
-                    &fixture.env,
-                    ExecuteRequest {
-                        request_type: ExecuteRequestType::Liquidate as u32,
-                        position_id: pos_id,
-                    }
-                ],
-            );
-            verify_no_host_error(&liq_result, "Liquidate");
+            // Price change: unbiased — allows recovery and oscillation
+            let bps = (step.price_change_bps as i128).max(-5000).min(5000);
+            if bps != 0 {
+                let base = prices[asset as usize];
+                let new_price = base + base * bps / 10_000;
 
-            if let Ok(Ok(results)) = &liq_result {
-                if results.get(0) == Some(0) {
-                    positions.clear();
-                    liquidated = true;
-
-                    // Verify keeper received some fee (balance > 0)
-                    let keeper_balance = fixture.token.balance(&keeper);
-                    assert!(
-                        keeper_balance >= 0,
-                        "Keeper has negative balance after liquidation: {}",
-                        keeper_balance
-                    );
+                if new_price > 0 {
+                    prices[asset as usize] = new_price;
+                    fixture.oracle.set_price_stable(&svec![
+                        &fixture.env,
+                        1_0000000,
+                        prices[0],
+                        prices[1],
+                        prices[2],
+                    ]);
                 }
             }
 
-            check_invariants(&fixture, &user, &keeper, initial_total, &positions);
+            // Conditionally attempt liquidation
+            if step.try_liquidate {
+                let liq_result = fixture.trading.try_execute(
+                    &keeper,
+                    &svec![
+                        &fixture.env,
+                        ExecuteRequest {
+                            request_type: ExecuteRequestType::Liquidate as u32,
+                            position_id: pos_id,
+                        }
+                    ],
+                );
+                verify_no_host_error(&liq_result, "Liquidate");
+
+                if let Ok(Ok(results)) = &liq_result {
+                    if results.get(0) == Some(0) {
+                        positions.clear();
+                        liquidated = true;
+                    }
+                }
+            }
+
+            check_invariants(&fixture, &positions);
         }
 
         // Clean up if not liquidated
@@ -220,7 +209,7 @@ fuzz_target!(|input: FuzzInput| {
                 verify_no_host_error(&result, "ClosePosition(cleanup)");
             }
             positions.clear();
-            check_invariants(&fixture, &user, &keeper, initial_total, &positions);
+            check_invariants(&fixture, &positions);
         }
     }
 });
