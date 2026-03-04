@@ -1,14 +1,21 @@
+use crate::constants::MAX_PRICE_AGE;
 use crate::errors::TradingError;
 use sep_40_oracle::{Asset, PriceFeedClient};
 use soroban_sdk::{panic_with_error, Address, Env};
 
+/// Get the price scalar (10^decimals) from the oracle
+pub fn get_price_scalar(e: &Env, oracle: &Address) -> i128 {
+    let decimals = PriceFeedClient::new(e, oracle).decimals();
+    10i128.pow(decimals)
+}
+
 /// Load the current price for an asset from the oracle
-pub fn load_price(e: &Env, oracle: &Address, asset: &Asset, max_price_age: u32) -> i128 {
+pub fn load_price(e: &Env, oracle: &Address, asset: &Asset) -> i128 {
     let price_data = match PriceFeedClient::new(e, oracle).lastprice(asset) {
         Some(price) => price,
         None => panic_with_error!(e, TradingError::PriceNotFound),
     };
-    if price_data.timestamp + (max_price_age as u64) < e.ledger().timestamp() {
+    if price_data.timestamp + (MAX_PRICE_AGE as u64) < e.ledger().timestamp() {
         panic_with_error!(e, TradingError::PriceStale);
     }
     price_data.price
@@ -51,7 +58,7 @@ mod tests {
 
         let contract = e.register(crate::contract::TradingContract {}, (caller,));
         e.as_contract(&contract, || {
-            let price = load_price(&e, &oracle, &asset, 3600);
+            let price = load_price(&e, &oracle, &asset);
             assert_eq!(price, BTC_PRICE);
         });
     }
@@ -66,7 +73,7 @@ mod tests {
 
         let contract = e.register(crate::contract::TradingContract {}, (caller,));
         e.as_contract(&contract, || {
-            load_price(&e, &oracle, &asset, 3600);
+            load_price(&e, &oracle, &asset);
         });
     }
 
@@ -80,8 +87,8 @@ mod tests {
 
         let contract = e.register(crate::contract::TradingContract {}, (caller,));
         e.as_contract(&contract, || {
-            // timestamp=0, max_price_age=100, ledger=1000 → 0 + 100 < 1000 → stale
-            load_price(&e, &oracle, &asset, 100);
+            // timestamp=0, MAX_PRICE_AGE=900, ledger=1000 → 0 + 900 < 1000 → stale
+            load_price(&e, &oracle, &asset);
         });
     }
 }

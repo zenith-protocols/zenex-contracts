@@ -6,6 +6,7 @@ members = [
   "strategy-vault",
   "test-suites",
   "trading",
+  "trading-admin",
   "webauthn-verifier",
 ]
 

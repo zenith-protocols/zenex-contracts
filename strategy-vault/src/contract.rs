@@ -1,8 +1,8 @@
-//! Vault Contract - ERC-4626 compliant tokenized vault with transfer locking
+//! Vault Contract - ERC-4626 compliant tokenized vault with deposit locking
 //!
-//! This contract implements the OpenZeppelin FungibleVault trait with a transfer
-//! lock mechanism: depositors cannot transfer their shares until lock_time seconds
-//! after their last deposit. Withdrawals and redemptions are always allowed.
+//! This contract implements the OpenZeppelin FungibleVault trait with a lock
+//! mechanism: depositors cannot transfer, withdraw, or redeem their shares
+//! until lock_time seconds after their last deposit.
 
 use soroban_sdk::{contract, contractimpl, Address, Env, MuxedAddress, String, Vec};
 use stellar_tokens::{
@@ -83,7 +83,7 @@ impl FungibleToken for StrategyVaultContract {
 }
 
 // Implement FungibleVault trait for ERC-4626 functionality
-// Override deposit/mint to track timestamps, and redeem/withdraw to check lock
+// Override deposit/mint to track timestamps, redeem/withdraw to enforce lock
 #[contractimpl(contracttrait)]
 impl FungibleVault for StrategyVaultContract {
     /// Override: Track deposit timestamp for the receiver (who gets the shares)
@@ -102,12 +102,15 @@ impl FungibleVault for StrategyVaultContract {
         assets
     }
 
+    /// Override: Depositors cannot redeem until lock expires
     fn redeem(e: &Env, shares: i128, receiver: Address, owner: Address, operator: Address) -> i128 {
+        StrategyVault::require_unlocked(e, &owner);
         let assets = Vault::redeem(e, shares, receiver, owner, operator);
         storage::extend_instance(e);
         assets
     }
 
+    /// Override: Depositors cannot withdraw until lock expires
     fn withdraw(
         e: &Env,
         assets: i128,
@@ -115,6 +118,7 @@ impl FungibleVault for StrategyVaultContract {
         owner: Address,
         operator: Address,
     ) -> i128 {
+        StrategyVault::require_unlocked(e, &owner);
         let shares = Vault::withdraw(e, assets, receiver, owner, operator);
         storage::extend_instance(e);
         shares

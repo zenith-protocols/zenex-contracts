@@ -3,6 +3,7 @@ use soroban_sdk::{vec as svec, Address};
 use test_suites::setup::create_fixture_with_data;
 use test_suites::test_fixture::{AssetIndex, TestFixture};
 use test_suites::SCALAR_7;
+use trading::testutils::BTC_PRICE;
 use trading::ExecuteRequest;
 
 const SECONDS_IN_WEEK: u64 = 604800; // 7 days in seconds
@@ -32,30 +33,31 @@ fn test_long_position_liquidation_after_week() {
         0_1000000,       // XLM
     ]);
 
-    // Open long position: 10k collateral, 100k notional (10x leverage)
-    let (position_id, _) = fixture.trading.open_position(
+    // Open long position: 10k collateral, 100k notional (10x leverage) and fill
+    let (position_id, _) = fixture.open_and_fill(
         &user,
-        &(AssetIndex::BTC as u32),
-        &(10_000 * SCALAR_7),  // 10k collateral
-        &(100_000 * SCALAR_7), // 100k notional (10x leverage)
-        &true,                 // long
-        &0,                    // market order
-        &0,                    // take profit: 0 (not set)
-        &0,                    // stop loss: 0 (not set)
+        AssetIndex::BTC as u32,
+        10_000 * SCALAR_7,  // 10k collateral
+        100_000 * SCALAR_7, // 100k notional (10x leverage)
+        true,                // long
+        BTC_PRICE,
+        0,
+        0,
     );
 
     // A week passes
     fixture.jump(SECONDS_IN_WEEK);
 
     // Price drops to make position liquidatable
-    // At 90,700: PnL=-9300, interest≈168, base_fee=50 → equity≈482 < 500 (liquidatable)
-    // At 90,718: equity≈500 (borderline liquidatable)
-    // At 90,719: equity≈501 (not liquidatable)
-    let current_price = 90_718_0000000;
+    // New funding model: one-sided → rate = base_rate (naturally bounded in [0, baseRate])
+    // Over 1 week (168h): funding = 100k × base_rate × 168 = 168 tokens
+    // equity = 10000 + PnL - (50 close_fee + 168 funding) < 500
+    // → PnL < -9282 → price < 90,718
+    let current_price = 90_710_0000000;
     fixture.oracle.set_price_stable(&svec![
         &fixture.env,
         1_0000000,      // USD
-        current_price,  // BTC = 90,720
+        current_price,  // BTC = 90,710
         2000_0000000,   // ETH
         0_1000000,      // XLM
     ]);
@@ -99,7 +101,7 @@ fn test_long_position_liquidation_after_week() {
 #[test]
 fn test_long_position_not_liquidatable_at_threshold() {
     // This test verifies that a position is NOT liquidatable when equity is just above maintenance margin
-    // At price 90,719, with interest accumulation over 1 week, equity ≈ 501 which is above the 500 maintenance margin
+    // At price 90,730, with interest accumulation over 1 week, equity is above the 500 maintenance margin
     let fixture = setup_fixture();
     let user = Address::generate(&fixture.env);
     let liquidator = Address::generate(&fixture.env);
@@ -116,28 +118,30 @@ fn test_long_position_not_liquidatable_at_threshold() {
         0_1000000,       // XLM
     ]);
 
-    // Open long position: 10k collateral, 100k notional (10x leverage)
-    let (position_id, _) = fixture.trading.open_position(
+    // Open long position: 10k collateral, 100k notional (10x leverage) and fill
+    let (position_id, _) = fixture.open_and_fill(
         &user,
-        &(AssetIndex::BTC as u32),
-        &(10_000 * SCALAR_7),  // 10k collateral
-        &(100_000 * SCALAR_7), // 100k notional (10x leverage)
-        &true,                 // long
-        &0,                    // market order
-        &0,                    // take profit: 0 (not set)
-        &0,                    // stop loss: 0 (not set)
+        AssetIndex::BTC as u32,
+        10_000 * SCALAR_7,  // 10k collateral
+        100_000 * SCALAR_7, // 100k notional (10x leverage)
+        true,                // long
+        BTC_PRICE,
+        0,
+        0,
     );
 
     // A week passes
     fixture.jump(SECONDS_IN_WEEK);
 
     // Price drops to just above liquidation threshold
-    // At 90,719: PnL=-9281, interest≈168, base_fee=50 → equity≈501 > 500 (NOT liquidatable)
-    let current_price = 90_719_0000000;
+    // equity = 10000 + PnL - (50 close_fee + 168 funding) >= 500
+    // → PnL >= -9282 → price >= 90,718
+    // Use 90,730 to be safely above threshold
+    let current_price = 90_730_0000000;
     fixture.oracle.set_price_stable(&svec![
         &fixture.env,
         1_0000000,      // USD
-        current_price,  // BTC = 90,719
+        current_price,  // BTC = 90,730
         2000_0000000,   // ETH
         0_1000000,      // XLM
     ]);

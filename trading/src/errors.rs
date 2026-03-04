@@ -11,12 +11,8 @@ pub enum TradingError {
     AlreadyInitialized = 700,
     NotInitialized = 701,
     InvalidConfig = 702,
-    UpdateNotQueued = 703,
-    UpdateNotUnlocked = 704,
-
     // Market
     MarketNotFound = 710,
-    MarketInitNotQueued = 711,
     MarketDisabled = 712,
 
     // Oracle/Price
@@ -33,7 +29,6 @@ pub enum TradingError {
     CollateralBelowMinimum = 736,
     CollateralAboveMaximum = 737,
     LeverageBelowMinimum = 738,
-    InvalidEntryPrice = 739,
     CollateralUnchanged = 740,
     WithdrawalBreaksMargin = 741,
     InvalidTakeProfitPrice = 742,
@@ -53,6 +48,12 @@ pub enum TradingError {
     ContractOnIce = 761,
     ContractFrozen = 762,
 
-    // Utilization
-    UtilizationLimitExceeded = 770,
+    // Market limits
+    MaxMarketsReached = 770,
+
+    // ADL / Circuit breaker
+    NoDeficit = 780,
+    NotOnIce = 781,
+    ThresholdNotMet = 782,
+    ThresholdStillMet = 783,
 }

@@ -5,7 +5,6 @@ use crate::trading::ExecuteRequest;
 use crate::trading::market::Market;
 use crate::types::{MarketConfig, Position};
 use crate::{storage, trading, TradingConfig};
-use sep_40_oracle::Asset;
 use soroban_sdk::panic_with_error;
 use soroban_sdk::{contract, contractclient, contractimpl, Address, Env, String, Vec};
 use stellar_access::ownable::{self as ownable, Ownable};
@@ -23,85 +22,74 @@ pub trait Trading {
     /// ### Arguments
     /// * `name` - Name of the trading contract
     /// * `vault` - Address of the vault contract
+    /// * `oracle` - Address of the oracle contract (immutable after init)
     /// * `config` - Initial trading configuration
     /// ### Panics
     /// If the caller is not the owner
     /// If the contract is already initialized
     /// If the configuration is invalid
-    fn initialize(e: Env, name: String, vault: Address, config: TradingConfig);
+    fn initialize(e: Env, name: String, vault: Address, oracle: Address, config: TradingConfig);
 
-    /// (Owner only) Queues a configuration update
+    /// (Owner only) Update the trading configuration
     ///
     /// ### Arguments
     /// * `config` - New trading configuration
     ///
-    /// ### Panics 
+    /// ### Panics
     /// If the caller is not the owner
     /// If the configuration is invalid
-    fn queue_set_config(e: Env, config: TradingConfig);
+    fn set_config(e: Env, config: TradingConfig);
 
-    /// (Owner only) Cancels a queued configuration update
-    ///
-    /// ### Panics
-    /// If the caller is not the owner
-    /// If there is no queued configuration update
-    fn cancel_set_config(e: Env);
-
-    /// Update the trading configuration
-    ///
-    /// ### Panics
-    /// If the caller is not the owner
-    /// If there is no queued configuration update
-    fn set_config(e: Env);
-
-    /// (Owner only) Queue setting data for a market
+    /// (Owner only) Add a new market
     ///
     /// ### Arguments
     /// * `config` - The MarketConfig for the market
     ///
     /// ### Panics
     /// If the caller is not the owner
-    fn queue_set_market(e: Env, config: MarketConfig);
-
-    /// (Owner only) Cancels a queued market initialization
-    ///
-    /// ### Arguments
-    /// * `asset` - The underlying asset to cancel the market for
-    ///
-    /// ### Panics
-    /// If the caller is not the owner
-    /// If the market is not queued for initialization
-    fn cancel_set_market(e: Env, asset: Asset);
-
-    /// Executes the queued set of a market
-    ///
-    /// ### Arguments
-    /// * `asset` - The underlying asset to add as a market
-    ///
-    /// ### Panics
-    /// If the market is not queued for initialization
-    /// or is already setup
-    /// or has invalid metadata
-    fn set_market(e: Env, asset: Asset);
+    /// If the configuration is invalid
+    /// If max markets reached
+    fn set_market(e: Env, config: MarketConfig);
 
     /// (Owner only) Sets the status of the trading contract
     ///
     /// ### Arguments
-    /// * `status` - The new status code (0: Active, 1: OnIce, 2: Frozen, 99: Setup)
+    /// * `status` - The new status code (0: Active, 2: AdminOnIce, 3: Frozen, 99: Setup)
     ///
     /// ### Panics
     /// If the caller is not the owner
+    /// If status is OnIce (1) — use set_on_ice instead
     fn set_status(e: Env, status: u32);
 
-    /// Open a position
+    /// Permissionless circuit breaker. Sets contract to OnIce when
+    /// net trader PnL >= 90% of vault assets.
+    ///
+    /// ### Panics
+    /// If contract is not Active
+    /// If utilization threshold is not met
+    fn set_on_ice(e: Env);
+
+    /// Permissionless restore. Sets contract back to Active when
+    /// net trader PnL < 90% of vault assets.
+    ///
+    /// ### Panics
+    /// If contract is not in permissionless OnIce state
+    /// If utilization threshold is still met
+    fn restore_active(e: Env);
+
+    /// Place a limit order
+    ///
+    /// All positions start as pending limit orders. Keepers fill them via `execute`
+    /// when the oracle price satisfies the entry_price condition.
+    /// For instant execution, set entry_price to a level that's immediately fillable.
     ///
     /// # Arguments
-    /// * `user` - User address opening position
+    /// * `user` - User address placing the order
     /// * `asset_index` - Index of the asset to trade
     /// * `collateral` - Collateral amount
     /// * `notional_size` - Notional size of the position
     /// * `is_long` - Whether position is long (true) or short (false)
-    /// * `entry_price` - Price at which to open position, 0 for market order
+    /// * `entry_price` - Limit price (must be > 0). Longs fill when oracle <= entry_price, shorts when oracle >= entry_price
     /// * `take_profit` - Take profit price level, 0 if not set
     /// * `stop_loss` - Stop loss price level, 0 if not set
     ///
@@ -159,6 +147,17 @@ pub trait Trading {
     /// Vec<u32> with result codes for each action (0 = success, error code otherwise)
     fn execute(e: Env, caller: Address, requests: Vec<ExecuteRequest>) -> Vec<u32>;
 
+    /// Permissionless funding application — accrues funding and refreshes rates for all markets.
+    /// No-op if less than one hour has elapsed since the last global funding update.
+    fn apply_funding(e: Env);
+
+    /// Permissionless ADL trigger. Computes vault deficit from aggregates,
+    /// then reduces winning-side positions uniformly to restore solvency.
+    ///
+    /// # Panics
+    /// * `NoDeficit` - If the vault is healthy (no deficit exists)
+    fn trigger_adl(e: Env);
+
     /// Get a position by ID
     ///
     /// # Arguments
@@ -201,7 +200,7 @@ pub trait Trading {
     /// Get the contract status
     ///
     /// # Returns
-    /// The current status code (0: Active, 1: OnIce, 2: Frozen, 99: Setup)
+    /// The current status code (0: Active, 1: OnIce, 2: AdminOnIce, 3: Frozen, 99: Setup)
     fn get_status(e: Env) -> u32;
 
     /// Get the vault address
@@ -209,6 +208,12 @@ pub trait Trading {
     /// # Returns
     /// The address of the vault contract
     fn get_vault(e: Env) -> Address;
+
+    /// Get the oracle address
+    ///
+    /// # Returns
+    /// The address of the oracle contract
+    fn get_oracle(e: Env) -> Address;
 
     /// Get the collateral token address
     ///
@@ -227,49 +232,37 @@ impl TradingContract {
 #[contractimpl]
 impl Trading for TradingContract {
     #[only_owner]
-    fn initialize(e: Env, name: String, vault: Address, config: TradingConfig) {
+    fn initialize(e: Env, name: String, vault: Address, oracle: Address, config: TradingConfig) {
         storage::extend_instance(&e);
-        trading::execute_initialize(&e, &name, &vault, &config);
+        trading::execute_initialize(&e, &name, &vault, &oracle, &config);
     }
 
     #[only_owner]
-    fn queue_set_config(e: Env, config: TradingConfig) {
+    fn set_config(e: Env, config: TradingConfig) {
         storage::extend_instance(&e);
-        trading::execute_queue_set_config(&e, &config);
+        trading::execute_set_config(&e, &config);
     }
 
     #[only_owner]
-    fn cancel_set_config(e: Env) {
+    fn set_market(e: Env, config: MarketConfig) {
         storage::extend_instance(&e);
-        trading::execute_cancel_set_config(&e);
-    }
-
-    fn set_config(e: Env) {
-        storage::extend_instance(&e);
-        trading::execute_set_config(&e);
-    }
-
-    #[only_owner]
-    fn queue_set_market(e: Env, config: MarketConfig) {
-        storage::extend_instance(&e);
-        trading::execute_queue_set_market(&e, &config);
-    }
-
-    #[only_owner]
-    fn cancel_set_market(e: Env, asset: Asset) {
-        storage::extend_instance(&e);
-        trading::execute_cancel_queued_market(&e, &asset);
-    }
-
-    fn set_market(e: Env, asset: Asset) {
-        storage::extend_instance(&e);
-        trading::execute_set_market(&e, &asset);
+        trading::execute_set_market(&e, &config);
     }
 
     #[only_owner]
     fn set_status(e: Env, status: u32) {
         storage::extend_instance(&e);
         trading::execute_set_status(&e, status);
+    }
+
+    fn set_on_ice(e: Env) {
+        storage::extend_instance(&e);
+        trading::execute_set_on_ice(&e);
+    }
+
+    fn restore_active(e: Env) {
+        storage::extend_instance(&e);
+        trading::execute_restore_active(&e);
     }
 
     fn open_position(
@@ -317,6 +310,16 @@ impl Trading for TradingContract {
         trading::execute_trigger(&e, &caller, requests)
     }
 
+    fn apply_funding(e: Env) {
+        storage::extend_instance(&e);
+        trading::execute_apply_funding(&e);
+    }
+
+    fn trigger_adl(e: Env) {
+        storage::extend_instance(&e);
+        trading::execute_trigger_adl(&e);
+    }
+
     fn get_position(e: Env, position_id: u32) -> Position {
         storage::get_position(&e, position_id)
     }
@@ -341,9 +344,14 @@ impl Trading for TradingContract {
         storage::get_vault(&e)
     }
 
+    fn get_oracle(e: Env) -> Address {
+        storage::get_oracle(&e)
+    }
+
     fn get_token(e: Env) -> Address {
         storage::get_token(&e)
     }
+
 }
 
 #[contractimpl(contracttrait)]

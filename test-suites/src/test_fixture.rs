@@ -4,9 +4,9 @@ use sep_40_oracle::testutils::{Asset, MockPriceOracleClient, MockPriceOracleWASM
 use sep_40_oracle::Asset as StellarAsset;
 use sep_41_token::testutils::MockTokenClient;
 use soroban_sdk::testutils::{Address as _, Ledger, LedgerInfo};
-use soroban_sdk::{vec as svec, Address, Env, String, Symbol};
+use soroban_sdk::{vec as svec, Address, Env, String, Symbol, Vec as SorobanVec};
 use std::ops::Index;
-use trading::{MarketConfig, TradingClient};
+use trading::{ExecuteRequest, MarketConfig, TradingClient};
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum AssetIndex {
@@ -100,16 +100,18 @@ impl TestFixture<'_> {
         let vault_client = VaultClient::new(&e, &vault_id);
 
         let config = trading::TradingConfig {
-            oracle: oracle_id.clone(),
             caller_take_rate: 0,
-            max_positions: 10,
-            max_utilization: 10_0000000, // 10x in SCALAR_7 (must be >= 1x)
-            max_price_age: 900,          // 15 minutes (must be > oracle resolution of 300)
             min_open_time: 0,
+            vault_skim: 0_2000000,       // 20%
+            min_collateral: 10_000_000,             // 1 token minimum (SCALAR_7)
+            max_collateral: 1_000_000 * 10_000_000, // 1M tokens maximum
+            max_payout: 10 * 10_000_000,            // 1000% max payout
+            base_fee_dominant: 0_0005000,     // 0.05%
+            base_fee_non_dominant: 0_0001000, // 0.01%
         };
         // Set the vault in trading contract
         // After initialize, status is Setup (99) which allows market queuing without delay
-        trading_client.initialize(&String::from_str(&e, "Zenex"), &vault_id, &config);
+        trading_client.initialize(&String::from_str(&e, "Zenex"), &vault_id, &oracle_id, &config);
 
         let fixture = TestFixture {
             env: e,
@@ -125,8 +127,7 @@ impl TestFixture<'_> {
     }
 
     pub fn create_market(&mut self, config: &MarketConfig) {
-        self.trading.queue_set_market(config);
-        self.trading.set_market(&config.asset);
+        self.trading.set_market(config);
     }
 
     pub fn position_exists(&self, position_id: u32) -> bool {
@@ -136,6 +137,31 @@ impl TestFixture<'_> {
                 .persistent()
                 .has(&trading::storage::TradingStorageKey::Position(position_id))
         })
+    }
+
+    /// Place a limit order and immediately fill it via keeper execute.
+    /// Equivalent to the old "market order" pattern. Returns (position_id, open_fee).
+    pub fn open_and_fill(
+        &self,
+        user: &Address,
+        asset_index: u32,
+        collateral: i128,
+        notional_size: i128,
+        is_long: bool,
+        entry_price: i128,
+        take_profit: i128,
+        stop_loss: i128,
+    ) -> (u32, i128) {
+        let (id, fee) = self.trading.open_position(
+            user, &asset_index, &collateral, &notional_size, &is_long,
+            &entry_price, &take_profit, &stop_loss,
+        );
+        let requests = SorobanVec::from_array(
+            &self.env,
+            [ExecuteRequest { request_type: 0, position_id: id }], // Fill = 0
+        );
+        self.trading.execute(user, &requests);
+        (id, fee)
     }
 
     /********** Chain Helpers ***********/

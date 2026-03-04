@@ -1,9 +1,10 @@
+use crate::constants::MAINTENANCE_MARGIN_DIVISOR;
 use crate::dependencies::VaultClient;
 use crate::errors::TradingError;
 use crate::events::{FillLimit, Liquidation, StopLoss, TakeProfit};
 use crate::storage;
 use crate::trading::market::Market;
-use crate::trading::oracle::load_price;
+use crate::trading::oracle::{get_price_scalar, load_price};
 use crate::trading::position::{FeeBreakdown, Position};
 use crate::types::{ExecuteRequest, ExecuteRequestType, TradingConfig};
 use crate::validation::{check_min_open_time, require_not_frozen, require_market_enabled};
@@ -16,6 +17,7 @@ use soroban_sdk::{map, vec, Address, Env, Map, Vec};
 /// Caches markets and prices to minimize storage reads
 pub struct ExecuteContext {
     pub config: TradingConfig,
+    pub oracle: Address,
     pub vault: Address,
     pub token: Address,
     pub caller: Address,
@@ -29,12 +31,14 @@ pub struct ExecuteContext {
 impl ExecuteContext {
     pub fn load(e: &Env, caller: Address) -> Self {
         let config = storage::get_config(e);
+        let oracle = storage::get_oracle(e);
         let vault = storage::get_vault(e);
         let token = storage::get_token(e);
-        let price_scalar = storage::get_price_scalar(e);
-        let token_scalar = storage::get_token_scalar(e);
+        let price_scalar = get_price_scalar(e, &oracle);
+        let token_scalar = storage::get_token_scalar(e, &token);
         ExecuteContext {
             config,
+            oracle,
             vault,
             token,
             caller,
@@ -52,7 +56,7 @@ impl ExecuteContext {
         } else {
             Market::load(e, asset_index)
         };
-        market.accrue_interest(e);
+        market.accrue(e, self.config.vault_skim, self.token_scalar);
         market
     }
 
@@ -74,7 +78,7 @@ impl ExecuteContext {
         if let Some(price) = self.prices.get(asset_index) {
             return price;
         }
-        let price = load_price(e, &self.config.oracle, asset, self.config.max_price_age);
+        let price = load_price(e, &self.oracle, asset);
         self.prices.set(asset_index, price);
         price
     }
@@ -194,11 +198,18 @@ fn process_execute_requests(
             continue;
         }
 
+        // Apply ADL reduction for filled positions before any PnL/margin calculations
+        if position.filled {
+            let market = ctx.load_market(e, position.asset_index);
+            position.notional_size = position.effective_notional(e, &market);
+        }
+
+        let position_id = request.position_id;
         let action_result = match request_type {
-            ExecuteRequestType::Fill => apply_fill(e, &mut result, ctx, &mut position),
-            ExecuteRequestType::StopLoss => apply_stop_loss(e, &mut result, ctx, &mut position),
-            ExecuteRequestType::TakeProfit => apply_take_profit(e, &mut result, ctx, &mut position),
-            ExecuteRequestType::Liquidate => apply_liquidation(e, &mut result, ctx, &mut position),
+            ExecuteRequestType::Fill => apply_fill(e, &mut result, ctx, &mut position, position_id),
+            ExecuteRequestType::StopLoss => apply_stop_loss(e, &mut result, ctx, &mut position, position_id),
+            ExecuteRequestType::TakeProfit => apply_take_profit(e, &mut result, ctx, &mut position, position_id),
+            ExecuteRequestType::Liquidate => apply_liquidation(e, &mut result, ctx, &mut position, position_id),
         };
 
         result.results.push_back(action_result);
@@ -216,17 +227,18 @@ fn handle_close(
     result: &mut ProcessingResult,
     ctx: &mut ExecuteContext,
     position: &mut Position,
+    position_id: u32,
 ) -> (i128, i128, FeeBreakdown) {
     let mut market = ctx.load_market(e, position.asset_index);
     let price = ctx.get_price(e, position.asset_index, &market.config.asset);
     let pnl = position.calculate_pnl(e, price, ctx.price_scalar);
-    let fees = position.calculate_fee_breakdown(e, &market);
+    let fees = position.calculate_fee_breakdown(e, &market, &ctx.config, ctx.token_scalar);
 
     // Calculate payouts
     let equity = position.collateral + pnl - fees.total_fee();
     let max_payout = position
         .collateral
-        .fixed_mul_floor(e, &market.config.max_payout, &ctx.token_scalar);
+        .fixed_mul_floor(e, &ctx.config.max_payout, &ctx.token_scalar);
     let user_payout = equity.max(0).min(max_payout);
 
     // Vault transfer (positive = receives, negative = pays)
@@ -255,10 +267,11 @@ fn handle_close(
         result.add_transfer(&ctx.caller, caller_fee);
     }
 
-    storage::remove_user_position(e, &position.user, position.id);
-    storage::remove_position(e, position.id);
+    storage::remove_user_position(e, &position.user, position_id);
+    storage::remove_position(e, position_id);
 
-    market.update_stats(-position.notional_size, position.is_long);
+    market.update_stats(e, -position.notional_size, position.is_long, position.entry_price, ctx.price_scalar);
+    market.update_funding_rate(e);
     ctx.cache_market(&market);
 
     (price, pnl, fees)
@@ -270,6 +283,7 @@ fn apply_fill(
     result: &mut ProcessingResult,
     ctx: &mut ExecuteContext,
     position: &mut Position,
+    position_id: u32,
 ) -> u32 {
     let mut market = ctx.load_market(e, position.asset_index);
     require_market_enabled(e, &market.config);
@@ -286,10 +300,21 @@ fn apply_fill(
     }
 
     position.filled = true;
+    position.created_at = e.ledger().timestamp();
     position.entry_price = current_price;
+    position.entry_funding_index = if position.is_long {
+        market.data.long_funding_index
+    } else {
+        market.data.short_funding_index
+    };
+    position.entry_adl_index = if position.is_long {
+        market.data.long_adl_index
+    } else {
+        market.data.short_adl_index
+    };
 
-    // Check if position is balancing BEFORE updating market stats
-    let should_pay_base_fee = if position.is_long {
+    // Check if position would be dominant AFTER updating market stats
+    let is_dominant = if position.is_long {
         let new_long = market.data.long_notional_size + position.notional_size;
         new_long > market.data.short_notional_size
     } else {
@@ -297,40 +322,47 @@ fn apply_fill(
         new_short > market.data.long_notional_size
     };
 
-    market.update_stats(position.notional_size, position.is_long);
+    market.update_stats(e, position.notional_size, position.is_long, position.entry_price, ctx.price_scalar);
+    market.update_funding_rate(e);
 
-    // Calculate fees from notional_size (same formula as open)
-    let base_fee = position
+    // Fee charged upfront on create was base_fee_dominant (worst case for limit orders)
+    let fee_dominant = position
         .notional_size
-        .fixed_mul_ceil(e, &market.config.base_fee, &ctx.token_scalar);
+        .fixed_mul_ceil(e, &ctx.config.base_fee_dominant, &ctx.token_scalar);
+    let fee_non_dominant = position
+        .notional_size
+        .fixed_mul_ceil(e, &ctx.config.base_fee_non_dominant, &ctx.token_scalar);
     let price_impact = position
         .notional_size
         .fixed_div_ceil(e, &market.config.price_impact_scalar, &ctx.token_scalar);
 
-    // Actual base_fee charged (0 if refunded for balancing trades)
-    let actual_base_fee = if should_pay_base_fee {
-        // Position increases imbalance: send fees to vault (minus caller fee)
-        let total_fee = base_fee + price_impact;
+    let actual_base_fee = if is_dominant {
+        // Imbalancing: vault gets fee_dominant + impact - caller_fee
+        let total_fee = fee_dominant + price_impact;
         let caller_fee = ctx.calculate_caller_fee(e, total_fee);
         result.add_transfer(&ctx.caller, caller_fee);
         result.add_transfer(&ctx.vault, total_fee - caller_fee);
-        base_fee
+        fee_dominant
     } else {
-        // Position is balancing: refund base_fee to user, only price_impact goes to vault
-        result.add_transfer(&position.user, base_fee);
-        let caller_fee = ctx.calculate_caller_fee(e, price_impact);
+        // Balancing: refund difference (fee_dominant - fee_non_dominant) to user
+        let refund = fee_dominant - fee_non_dominant;
+        if refund > 0 {
+            result.add_transfer(&position.user, refund);
+        }
+        let total_fee = fee_non_dominant + price_impact;
+        let caller_fee = ctx.calculate_caller_fee(e, total_fee);
         result.add_transfer(&ctx.caller, caller_fee);
-        result.add_transfer(&ctx.vault, price_impact - caller_fee);
-        0
+        result.add_transfer(&ctx.vault, total_fee - caller_fee);
+        fee_non_dominant
     };
 
     ctx.cache_market(&market);
-    position.store(e);
+    position.store(e, position_id);
 
     FillLimit {
         asset_index: position.asset_index,
         user: position.user.clone(),
-        position_id: position.id,
+        position_id,
         base_fee: actual_base_fee,
         impact_fee: price_impact,
     }
@@ -345,6 +377,7 @@ fn apply_stop_loss(
     result: &mut ProcessingResult,
     ctx: &mut ExecuteContext,
     position: &mut Position,
+    position_id: u32,
 ) -> u32 {
     if !check_min_open_time(e, position, ctx.config.min_open_time) {
         return TradingError::PositionTooNew as u32;
@@ -355,17 +388,17 @@ fn apply_stop_loss(
         return TradingError::StopLossNotTriggered as u32;
     }
 
-    let (price, pnl, fees) = handle_close(e, result, ctx, position);
+    let (price, pnl, fees) = handle_close(e, result, ctx, position, position_id);
 
     StopLoss {
         asset_index: position.asset_index,
         user: position.user.clone(),
-        position_id: position.id,
+        position_id,
         price,
         pnl,
         base_fee: fees.base_fee,
         impact_fee: fees.impact_fee,
-        interest: fees.interest,
+        funding: fees.funding,
     }
     .publish(e);
 
@@ -378,6 +411,7 @@ fn apply_take_profit(
     result: &mut ProcessingResult,
     ctx: &mut ExecuteContext,
     position: &mut Position,
+    position_id: u32,
 ) -> u32 {
     if !check_min_open_time(e, position, ctx.config.min_open_time) {
         return TradingError::PositionTooNew as u32;
@@ -388,17 +422,17 @@ fn apply_take_profit(
         return TradingError::TakeProfitNotTriggered as u32;
     }
 
-    let (price, pnl, fees) = handle_close(e, result, ctx, position);
+    let (price, pnl, fees) = handle_close(e, result, ctx, position, position_id);
 
     TakeProfit {
         asset_index: position.asset_index,
         user: position.user.clone(),
-        position_id: position.id,
+        position_id,
         price,
         pnl,
         base_fee: fees.base_fee,
         impact_fee: fees.impact_fee,
-        interest: fees.interest,
+        funding: fees.funding,
     }
     .publish(e);
 
@@ -411,17 +445,19 @@ fn apply_liquidation(
     result: &mut ProcessingResult,
     ctx: &mut ExecuteContext,
     position: &mut Position,
+    position_id: u32,
 ) -> u32 {
     let mut market = ctx.load_market(e, position.asset_index);
     let current_price = ctx.get_price(e, position.asset_index, &market.config.asset);
 
     let pnl = position.calculate_pnl(e, current_price, ctx.price_scalar);
-    let fees = position.calculate_fee_breakdown(e, &market);
+    let fees = position.calculate_fee_breakdown(e, &market, &ctx.config, ctx.token_scalar);
     let equity = position.collateral + pnl - fees.total_fee();
+    let maintenance_margin = ctx.token_scalar / MAINTENANCE_MARGIN_DIVISOR;
     let required_margin =
         position
             .notional_size
-            .fixed_mul_floor(e, &market.config.maintenance_margin, &ctx.token_scalar);
+            .fixed_mul_floor(e, &maintenance_margin, &ctx.token_scalar);
 
     if equity >= required_margin {
         return TradingError::PositionNotLiquidatable as u32;
@@ -436,19 +472,20 @@ fn apply_liquidation(
     Liquidation {
         asset_index: position.asset_index,
         user: position.user.clone(),
-        position_id: position.id,
+        position_id,
         price: current_price,
         pnl,
         base_fee: fees.base_fee,
         impact_fee: fees.impact_fee,
-        interest: fees.interest,
+        funding: fees.funding,
     }
     .publish(e);
 
-    market.update_stats(-position.notional_size, position.is_long);
+    market.update_stats(e, -position.notional_size, position.is_long, position.entry_price, ctx.price_scalar);
+    market.update_funding_rate(e);
 
-    storage::remove_user_position(e, &position.user, position.id);
-    storage::remove_position(e, position.id);
+    storage::remove_user_position(e, &position.user, position_id);
+    storage::remove_position(e, position_id);
     ctx.cache_market(&market);
     0
 }
@@ -459,9 +496,8 @@ mod tests {
     use crate::constants::{SCALAR_18, SCALAR_7};
     use crate::testutils::{default_market_data, setup_contract, setup_env, BTC_PRICE};
     use crate::types::ExecuteRequest;
-    use sep_40_oracle::Asset;
     use soroban_sdk::testutils::Address as _;
-    use soroban_sdk::{vec, Symbol};
+    use soroban_sdk::{vec};
 
     fn create_test_position(
         e: &Env,
@@ -471,7 +507,6 @@ mod tests {
         entry_price: i128,
     ) -> crate::types::Position {
         crate::types::Position {
-            id: 1,
             user: user.clone(),
             filled,
             asset_index: 0,
@@ -481,8 +516,9 @@ mod tests {
             entry_price,
             collateral: 1_000 * SCALAR_7,
             notional_size: 10_000 * SCALAR_7,
-            interest_index: SCALAR_18,
+            entry_funding_index: SCALAR_18,
             created_at: e.ledger().timestamp(),
+            entry_adl_index: SCALAR_18,
         }
     }
 
@@ -507,7 +543,7 @@ mod tests {
             let mut ctx = ExecuteContext::load(&e, caller);
             let mut result = ProcessingResult::new(&e);
 
-            let code = apply_fill(&e, &mut result, &mut ctx, &mut position);
+            let code = apply_fill(&e, &mut result, &mut ctx, &mut position, 1);
             assert_eq!(code, 0);
             assert!(position.filled);
             assert_eq!(position.entry_price, BTC_PRICE);
@@ -531,7 +567,7 @@ mod tests {
             let mut ctx = ExecuteContext::load(&e, caller);
             let mut result = ProcessingResult::new(&e);
 
-            let code = apply_fill(&e, &mut result, &mut ctx, &mut position);
+            let code = apply_fill(&e, &mut result, &mut ctx, &mut position, 1);
             assert_eq!(code, 0);
             assert!(position.filled);
         });
@@ -553,7 +589,7 @@ mod tests {
             let mut ctx = ExecuteContext::load(&e, caller);
             let mut result = ProcessingResult::new(&e);
 
-            let code = apply_fill(&e, &mut result, &mut ctx, &mut position);
+            let code = apply_fill(&e, &mut result, &mut ctx, &mut position, 1);
             assert_eq!(code, TradingError::LimitOrderNotFillable as u32);
             assert!(!position.filled);
         });
@@ -575,7 +611,7 @@ mod tests {
             let mut ctx = ExecuteContext::load(&e, caller);
             let mut result = ProcessingResult::new(&e);
 
-            let code = apply_fill(&e, &mut result, &mut ctx, &mut position);
+            let code = apply_fill(&e, &mut result, &mut ctx, &mut position, 1);
             assert_eq!(code, TradingError::LimitOrderNotFillable as u32);
         });
     }
@@ -593,8 +629,8 @@ mod tests {
             market_data.long_notional_size = 100_000 * SCALAR_7;
             market_data.short_notional_size = 200_000 * SCALAR_7;
             market_data.last_update = e.ledger().timestamp();
-            market_data.long_interest_index = SCALAR_18;
-            market_data.short_interest_index = SCALAR_18;
+            market_data.long_funding_index = SCALAR_18;
+            market_data.short_funding_index = SCALAR_18;
             storage::set_market_data(&e, 0, &market_data);
 
             // Long order will be balancing
@@ -605,7 +641,7 @@ mod tests {
             let mut ctx = ExecuteContext::load(&e, caller.clone());
             let mut result = ProcessingResult::new(&e);
 
-            let code = apply_fill(&e, &mut result, &mut ctx, &mut position);
+            let code = apply_fill(&e, &mut result, &mut ctx, &mut position, 1);
             assert_eq!(code, 0);
 
             // User should receive base_fee refund for balancing
@@ -634,7 +670,7 @@ mod tests {
             let mut ctx = ExecuteContext::load(&e, caller);
             let mut result = ProcessingResult::new(&e);
 
-            let code = apply_stop_loss(&e, &mut result, &mut ctx, &mut position);
+            let code = apply_stop_loss(&e, &mut result, &mut ctx, &mut position, 1);
             assert_eq!(code, 0);
         });
     }
@@ -655,7 +691,7 @@ mod tests {
             let mut ctx = ExecuteContext::load(&e, caller);
             let mut result = ProcessingResult::new(&e);
 
-            let code = apply_stop_loss(&e, &mut result, &mut ctx, &mut position);
+            let code = apply_stop_loss(&e, &mut result, &mut ctx, &mut position, 1);
             assert_eq!(code, TradingError::StopLossNotTriggered as u32);
         });
     }
@@ -677,7 +713,7 @@ mod tests {
             let mut ctx = ExecuteContext::load(&e, caller);
             let mut result = ProcessingResult::new(&e);
 
-            let code = apply_stop_loss(&e, &mut result, &mut ctx, &mut position);
+            let code = apply_stop_loss(&e, &mut result, &mut ctx, &mut position, 1);
             assert_eq!(code, 0);
         });
     }
@@ -703,7 +739,7 @@ mod tests {
             let mut ctx = ExecuteContext::load(&e, caller);
             let mut result = ProcessingResult::new(&e);
 
-            let code = apply_take_profit(&e, &mut result, &mut ctx, &mut position);
+            let code = apply_take_profit(&e, &mut result, &mut ctx, &mut position, 1);
             assert_eq!(code, 0);
         });
     }
@@ -724,7 +760,7 @@ mod tests {
             let mut ctx = ExecuteContext::load(&e, caller);
             let mut result = ProcessingResult::new(&e);
 
-            let code = apply_take_profit(&e, &mut result, &mut ctx, &mut position);
+            let code = apply_take_profit(&e, &mut result, &mut ctx, &mut position, 1);
             assert_eq!(code, TradingError::TakeProfitNotTriggered as u32);
         });
     }
@@ -746,7 +782,7 @@ mod tests {
             let mut ctx = ExecuteContext::load(&e, caller);
             let mut result = ProcessingResult::new(&e);
 
-            let code = apply_take_profit(&e, &mut result, &mut ctx, &mut position);
+            let code = apply_take_profit(&e, &mut result, &mut ctx, &mut position, 1);
             assert_eq!(code, 0);
         });
     }
@@ -768,12 +804,12 @@ mod tests {
             let mut position = create_test_position(&e, &user, true, true, BTC_PRICE);
             position.collateral = 100 * SCALAR_7; // Very small collateral
             position.notional_size = 10_000 * SCALAR_7; // 100x leverage
-            position.interest_index = SCALAR_18;
+            position.entry_funding_index = SCALAR_18;
 
             // Set high interest index so position is underwater
             let mut market_data = default_market_data();
-            market_data.long_interest_index = SCALAR_18 + SCALAR_18 / 10; // 10% interest accrued
-            market_data.short_interest_index = SCALAR_18;
+            market_data.long_funding_index = SCALAR_18 + SCALAR_18 / 10; // 10% interest accrued
+            market_data.short_funding_index = SCALAR_18;
             market_data.last_update = e.ledger().timestamp();
             storage::set_market_data(&e, 0, &market_data);
 
@@ -783,7 +819,7 @@ mod tests {
             let mut ctx = ExecuteContext::load(&e, caller.clone());
             let mut result = ProcessingResult::new(&e);
 
-            let code = apply_liquidation(&e, &mut result, &mut ctx, &mut position);
+            let code = apply_liquidation(&e, &mut result, &mut ctx, &mut position, 1);
             assert_eq!(code, 0);
 
             // Caller should receive fee
@@ -808,7 +844,7 @@ mod tests {
             let mut ctx = ExecuteContext::load(&e, caller);
             let mut result = ProcessingResult::new(&e);
 
-            let code = apply_liquidation(&e, &mut result, &mut ctx, &mut position);
+            let code = apply_liquidation(&e, &mut result, &mut ctx, &mut position, 1);
             assert_eq!(code, TradingError::PositionNotLiquidatable as u32);
         });
     }
@@ -888,13 +924,11 @@ mod tests {
 
         e.as_contract(&address, || {
             // Create positions
-            let mut pos1 = create_test_position(&e, &user, false, true, BTC_PRICE + 1000 * SCALAR_7);
-            pos1.id = 1;
+            let pos1 = create_test_position(&e, &user, false, true, BTC_PRICE + 1000 * SCALAR_7);
             storage::set_position(&e, 1, &pos1);
             storage::add_user_position(&e, &user, 1);
 
             let mut pos2 = create_test_position(&e, &user, true, true, BTC_PRICE);
-            pos2.id = 2;
             pos2.take_profit = BTC_PRICE;
             storage::set_position(&e, 2, &pos2);
             storage::add_user_position(&e, &user, 2);
@@ -940,14 +974,14 @@ mod tests {
             // Update market data timestamp
             let mut market_data = default_market_data();
             market_data.last_update = e.ledger().timestamp();
-            market_data.long_interest_index = SCALAR_18;
-            market_data.short_interest_index = SCALAR_18;
+            market_data.long_funding_index = SCALAR_18;
+            market_data.short_funding_index = SCALAR_18;
             storage::set_market_data(&e, 0, &market_data);
 
             let mut ctx = ExecuteContext::load(&e, caller.clone());
             let mut result = ProcessingResult::new(&e);
 
-            let (price, pnl, _fees) = handle_close(&e, &mut result, &mut ctx, &mut position);
+            let (price, pnl, _fees) = handle_close(&e, &mut result, &mut ctx, &mut position, 1);
 
             assert_eq!(price, BTC_PRICE);
             assert!(pnl > 0);
@@ -973,7 +1007,7 @@ mod tests {
             let mut ctx = ExecuteContext::load(&e, caller.clone());
             let mut result = ProcessingResult::new(&e);
 
-            let (price, pnl, _fees) = handle_close(&e, &mut result, &mut ctx, &mut position);
+            let (price, pnl, _fees) = handle_close(&e, &mut result, &mut ctx, &mut position, 1);
 
             assert_eq!(price, BTC_PRICE);
             assert!(pnl < 0);
@@ -987,8 +1021,8 @@ mod tests {
     /// Helper: set up market data with proper interest indices and timestamp
     fn setup_market_data(e: &Env) {
         let mut data = default_market_data();
-        data.long_interest_index = SCALAR_18;
-        data.short_interest_index = SCALAR_18;
+        data.long_funding_index = SCALAR_18;
+        data.short_funding_index = SCALAR_18;
         data.last_update = e.ledger().timestamp();
         storage::set_market_data(e, 0, &data);
     }
@@ -1146,11 +1180,11 @@ mod tests {
             let mut position = create_test_position(&e, &user, true, true, BTC_PRICE);
             position.collateral = 100 * SCALAR_7;
             position.notional_size = 10_000 * SCALAR_7;
-            position.interest_index = SCALAR_18;
+            position.entry_funding_index = SCALAR_18;
 
             let mut data = default_market_data();
-            data.long_interest_index = SCALAR_18 + SCALAR_18 / 100; // 1% interest
-            data.short_interest_index = SCALAR_18;
+            data.long_funding_index = SCALAR_18 + SCALAR_18 / 100; // 1% interest
+            data.short_funding_index = SCALAR_18;
             data.last_update = e.ledger().timestamp();
             storage::set_market_data(&e, 0, &data);
 
@@ -1196,23 +1230,20 @@ mod tests {
             setup_market_data(&e);
 
             // Position 1: fillable limit (pending long, entry above current)
-            let mut pos1 =
+            let pos1 =
                 create_test_position(&e, &user, false, true, BTC_PRICE + 1000 * SCALAR_7);
-            pos1.id = 1;
             storage::set_position(&e, 1, &pos1);
             storage::add_user_position(&e, &user, 1);
 
             // Position 2: profitable TP (filled long, entry below current)
             let mut pos2 =
                 create_test_position(&e, &user, true, true, BTC_PRICE - 10_000 * SCALAR_7);
-            pos2.id = 2;
             pos2.take_profit = BTC_PRICE;
             storage::set_position(&e, 2, &pos2);
             storage::add_user_position(&e, &user, 2);
 
             // Position 3: not liquidatable (healthy) → should return error
             let mut pos3 = create_test_position(&e, &user, true, true, BTC_PRICE);
-            pos3.id = 3;
             pos3.collateral = 5_000 * SCALAR_7;
             pos3.notional_size = 10_000 * SCALAR_7;
             storage::set_position(&e, 3, &pos3);
@@ -1444,7 +1475,7 @@ mod tests {
             let mut ctx = ExecuteContext::load(&e, caller);
             let mut result = ProcessingResult::new(&e);
 
-            let code = apply_stop_loss(&e, &mut result, &mut ctx, &mut position);
+            let code = apply_stop_loss(&e, &mut result, &mut ctx, &mut position, 1);
             assert_eq!(code, TradingError::PositionTooNew as u32);
         });
     }
@@ -1468,7 +1499,7 @@ mod tests {
             let mut ctx = ExecuteContext::load(&e, caller);
             let mut result = ProcessingResult::new(&e);
 
-            let code = apply_take_profit(&e, &mut result, &mut ctx, &mut position);
+            let code = apply_take_profit(&e, &mut result, &mut ctx, &mut position, 1);
             assert_eq!(code, TradingError::PositionTooNew as u32);
         });
     }
@@ -1489,11 +1520,11 @@ mod tests {
             let mut position = create_test_position(&e, &user, true, true, BTC_PRICE);
             position.collateral = 100 * SCALAR_7;
             position.notional_size = 10_000 * SCALAR_7;
-            position.interest_index = SCALAR_18;
+            position.entry_funding_index = SCALAR_18;
 
             let mut market_data = default_market_data();
-            market_data.long_interest_index = SCALAR_18 + SCALAR_18 / 10;
-            market_data.short_interest_index = SCALAR_18;
+            market_data.long_funding_index = SCALAR_18 + SCALAR_18 / 10;
+            market_data.short_funding_index = SCALAR_18;
             market_data.last_update = e.ledger().timestamp();
             storage::set_market_data(&e, 0, &market_data);
 
@@ -1504,7 +1535,7 @@ mod tests {
             let mut result = ProcessingResult::new(&e);
 
             // Liquidation should succeed immediately despite min_open_time
-            let code = apply_liquidation(&e, &mut result, &mut ctx, &mut position);
+            let code = apply_liquidation(&e, &mut result, &mut ctx, &mut position, 1);
             assert_eq!(code, 0);
         });
     }

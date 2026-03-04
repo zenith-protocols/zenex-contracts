@@ -1,12 +1,10 @@
 use crate::{
     errors::TradingError,
-    types::{MarketConfig, MarketData, Position, QueuedMarketInit, TradingConfig},
-    ConfigUpdate,
+    types::{MarketConfig, MarketData, Position, TradingConfig},
 };
-use sep_40_oracle::Asset;
 use soroban_sdk::{
-    contracttype, panic_with_error, unwrap::UnwrapOptimized, Address, Env, IntoVal, String,
-    TryFromVal, Val, Vec,
+    contracttype, panic_with_error, token::TokenClient, unwrap::UnwrapOptimized, Address, Env,
+    IntoVal, String, TryFromVal, Val, Vec,
 };
 
 /********** Ledger Thresholds **********/
@@ -35,14 +33,11 @@ pub enum TradingStorageKey {
     Status,
     Vault,
     Token,
+    Oracle,
     Config,
-    PriceDecimals,
-    TokenDecimals,
     MarketCounter,
     PositionCounter,
-    // Temporary storage
-    ConfigUpdate,
-    MarketInit(Asset), // Uses Asset since index doesn't exist until market is activated
+    LastFundingUpdate,
     // Persistent storage
     MarketConfig(u32),
     MarketData(u32),
@@ -100,38 +95,22 @@ pub fn set_config(e: &Env, config: &TradingConfig) {
         .set(&TradingStorageKey::Config, config);
 }
 
-pub fn get_price_decimals(e: &Env) -> u32 {
+pub fn get_token_scalar(e: &Env, token: &Address) -> i128 {
+    let decimals = TokenClient::new(e, token).decimals();
+    10i128.pow(decimals)
+}
+
+pub fn get_last_funding_update(e: &Env) -> u64 {
     e.storage()
         .instance()
-        .get(&TradingStorageKey::PriceDecimals)
-        .unwrap_optimized()
+        .get(&TradingStorageKey::LastFundingUpdate)
+        .unwrap_or(0)
 }
 
-pub fn set_price_decimals(e: &Env, decimals: u32) {
+pub fn set_last_funding_update(e: &Env, timestamp: u64) {
     e.storage()
         .instance()
-        .set(&TradingStorageKey::PriceDecimals, &decimals);
-}
-
-pub fn get_token_decimals(e: &Env) -> u32 {
-    e.storage()
-        .instance()
-        .get(&TradingStorageKey::TokenDecimals)
-        .unwrap_optimized()
-}
-
-pub fn set_token_decimals(e: &Env, decimals: u32) {
-    e.storage()
-        .instance()
-        .set(&TradingStorageKey::TokenDecimals, &decimals);
-}
-
-pub fn get_price_scalar(e: &Env) -> i128 {
-    10i128.pow(get_price_decimals(e))
-}
-
-pub fn get_token_scalar(e: &Env) -> i128 {
-    10i128.pow(get_token_decimals(e))
+        .set(&TradingStorageKey::LastFundingUpdate, &timestamp);
 }
 
 pub fn get_vault(e: &Env) -> Address {
@@ -145,6 +124,19 @@ pub fn set_vault(e: &Env, vault: &Address) {
     e.storage()
         .instance()
         .set(&TradingStorageKey::Vault, vault);
+}
+
+pub fn get_oracle(e: &Env) -> Address {
+    e.storage()
+        .instance()
+        .get(&TradingStorageKey::Oracle)
+        .unwrap_optimized()
+}
+
+pub fn set_oracle(e: &Env, oracle: &Address) {
+    e.storage()
+        .instance()
+        .set(&TradingStorageKey::Oracle, oracle);
 }
 
 pub fn get_token(e: &Env) -> Address {
@@ -173,28 +165,14 @@ pub fn set_status(e: &Env, status: u32) {
         .set(&TradingStorageKey::Status, &status);
 }
 
-pub fn set_config_update(e: &Env, update: &ConfigUpdate) {
-    let key = TradingStorageKey::ConfigUpdate;
-    e.storage().temporary().set(&key, update);
-    e.storage()
-        .temporary()
-        .extend_ttl(&key, LEDGER_THRESHOLD_USER, LEDGER_BUMP_USER);
-}
-
-pub fn get_config_update(e: &Env) -> ConfigUpdate {
-    e.storage()
-        .temporary()
-        .get(&TradingStorageKey::ConfigUpdate)
-        .unwrap_or_else(|| panic_with_error!(e, TradingError::UpdateNotQueued))
-}
-
-pub fn del_config_update(e: &Env) {
-    e.storage()
-        .temporary()
-        .remove(&TradingStorageKey::ConfigUpdate);
-}
-
 /********** Market **********/
+
+pub fn get_market_count(e: &Env) -> u32 {
+    e.storage()
+        .instance()
+        .get(&TradingStorageKey::MarketCounter)
+        .unwrap_or(0)
+}
 
 pub fn next_market_index(e: &Env) -> u32 {
     let key = TradingStorageKey::MarketCounter;
@@ -243,27 +221,6 @@ pub fn set_market_data(e: &Env, asset_index: u32, data: &MarketData) {
     e.storage()
         .persistent()
         .extend_ttl(&key, LEDGER_THRESHOLD_SHARED, LEDGER_BUMP_SHARED);
-}
-
-pub fn get_queued_market(e: &Env, asset: &Asset) -> QueuedMarketInit {
-    let key = TradingStorageKey::MarketInit(asset.clone());
-    e.storage()
-        .temporary()
-        .get(&key)
-        .unwrap_or_else(|| panic_with_error!(e, TradingError::MarketInitNotQueued))
-}
-
-pub fn set_queued_market(e: &Env, asset: &Asset, market_init: &QueuedMarketInit) {
-    let key = TradingStorageKey::MarketInit(asset.clone());
-    e.storage().temporary().set(&key, market_init);
-    e.storage()
-        .temporary()
-        .extend_ttl(&key, LEDGER_THRESHOLD_USER, LEDGER_BUMP_USER);
-}
-
-pub fn del_queued_market(e: &Env, asset: &Asset) {
-    let key = TradingStorageKey::MarketInit(asset.clone());
-    e.storage().temporary().remove(&key);
 }
 
 /********** Position **********/

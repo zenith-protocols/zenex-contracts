@@ -125,10 +125,11 @@ fuzz_target!(|input: FuzzInput| {
         let leverage = (scenario.leverage_raw as i128).max(2).min(100);
         let notional = collateral * leverage;
 
-        // Open market position (entry_price=0, no TP/SL)
+        // Open limit order at current oracle price, then fill to simulate market order
+        let entry_price = prices[asset as usize];
         let result = fixture.trading.try_open_position(
             &user, &asset, &collateral, &notional, &scenario.is_long,
-            &0i128, &0i128, &0i128,
+            &entry_price, &0i128, &0i128,
         );
         verify_no_host_error(&result, "OpenPosition");
 
@@ -137,6 +138,30 @@ fuzz_target!(|input: FuzzInput| {
         } else {
             continue;
         };
+
+        // Fill the pending limit order
+        let fill_result = fixture.trading.try_execute(
+            &user,
+            &svec![
+                &fixture.env,
+                ExecuteRequest {
+                    request_type: 0, // Fill
+                    position_id: pos_id,
+                },
+            ],
+        );
+        verify_no_host_error(&fill_result, "FillPosition");
+
+        // If fill failed, clean up and continue
+        if let Ok(Ok(results)) = &fill_result {
+            if results.get(0) != Some(0) {
+                let _ = fixture.trading.try_close_position(&pos_id);
+                continue;
+            }
+        } else {
+            let _ = fixture.trading.try_close_position(&pos_id);
+            continue;
+        }
 
         let mut positions: Vec<u32> = vec![pos_id];
         let mut liquidated = false;

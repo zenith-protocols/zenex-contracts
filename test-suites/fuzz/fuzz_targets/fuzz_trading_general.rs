@@ -147,13 +147,39 @@ fuzz_target!(|input: FuzzInput| {
                 let leverage = (*leverage_raw as i128).max(2).min(100);
                 let notional = collateral * leverage;
 
+                // Use current oracle price as entry_price so the limit order is immediately fillable
+                let entry_price = prices[asset as usize];
                 let result = fixture.trading.try_open_position(
-                    user, &asset, &collateral, &notional, is_long, &0i128, &0i128, &0i128,
+                    user, &asset, &collateral, &notional, is_long, &entry_price, &0i128, &0i128,
                 );
                 verify_no_host_error(&result, "OpenPosition");
 
                 if let Ok(Ok((pos_id, _fee))) = result {
-                    positions.push(pos_id);
+                    // Fill the pending limit order immediately
+                    let fill_result = fixture.trading.try_execute(
+                        user,
+                        &svec![
+                            &fixture.env,
+                            trading::ExecuteRequest {
+                                request_type: 0, // Fill
+                                position_id: pos_id,
+                            },
+                        ],
+                    );
+                    verify_no_host_error(&fill_result, "FillPosition");
+
+                    let filled = if let Ok(Ok(results)) = &fill_result {
+                        results.get(0) == Some(0)
+                    } else {
+                        false
+                    };
+
+                    if filled {
+                        positions.push(pos_id);
+                    } else {
+                        // Cancel the unfilled limit order to avoid residual balance
+                        let _ = fixture.trading.try_close_position(&pos_id);
+                    }
                 }
             }
 

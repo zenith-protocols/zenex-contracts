@@ -1,6 +1,6 @@
 use crate::constants::{ONE_HOUR_SECONDS, SCALAR_18};
 use crate::storage;
-use crate::trading::interest::calc_interest;
+use crate::trading::interest::calc_funding_rate;
 use crate::types::{MarketConfig, MarketData};
 use soroban_fixed_point_math::SorobanFixedPoint;
 use soroban_sdk::{contracttype, Env};
@@ -28,11 +28,10 @@ impl Market {
         storage::set_market_data(e, self.asset_index, &self.data);
     }
 
-    /// Accrues funding interest based on long/short imbalance.
-    ///
-    /// The dominant side pays interest proportional to the imbalance ratio.
-    /// The minority side receives interest at 0.8x the squared ratio.
-    pub fn accrue_interest(&mut self, e: &Env) {
+    /// Accrues funding using the stored signed rate.
+    /// Payers pay full delta per unit. Receivers get: pay_delta × 0.8 × (dominant/minority) per unit.
+    /// Total received is always exactly 80% of total paid (self-balancing).
+    pub fn accrue(&mut self, e: &Env, vault_skim: i128, token_scalar: i128) {
         let current_time = e.ledger().timestamp();
         let seconds_elapsed = (current_time - self.data.last_update) as i128;
 
@@ -40,34 +39,76 @@ impl Market {
             return;
         }
 
-        let (long_rate, short_rate) = calc_interest(
+        let hour = ONE_HOUR_SECONDS as i128;
+        let hours_scaled = seconds_elapsed.fixed_mul_floor(e, &SCALAR_18, &hour);
+        let discount_factor = (token_scalar - vault_skim)
+            .fixed_mul_floor(e, &SCALAR_18, &token_scalar);
+
+        let pay_delta = self
+            .data
+            .funding_rate
+            .abs()
+            .fixed_mul_ceil(e, &hours_scaled, &SCALAR_18);
+
+        if self.data.funding_rate > 0 {
+            // Longs pay
+            self.data.long_funding_index += pay_delta;
+            // Shorts receive (scaled by L/S ratio)
+            if self.data.short_notional_size > 0 {
+                let ratio = self.data.long_notional_size
+                    .fixed_div_floor(e, &self.data.short_notional_size, &SCALAR_18);
+                let receive_delta = pay_delta
+                    .fixed_mul_floor(e, &discount_factor, &SCALAR_18)
+                    .fixed_mul_floor(e, &ratio, &SCALAR_18);
+                self.data.short_funding_index -= receive_delta;
+            }
+        } else if self.data.funding_rate < 0 {
+            // Shorts pay
+            self.data.short_funding_index += pay_delta;
+            // Longs receive (scaled by S/L ratio)
+            if self.data.long_notional_size > 0 {
+                let ratio = self.data.short_notional_size
+                    .fixed_div_floor(e, &self.data.long_notional_size, &SCALAR_18);
+                let receive_delta = pay_delta
+                    .fixed_mul_floor(e, &discount_factor, &SCALAR_18)
+                    .fixed_mul_floor(e, &ratio, &SCALAR_18);
+                self.data.long_funding_index -= receive_delta;
+            }
+        }
+        self.data.last_update = current_time;
+    }
+
+    /// Recalculate the funding rate based on current market state.
+    pub fn update_funding_rate(&mut self, e: &Env) {
+        self.data.funding_rate = calc_funding_rate(
             e,
             self.data.long_notional_size,
             self.data.short_notional_size,
             self.config.base_hourly_rate,
-            self.config.ratio_cap,
         );
-
-        // Apply interest to indices (additive model)
-        // rate is per hour, so we calculate: index += rate * hours_elapsed
-        // First convert seconds to hours in SCALAR_18 precision to avoid truncation:
-        // hours_scaled = (seconds * SCALAR_18) / 3600
-        let hour = ONE_HOUR_SECONDS as i128;
-        let hours_scaled = seconds_elapsed.fixed_mul_floor(e, &SCALAR_18, &hour);
-
-        // Then: index += (rate * hours_scaled) / SCALAR_18 = rate * hours
-        self.data.long_interest_index += long_rate.fixed_mul_floor(e, &hours_scaled, &SCALAR_18);
-        self.data.short_interest_index += short_rate.fixed_mul_floor(e, &hours_scaled, &SCALAR_18);
-        self.data.last_update = current_time;
     }
 
-    /// Updates open interest statistics for an asset.
-    /// Use positive values to add, negative values to subtract.
-    pub fn update_stats(&mut self, notional_size: i128, is_long: bool) {
+    /// Updates open interest and entry-weighted aggregate stats.
+    /// notional_size: positive for open, negative for close/reduce.
+    /// entry_price: the position's entry price (price_decimals).
+    pub fn update_stats(&mut self, e: &Env, notional_size: i128, is_long: bool, entry_price: i128, price_scalar: i128) {
+        let abs_notional = notional_size.abs();
+        let ew_delta = abs_notional.fixed_div_floor(e, &entry_price, &price_scalar);
+
         if is_long {
             self.data.long_notional_size += notional_size;
+            if notional_size > 0 {
+                self.data.long_entry_weighted += ew_delta;
+            } else {
+                self.data.long_entry_weighted -= ew_delta;
+            }
         } else {
             self.data.short_notional_size += notional_size;
+            if notional_size > 0 {
+                self.data.short_entry_weighted += ew_delta;
+            } else {
+                self.data.short_entry_weighted -= ew_delta;
+            }
         }
     }
 }
@@ -75,48 +116,53 @@ impl Market {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testutils::{create_trading, default_market_data};
     use soroban_sdk::Env;
-    use crate::testutils::default_market_data;
 
     // Base rate: 0.001% per hour = 10^13 in SCALAR_18
     const BASE_RATE: i128 = 10_000_000_000_000;
-    // 5x ratio cap
-    const RATIO_CAP: i128 = 5 * SCALAR_18;
 
     #[test]
     fn test_market_update_stats() {
         let e = Env::default();
-        let mut market = Market {
-            asset_index: 0,
-            config: crate::types::MarketConfig {
-                asset: sep_40_oracle::Asset::Other(soroban_sdk::Symbol::new(&e, "BTC")),
-                enabled: true,
-                max_payout: 10 * SCALAR_18,
-                min_collateral: SCALAR_18,
-                max_collateral: 1_000_000 * SCALAR_18,
-                init_margin: 0_0100000,
-                maintenance_margin: 0_0050000,
-                base_fee: 0_0005000,
-                price_impact_scalar: 8_000_000_000 * SCALAR_18,
-                base_hourly_rate: BASE_RATE,
-                ratio_cap: RATIO_CAP,
-            },
-            data: default_market_data()
-        };
+        let (address, _) = create_trading(&e);
 
-        // Add long position
-        market.update_stats(10000, true);
-        assert_eq!(market.data.long_notional_size, 10000);
-        assert_eq!(market.data.short_notional_size, 0);
+        e.as_contract(&address, || {
+            let scalar_7: i128 = 10_000_000;
+            let price_scalar = scalar_7;
+            let entry_price: i128 = 100_000 * scalar_7; // $100,000 in 7 decimals
 
-        // Add short position
-        market.update_stats(5000, false);
-        assert_eq!(market.data.long_notional_size, 10000);
-        assert_eq!(market.data.short_notional_size, 5000);
+            let mut market = Market {
+                asset_index: 0,
+                config: crate::types::MarketConfig {
+                    asset: sep_40_oracle::Asset::Other(soroban_sdk::Symbol::new(&e, "BTC")),
+                    enabled: true,
+                    init_margin: 0_0100000,
+                    base_hourly_rate: BASE_RATE,
+                    price_impact_scalar: 8_000_000_000 * scalar_7,
+                },
+                data: default_market_data(),
+            };
 
-        // Remove long position (negative values)
-        market.update_stats(-5000, true);
-        assert_eq!(market.data.long_notional_size, 5000);
+            let notional_long = 10_000 * scalar_7;
+            let notional_short = 5_000 * scalar_7;
+
+            // Add long position
+            market.update_stats(&e, notional_long, true, entry_price, price_scalar);
+            assert_eq!(market.data.long_notional_size, notional_long);
+            assert_eq!(market.data.short_notional_size, 0);
+            assert!(market.data.long_entry_weighted > 0);
+
+            // Add short position
+            market.update_stats(&e, notional_short, false, entry_price, price_scalar);
+            assert_eq!(market.data.long_notional_size, notional_long);
+            assert_eq!(market.data.short_notional_size, notional_short);
+            assert!(market.data.short_entry_weighted > 0);
+
+            // Remove long position (negative values)
+            market.update_stats(&e, -notional_short, true, entry_price, price_scalar);
+            assert_eq!(market.data.long_notional_size, notional_long - notional_short);
+        });
     }
 
     #[test]
@@ -154,7 +200,7 @@ mod tests {
     }
 
     #[test]
-    fn test_market_accrue_interest() {
+    fn test_market_accrue() {
         use crate::testutils::{create_trading, default_market, default_market_data, jump};
 
         let e = Env::default();
@@ -167,6 +213,7 @@ mod tests {
             let mut data = default_market_data();
             data.long_notional_size = 2000 * SCALAR_18;
             data.short_notional_size = 1000 * SCALAR_18;
+            data.funding_rate = 10_000_000_000_000; // positive = longs pay
             data.last_update = 0;
 
             storage::set_market_config(&e, 0, &config);
@@ -176,10 +223,12 @@ mod tests {
             jump(&e, 3600);
 
             let mut market = Market::load(&e, 0);
-            market.accrue_interest(&e);
+            let vault_skim = 0_2000000; // 20%
+            let token_scalar = 10_000_000i128;
+            market.accrue(&e, vault_skim, token_scalar);
 
-            // Interest should have accrued
-            assert_ne!(market.data.long_interest_index, SCALAR_18);
+            // Funding should have accrued — longs pay, index increases
+            assert!(market.data.long_funding_index > 0);
             assert_eq!(market.data.last_update, 3600);
         });
     }

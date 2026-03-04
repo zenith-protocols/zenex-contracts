@@ -56,8 +56,6 @@ fn test_deposit_sets_lock() {
     vault.deposit(&(1000 * SCALAR_7), &user, &user, &user);
 
     assert!(vault.lock_duration(&user) > 0);
-    // Lock only blocks transfers, not withdrawals
-    assert!(vault.max_redeem(&user) > 0);
 }
 
 #[test]
@@ -70,13 +68,15 @@ fn test_mint_sets_lock() {
 }
 
 #[test]
-fn test_max_withdraw_returns_value_when_locked() {
-    let (_env, vault, _, user, _) = setup_test();
+#[should_panic(expected = "Error(Contract, #421)")] // SharesLocked
+fn test_withdraw_while_locked_fails_via_withdraw() {
+    let (_, vault, _, user, _) = setup_test();
 
     vault.deposit(&(1000 * SCALAR_7), &user, &user, &user);
+    assert!(vault.lock_duration(&user) > 0);
 
-    // Lock only blocks transfers, not withdrawals
-    assert!(vault.max_withdraw(&user) > 0);
+    // Withdraw should fail while locked
+    vault.withdraw(&(500 * SCALAR_7), &user, &user, &user);
 }
 
 #[test]
@@ -126,25 +126,57 @@ fn test_new_deposit_resets_lock() {
 }
 
 #[test]
-fn test_redeem_while_locked_succeeds() {
+#[should_panic(expected = "Error(Contract, #421)")] // SharesLocked
+fn test_redeem_while_locked_fails() {
     let (_, vault, _, user, _) = setup_test();
 
     vault.deposit(&(1000 * SCALAR_7), &user, &user, &user);
     assert!(vault.lock_duration(&user) > 0);
 
-    // Redeem succeeds - lock only blocks transfers, not withdrawals
+    // Redeem should fail while locked
+    vault.redeem(&(500 * SCALAR_7), &user, &user, &user);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #421)")] // SharesLocked
+fn test_withdraw_while_locked_fails() {
+    let (_, vault, _, user, _) = setup_test();
+
+    vault.deposit(&(1000 * SCALAR_7), &user, &user, &user);
+    assert!(vault.lock_duration(&user) > 0);
+
+    // Withdraw should fail while locked
+    vault.withdraw(&(500 * SCALAR_7), &user, &user, &user);
+}
+
+#[test]
+fn test_redeem_after_unlock_succeeds() {
+    let (env, vault, _, user, _) = setup_test();
+
+    vault.deposit(&(1000 * SCALAR_7), &user, &user, &user);
+
+    // Advance past lock time
+    env.ledger()
+        .set_timestamp(env.ledger().timestamp() + LOCK_TIME + 1);
+    assert_eq!(vault.lock_duration(&user), 0);
+
+    // Redeem should succeed after lock expires
     let assets = vault.redeem(&(500 * SCALAR_7), &user, &user, &user);
     assert!(assets > 0);
 }
 
 #[test]
-fn test_withdraw_while_locked_succeeds() {
-    let (_, vault, _, user, _) = setup_test();
+fn test_withdraw_after_unlock_succeeds() {
+    let (env, vault, _, user, _) = setup_test();
 
     vault.deposit(&(1000 * SCALAR_7), &user, &user, &user);
-    assert!(vault.lock_duration(&user) > 0);
 
-    // Withdraw succeeds - lock only blocks transfers, not withdrawals
+    // Advance past lock time
+    env.ledger()
+        .set_timestamp(env.ledger().timestamp() + LOCK_TIME + 1);
+    assert_eq!(vault.lock_duration(&user), 0);
+
+    // Withdraw should succeed after lock expires
     let shares = vault.withdraw(&(500 * SCALAR_7), &user, &user, &user);
     assert!(shares > 0);
 }

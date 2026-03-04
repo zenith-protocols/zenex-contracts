@@ -1847,6 +1847,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "trading-admin"
+version = "0.0.0"
+dependencies = [
+ "sep-40-oracle",
+ "soroban-fixed-point-math",
+ "soroban-sdk",
+ "stellar-access",
+ "stellar-contract-utils",
+ "stellar-macros",
+ "trading",
+]
+
+[[package]]
 name = "typenum"
 version = "1.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

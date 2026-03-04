@@ -1,18 +1,15 @@
-use crate::constants::SECONDS_PER_WEEK;
+use crate::constants::{MAX_MARKETS, SCALAR_18, UTILIZATION_THRESHOLD_DEN, UTILIZATION_THRESHOLD_NUM};
 use crate::dependencies::VaultClient;
 use crate::errors::TradingError;
-use crate::events::{
-    CancelSetConfig, CancelSetMarket, QueueSetConfig, QueueSetMarket, SetConfig, SetMarket,
-    SetStatus,
-};
-use crate::types::{ConfigUpdate, ContractStatus, MarketConfig, QueuedMarketInit, TradingConfig};
+use crate::trading::oracle::{get_price_scalar, load_price};
+use soroban_fixed_point_math::SorobanFixedPoint;
+use crate::events::{SetConfig, SetMarket, SetStatus};
+use crate::types::{ContractStatus, MarketConfig, TradingConfig};
 use crate::validation::{require_valid_config, require_valid_market_config};
 use crate::{storage, MarketData};
-use sep_40_oracle::{Asset, PriceFeedClient};
-use soroban_sdk::token::TokenClient;
 use soroban_sdk::{panic_with_error, Address, Env, String};
 
-pub fn execute_initialize(e: &Env, name: &String, vault: &Address, config: &TradingConfig) {
+pub fn execute_initialize(e: &Env, name: &String, vault: &Address, oracle: &Address, config: &TradingConfig) {
     if storage::has_name(e) {
         panic_with_error!(e, TradingError::AlreadyInitialized);
     }
@@ -21,134 +18,142 @@ pub fn execute_initialize(e: &Env, name: &String, vault: &Address, config: &Trad
     let token = vault_client.query_asset();
     storage::set_vault(e, vault);
     storage::set_token(e, &token);
+    storage::set_oracle(e, oracle);
 
-    // Store decimals before validation (validation depends on token_scalar)
-    let price_decimals = PriceFeedClient::new(e, &config.oracle).decimals();
-    storage::set_price_decimals(e, price_decimals);
-    let token_decimals = TokenClient::new(e, &token).decimals();
-    storage::set_token_decimals(e, token_decimals);
-
-    require_valid_config(e, config);
+    require_valid_config(e, config, &token);
     storage::set_config(e, config);
 
     storage::set_status(e, ContractStatus::Setup as u32);
 }
 
-pub fn execute_queue_set_config(e: &Env, config: &TradingConfig) {
-    require_valid_config(e, config);
-    let mut unlock_time = e.ledger().timestamp();
-    // 1-week delay unless in Setup mode (allows immediate config during initial setup)
-    if storage::get_status(e) != ContractStatus::Setup as u32 {
-        unlock_time += SECONDS_PER_WEEK;
-    }
-
-    let update = ConfigUpdate {
-        config: config.clone(),
-        unlock_time,
-    };
-    storage::set_config_update(e, &update);
-    QueueSetConfig {
-        config: config.clone(),
-    }
-    .publish(e);
-}
-
-pub fn execute_cancel_set_config(e: &Env) {
-    let queued = storage::get_config_update(e); // panics if not queued
-    storage::del_config_update(e);
-    CancelSetConfig {
-        config: queued.config,
-    }
-    .publish(e);
-}
-
-pub fn execute_set_config(e: &Env) {
-    let queued = storage::get_config_update(e); // panics if not queued
-
-    if queued.unlock_time > e.ledger().timestamp() {
-        panic_with_error!(e, TradingError::UpdateNotUnlocked);
-    }
-
-    // Validate then apply
-    require_valid_config(e, &queued.config);
-    storage::set_config(e, &queued.config);
-    storage::del_config_update(e);
-
+pub fn execute_set_config(e: &Env, config: &TradingConfig) {
+    let token = storage::get_token(e);
+    require_valid_config(e, config, &token);
+    storage::set_config(e, config);
     SetConfig {
-        config: queued.config,
+        config: config.clone(),
     }
     .publish(e);
 }
 
 
 
-pub fn execute_queue_set_market(e: &Env, config: &MarketConfig) {
-    require_valid_market_config(e, config);
+pub fn execute_set_market(e: &Env, config: &MarketConfig) {
+    let token = storage::get_token(e);
+    require_valid_market_config(e, config, &token);
 
-    let mut unlock_time = e.ledger().timestamp();
-    // 1-week delay unless in Setup mode (allows immediate market activation during initial setup)
-    if storage::get_status(e) != ContractStatus::Setup as u32 {
-        unlock_time += SECONDS_PER_WEEK;
-    }
-
-    storage::set_queued_market(
-        e,
-        &config.asset,
-        &QueuedMarketInit {
-            config: config.clone(),
-            unlock_time,
-        },
-    );
-    QueueSetMarket {
-        asset: config.asset.clone(),
-    }
-    .publish(e);
-}
-
-pub fn execute_cancel_queued_market(e: &Env, asset: &Asset) {
-    storage::del_queued_market(e, asset);
-    CancelSetMarket {
-        asset: asset.clone(),
-    }
-    .publish(e);
-}
-
-pub fn execute_set_market(e: &Env, asset: &Asset) {
-    let queued_market = storage::get_queued_market(e, asset);
-    if queued_market.unlock_time > e.ledger().timestamp() {
-        panic_with_error!(e, TradingError::UpdateNotUnlocked);
+    // Enforce market cap
+    if storage::get_market_count(e) >= MAX_MARKETS {
+        panic_with_error!(e, TradingError::MaxMarketsReached);
     }
 
     // Get next market index from counter
     let asset_index = storage::next_market_index(e);
 
-    // Store the queued market config (asset already set during queue)
-    storage::set_market_config(e, asset_index, &queued_market.config);
+    // Store market config
+    storage::set_market_config(e, asset_index, config);
 
     // Initialize MarketData with default values
     let initial_market_data = MarketData {
         long_notional_size: 0,
         short_notional_size: 0,
-        long_interest_index: 0,
-        short_interest_index: 0,
+        long_funding_index: 0,
+        short_funding_index: 0,
         last_update: e.ledger().timestamp(),
+        funding_rate: 0,
+        long_entry_weighted: 0,
+        short_entry_weighted: 0,
+        long_adl_index: SCALAR_18,
+        short_adl_index: SCALAR_18,
     };
     storage::set_market_data(e, asset_index, &initial_market_data);
 
-    // Clean up queued market
-    storage::del_queued_market(e, asset);
+    // Initialize global funding timestamp on first market
+    if asset_index == 0 {
+        storage::set_last_funding_update(e, e.ledger().timestamp());
+    }
 
     SetMarket {
-        asset: asset.clone(),
+        asset: config.asset.clone(),
         asset_index,
     }
     .publish(e);
 }
 
+/// Admin-only status changes: AdminOnIce, Frozen, Active (from admin states)
 pub fn execute_set_status(e: &Env, status: u32) {
-    ContractStatus::from_u32(e, status);
+    let new_status = ContractStatus::from_u32(e, status);
+    // Admin cannot set permissionless OnIce (use set_on_ice instead)
+    if new_status == ContractStatus::OnIce {
+        panic_with_error!(e, TradingError::InvalidStatus);
+    }
     storage::set_status(e, status);
     SetStatus { status }.publish(e);
+}
+
+/// Permissionless circuit breaker: anyone can call when net trader PnL >= 90% of vault
+pub fn execute_set_on_ice(e: &Env) {
+    let current = ContractStatus::from_u32(e, storage::get_status(e));
+    // Only transition from Active
+    if current != ContractStatus::Active {
+        panic_with_error!(e, TradingError::InvalidStatus);
+    }
+
+    let (net_pnl, vault_balance) = compute_net_pnl_and_vault(e);
+
+    // net_pnl * 10 >= vault_balance * 9 → net_pnl >= 90% of vault
+    if net_pnl * UTILIZATION_THRESHOLD_DEN < vault_balance * UTILIZATION_THRESHOLD_NUM {
+        panic_with_error!(e, TradingError::ThresholdNotMet);
+    }
+
+    let status = ContractStatus::OnIce as u32;
+    storage::set_status(e, status);
+    SetStatus { status }.publish(e);
+}
+
+/// Permissionless restore: anyone can call when net trader PnL < 90% of vault
+pub fn execute_restore_active(e: &Env) {
+    let current = ContractStatus::from_u32(e, storage::get_status(e));
+    // Only restore from permissionless OnIce
+    if current != ContractStatus::OnIce {
+        panic_with_error!(e, TradingError::InvalidStatus);
+    }
+
+    let (net_pnl, vault_balance) = compute_net_pnl_and_vault(e);
+
+    // net_pnl * 10 < vault_balance * 9 → net_pnl < 90% of vault
+    if net_pnl * UTILIZATION_THRESHOLD_DEN >= vault_balance * UTILIZATION_THRESHOLD_NUM {
+        panic_with_error!(e, TradingError::ThresholdStillMet);
+    }
+
+    let status = ContractStatus::Active as u32;
+    storage::set_status(e, status);
+    SetStatus { status }.publish(e);
+}
+
+/// Compute net trader PnL across all markets and vault balance
+fn compute_net_pnl_and_vault(e: &Env) -> (i128, i128) {
+    let oracle = storage::get_oracle(e);
+    let vault = storage::get_vault(e);
+    let price_scalar = get_price_scalar(e, &oracle);
+    let market_count = storage::get_market_count(e);
+
+    let mut net_pnl: i128 = 0;
+    for i in 0..market_count {
+        let data = storage::get_market_data(e, i);
+        let mkt_config = storage::get_market_config(e, i);
+        let price = load_price(e, &oracle, &mkt_config.asset);
+
+        let long_pnl = price.fixed_mul_floor(e, &data.long_entry_weighted, &price_scalar)
+            - data.long_notional_size;
+        let short_pnl = data.short_notional_size
+            - price.fixed_mul_floor(e, &data.short_entry_weighted, &price_scalar);
+
+        net_pnl += long_pnl + short_pnl;
+    }
+
+    let vault_balance = VaultClient::new(e, &vault).total_assets();
+    (net_pnl, vault_balance)
 }
 
 #[cfg(test)]
@@ -159,7 +164,6 @@ mod tests {
         create_oracle, create_token, create_trading, create_vault, default_config, default_market,
         setup_env,
     };
-    use crate::testutils::jump;
 
     #[test]
     fn test_initialize() {
@@ -170,7 +174,7 @@ mod tests {
         let vault = create_vault(&e, &token, 1_000_000 * SCALAR_7);
 
         e.as_contract(&address, || {
-            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &default_config(&oracle));
+            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &oracle, &default_config());
             assert_eq!(storage::get_status(&e), ContractStatus::Setup as u32);
             assert_eq!(storage::get_vault(&e), vault);
             assert_eq!(storage::get_token(&e), token);
@@ -187,14 +191,14 @@ mod tests {
         let vault = create_vault(&e, &token, 1_000_000 * SCALAR_7);
 
         e.as_contract(&address, || {
-            let config = default_config(&oracle);
-            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &config);
-            execute_initialize(&e, &String::from_str(&e, "Test2"), &vault, &config);
+            let config = default_config();
+            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &oracle, &config);
+            execute_initialize(&e, &String::from_str(&e, "Test2"), &vault, &oracle, &config);
         });
     }
 
     #[test]
-    fn test_queue_set_config_setup_mode() {
+    fn test_set_config() {
         let e = setup_env();
         let (address, owner) = create_trading(&e);
         let (oracle, _) = create_oracle(&e);
@@ -202,19 +206,18 @@ mod tests {
         let vault = create_vault(&e, &token, 1_000_000 * SCALAR_7);
 
         e.as_contract(&address, || {
-            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &default_config(&oracle));
+            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &oracle, &default_config());
 
-            let mut new_config = default_config(&oracle);
-            new_config.max_positions = 20;
-            execute_queue_set_config(&e, &new_config);
-            execute_set_config(&e); // No delay in Setup mode
+            let mut new_config = default_config();
+            new_config.caller_take_rate = 0_2000000; // 20%
+            execute_set_config(&e, &new_config);
 
-            assert_eq!(storage::get_config(&e).max_positions, 20);
+            assert_eq!(storage::get_config(&e).caller_take_rate, 0_2000000);
         });
     }
 
     #[test]
-    fn test_queue_set_config_active_mode() {
+    fn test_set_market() {
         let e = setup_env();
         let (address, owner) = create_trading(&e);
         let (oracle, _) = create_oracle(&e);
@@ -222,122 +225,11 @@ mod tests {
         let vault = create_vault(&e, &token, 1_000_000 * SCALAR_7);
 
         e.as_contract(&address, || {
-            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &default_config(&oracle));
-            storage::set_status(&e, ContractStatus::Active as u32);
-
-            let mut new_config = default_config(&oracle);
-            new_config.max_positions = 20;
-            execute_queue_set_config(&e, &new_config);
-        });
-
-        // Advance time past unlock
-        jump(&e, 1000 + SECONDS_PER_WEEK + 1);
-
-        e.as_contract(&address, || {
-            execute_set_config(&e);
-            assert_eq!(storage::get_config(&e).max_positions, 20);
-        });
-    }
-
-    #[test]
-    #[should_panic(expected = "Error(Contract, #704)")]
-    fn test_set_config_not_unlocked() {
-        let e = setup_env();
-        let (address, owner) = create_trading(&e);
-        let (oracle, _) = create_oracle(&e);
-        let (token, _) = create_token(&e, &owner);
-        let vault = create_vault(&e, &token, 1_000_000 * SCALAR_7);
-
-        e.as_contract(&address, || {
-            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &default_config(&oracle));
-            storage::set_status(&e, ContractStatus::Active as u32);
-            execute_queue_set_config(&e, &default_config(&oracle));
-            execute_set_config(&e); // Should panic - not unlocked
-        });
-    }
-
-    #[test]
-    fn test_cancel_set_config() {
-        let e = setup_env();
-        let (address, owner) = create_trading(&e);
-        let (oracle, _) = create_oracle(&e);
-        let (token, _) = create_token(&e, &owner);
-        let vault = create_vault(&e, &token, 1_000_000 * SCALAR_7);
-
-        e.as_contract(&address, || {
-            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &default_config(&oracle));
-            execute_queue_set_config(&e, &default_config(&oracle));
-            execute_cancel_set_config(&e);
-        });
-    }
-
-    #[test]
-    #[should_panic(expected = "Error(Contract, #703)")]
-    fn test_cancel_set_config_not_queued() {
-        let e = setup_env();
-        let (address, owner) = create_trading(&e);
-        let (oracle, _) = create_oracle(&e);
-        let (token, _) = create_token(&e, &owner);
-        let vault = create_vault(&e, &token, 1_000_000 * SCALAR_7);
-
-        e.as_contract(&address, || {
-            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &default_config(&oracle));
-            execute_cancel_set_config(&e); // Should panic - nothing queued
-        });
-    }
-
-    #[test]
-    fn test_queue_set_market() {
-        let e = setup_env();
-        let (address, owner) = create_trading(&e);
-        let (oracle, _) = create_oracle(&e);
-        let (token, _) = create_token(&e, &owner);
-        let vault = create_vault(&e, &token, 1_000_000 * SCALAR_7);
-
-        e.as_contract(&address, || {
-            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &default_config(&oracle));
+            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &oracle, &default_config());
 
             let market = default_market(&e);
-            execute_queue_set_market(&e, &market);
-            execute_set_market(&e, &market.asset); // No delay in Setup mode
+            execute_set_market(&e, &market);
             assert!(storage::get_market_config(&e, 0).enabled);
-        });
-    }
-
-    #[test]
-    fn test_cancel_queued_market() {
-        let e = setup_env();
-        let (address, owner) = create_trading(&e);
-        let (oracle, _) = create_oracle(&e);
-        let (token, _) = create_token(&e, &owner);
-        let vault = create_vault(&e, &token, 1_000_000 * SCALAR_7);
-
-        e.as_contract(&address, || {
-            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &default_config(&oracle));
-
-            let market = default_market(&e);
-            execute_queue_set_market(&e, &market);
-            execute_cancel_queued_market(&e, &market.asset);
-            // Market was never created - counter stays at 0
-        });
-    }
-
-    #[test]
-    #[should_panic(expected = "Error(Contract, #704)")]
-    fn test_set_market_not_unlocked() {
-        let e = setup_env();
-        let (address, owner) = create_trading(&e);
-        let (oracle, _) = create_oracle(&e);
-        let (token, _) = create_token(&e, &owner);
-        let vault = create_vault(&e, &token, 1_000_000 * SCALAR_7);
-
-        e.as_contract(&address, || {
-            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &default_config(&oracle));
-            storage::set_status(&e, ContractStatus::Active as u32);
-
-            let market = default_market(&e);
-            execute_queue_set_market(&e, &market);
-            execute_set_market(&e, &market.asset); // Should panic - not unlocked
         });
     }
 
@@ -350,6 +242,13 @@ mod tests {
     fn test_set_status_invalid() {
         let e = setup_env();
         execute_set_status(&e, 42);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #760)")]
+    fn test_admin_cannot_set_permissionless_on_ice() {
+        let e = setup_env();
+        execute_set_status(&e, 1); // OnIce (permissionless only)
     }
 
     // ==========================================
@@ -366,27 +265,10 @@ mod tests {
         let vault = create_vault(&e, &token, 1_000_000 * SCALAR_7);
 
         e.as_contract(&address, || {
-            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &default_config(&oracle));
-            let mut config = default_config(&oracle);
+            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &oracle, &default_config());
+            let mut config = default_config();
             config.caller_take_rate = -1;
-            execute_queue_set_config(&e, &config);
-        });
-    }
-
-    #[test]
-    #[should_panic(expected = "Error(Contract, #735)")]
-    fn test_config_zero_max_utilization() {
-        let e = setup_env();
-        let (address, owner) = create_trading(&e);
-        let (oracle, _) = create_oracle(&e);
-        let (token, _) = create_token(&e, &owner);
-        let vault = create_vault(&e, &token, 1_000_000 * SCALAR_7);
-
-        e.as_contract(&address, || {
-            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &default_config(&oracle));
-            let mut config = default_config(&oracle);
-            config.max_utilization = 0;
-            execute_queue_set_config(&e, &config);
+            execute_set_config(&e, &config);
         });
     }
 
@@ -400,118 +282,16 @@ mod tests {
         let vault = create_vault(&e, &token, 1_000_000 * SCALAR_7);
 
         e.as_contract(&address, || {
-            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &default_config(&oracle));
-            let mut config = default_config(&oracle);
+            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &oracle, &default_config());
+            let mut config = default_config();
             config.caller_take_rate = SCALAR_7 + 1;
-            execute_queue_set_config(&e, &config);
-        });
-    }
-
-    #[test]
-    #[should_panic(expected = "Error(Contract, #702)")]
-    fn test_config_max_utilization_below_1x() {
-        let e = setup_env();
-        let (address, owner) = create_trading(&e);
-        let (oracle, _) = create_oracle(&e);
-        let (token, _) = create_token(&e, &owner);
-        let vault = create_vault(&e, &token, 1_000_000 * SCALAR_7);
-
-        e.as_contract(&address, || {
-            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &default_config(&oracle));
-            let mut config = default_config(&oracle);
-            config.max_utilization = SCALAR_7 - 1;
-            execute_queue_set_config(&e, &config);
-        });
-    }
-
-    #[test]
-    #[should_panic(expected = "Error(Contract, #702)")]
-    fn test_config_max_utilization_above_100x() {
-        let e = setup_env();
-        let (address, owner) = create_trading(&e);
-        let (oracle, _) = create_oracle(&e);
-        let (token, _) = create_token(&e, &owner);
-        let vault = create_vault(&e, &token, 1_000_000 * SCALAR_7);
-
-        e.as_contract(&address, || {
-            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &default_config(&oracle));
-            let mut config = default_config(&oracle);
-            config.max_utilization = 101 * SCALAR_7;
-            execute_queue_set_config(&e, &config);
-        });
-    }
-
-    #[test]
-    #[should_panic(expected = "Error(Contract, #702)")]
-    fn test_config_max_price_age_equal_oracle_resolution() {
-        let e = setup_env();
-        let (address, owner) = create_trading(&e);
-        let (oracle, _) = create_oracle(&e);
-        let (token, _) = create_token(&e, &owner);
-        let vault = create_vault(&e, &token, 1_000_000 * SCALAR_7);
-
-        e.as_contract(&address, || {
-            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &default_config(&oracle));
-            let mut config = default_config(&oracle);
-            config.max_price_age = 300; // Equal to oracle resolution
-            execute_queue_set_config(&e, &config);
-        });
-    }
-
-    #[test]
-    #[should_panic(expected = "Error(Contract, #702)")]
-    fn test_config_max_price_age_below_oracle_resolution() {
-        let e = setup_env();
-        let (address, owner) = create_trading(&e);
-        let (oracle, _) = create_oracle(&e);
-        let (token, _) = create_token(&e, &owner);
-        let vault = create_vault(&e, &token, 1_000_000 * SCALAR_7);
-
-        e.as_contract(&address, || {
-            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &default_config(&oracle));
-            let mut config = default_config(&oracle);
-            config.max_price_age = 100;
-            execute_queue_set_config(&e, &config);
+            execute_set_config(&e, &config);
         });
     }
 
     // ==========================================
     // require_valid_market_config validation
     // ==========================================
-
-    #[test]
-    #[should_panic(expected = "Error(Contract, #735)")]
-    fn test_market_zero_maintenance_margin() {
-        let e = setup_env();
-        let (address, owner) = create_trading(&e);
-        let (oracle, _) = create_oracle(&e);
-        let (token, _) = create_token(&e, &owner);
-        let vault = create_vault(&e, &token, 1_000_000 * SCALAR_7);
-
-        e.as_contract(&address, || {
-            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &default_config(&oracle));
-            let mut market = default_market(&e);
-            market.maintenance_margin = 0;
-            execute_queue_set_market(&e, &market);
-        });
-    }
-
-    #[test]
-    #[should_panic(expected = "Error(Contract, #735)")]
-    fn test_market_negative_maintenance_margin() {
-        let e = setup_env();
-        let (address, owner) = create_trading(&e);
-        let (oracle, _) = create_oracle(&e);
-        let (token, _) = create_token(&e, &owner);
-        let vault = create_vault(&e, &token, 1_000_000 * SCALAR_7);
-
-        e.as_contract(&address, || {
-            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &default_config(&oracle));
-            let mut market = default_market(&e);
-            market.maintenance_margin = -1;
-            execute_queue_set_market(&e, &market);
-        });
-    }
 
     #[test]
     #[should_panic(expected = "Error(Contract, #735)")]
@@ -523,10 +303,10 @@ mod tests {
         let vault = create_vault(&e, &token, 1_000_000 * SCALAR_7);
 
         e.as_contract(&address, || {
-            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &default_config(&oracle));
+            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &oracle, &default_config());
             let mut market = default_market(&e);
             market.init_margin = 0;
-            execute_queue_set_market(&e, &market);
+            execute_set_market(&e, &market);
         });
     }
 
@@ -540,16 +320,16 @@ mod tests {
         let vault = create_vault(&e, &token, 1_000_000 * SCALAR_7);
 
         e.as_contract(&address, || {
-            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &default_config(&oracle));
+            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &oracle, &default_config());
             let mut market = default_market(&e);
             market.init_margin = -1;
-            execute_queue_set_market(&e, &market);
+            execute_set_market(&e, &market);
         });
     }
 
     #[test]
     #[should_panic(expected = "Error(Contract, #735)")]
-    fn test_market_negative_base_fee() {
+    fn test_config_negative_base_fee() {
         let e = setup_env();
         let (address, owner) = create_trading(&e);
         let (oracle, _) = create_oracle(&e);
@@ -557,10 +337,10 @@ mod tests {
         let vault = create_vault(&e, &token, 1_000_000 * SCALAR_7);
 
         e.as_contract(&address, || {
-            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &default_config(&oracle));
-            let mut market = default_market(&e);
-            market.base_fee = -1;
-            execute_queue_set_market(&e, &market);
+            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &oracle, &default_config());
+            let mut config = default_config();
+            config.base_fee_dominant = -1;
+            execute_set_config(&e, &config);
         });
     }
 
@@ -574,10 +354,10 @@ mod tests {
         let vault = create_vault(&e, &token, 1_000_000 * SCALAR_7);
 
         e.as_contract(&address, || {
-            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &default_config(&oracle));
+            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &oracle, &default_config());
             let mut market = default_market(&e);
             market.base_hourly_rate = -1;
-            execute_queue_set_market(&e, &market);
+            execute_set_market(&e, &market);
         });
     }
 
@@ -591,10 +371,10 @@ mod tests {
         let vault = create_vault(&e, &token, 1_000_000 * SCALAR_7);
 
         e.as_contract(&address, || {
-            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &default_config(&oracle));
+            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &oracle, &default_config());
             let mut market = default_market(&e);
             market.price_impact_scalar = 0;
-            execute_queue_set_market(&e, &market);
+            execute_set_market(&e, &market);
         });
     }
 
@@ -608,16 +388,16 @@ mod tests {
         let vault = create_vault(&e, &token, 1_000_000 * SCALAR_7);
 
         e.as_contract(&address, || {
-            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &default_config(&oracle));
+            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &oracle, &default_config());
             let mut market = default_market(&e);
             market.price_impact_scalar = -1;
-            execute_queue_set_market(&e, &market);
+            execute_set_market(&e, &market);
         });
     }
 
     #[test]
     #[should_panic(expected = "Error(Contract, #702)")]
-    fn test_market_min_collateral_below_scalar() {
+    fn test_config_min_collateral_below_scalar() {
         let e = setup_env();
         let (address, owner) = create_trading(&e);
         let (oracle, _) = create_oracle(&e);
@@ -625,16 +405,16 @@ mod tests {
         let vault = create_vault(&e, &token, 1_000_000 * SCALAR_7);
 
         e.as_contract(&address, || {
-            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &default_config(&oracle));
-            let mut market = default_market(&e);
-            market.min_collateral = SCALAR_7 - 1;
-            execute_queue_set_market(&e, &market);
+            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &oracle, &default_config());
+            let mut config = default_config();
+            config.min_collateral = SCALAR_7 - 1;
+            execute_set_config(&e, &config);
         });
     }
 
     #[test]
     #[should_panic(expected = "Error(Contract, #702)")]
-    fn test_market_max_collateral_below_min() {
+    fn test_config_max_collateral_below_min() {
         let e = setup_env();
         let (address, owner) = create_trading(&e);
         let (oracle, _) = create_oracle(&e);
@@ -642,17 +422,17 @@ mod tests {
         let vault = create_vault(&e, &token, 1_000_000 * SCALAR_7);
 
         e.as_contract(&address, || {
-            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &default_config(&oracle));
-            let mut market = default_market(&e);
-            market.min_collateral = 100 * SCALAR_7;
-            market.max_collateral = 50 * SCALAR_7;
-            execute_queue_set_market(&e, &market);
+            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &oracle, &default_config());
+            let mut config = default_config();
+            config.min_collateral = 100 * SCALAR_7;
+            config.max_collateral = 50 * SCALAR_7;
+            execute_set_config(&e, &config);
         });
     }
 
     #[test]
     #[should_panic(expected = "Error(Contract, #702)")]
-    fn test_market_max_collateral_equals_min() {
+    fn test_config_max_collateral_equals_min() {
         let e = setup_env();
         let (address, owner) = create_trading(&e);
         let (oracle, _) = create_oracle(&e);
@@ -660,11 +440,11 @@ mod tests {
         let vault = create_vault(&e, &token, 1_000_000 * SCALAR_7);
 
         e.as_contract(&address, || {
-            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &default_config(&oracle));
-            let mut market = default_market(&e);
-            market.min_collateral = 100 * SCALAR_7;
-            market.max_collateral = 100 * SCALAR_7;
-            execute_queue_set_market(&e, &market);
+            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &oracle, &default_config());
+            let mut config = default_config();
+            config.min_collateral = 100 * SCALAR_7;
+            config.max_collateral = 100 * SCALAR_7;
+            execute_set_config(&e, &config);
         });
     }
 
@@ -678,46 +458,14 @@ mod tests {
         let vault = create_vault(&e, &token, 1_000_000 * SCALAR_7);
 
         e.as_contract(&address, || {
-            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &default_config(&oracle));
+            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &oracle, &default_config());
             let mut market = default_market(&e);
-            market.init_margin = 0_0040000;        // 0.4%
-            market.maintenance_margin = 0_0050000;  // 0.5%
-            execute_queue_set_market(&e, &market);
+            // maintenance_margin = SCALAR_7 / 200 = 0_0050000 (0.5%)
+            // init_margin = 0.4% < 0.5% → should panic
+            market.init_margin = 0_0040000;
+            execute_set_market(&e, &market);
         });
     }
 
-    #[test]
-    #[should_panic(expected = "Error(Contract, #702)")]
-    fn test_market_ratio_cap_below_1x() {
-        let e = setup_env();
-        let (address, owner) = create_trading(&e);
-        let (oracle, _) = create_oracle(&e);
-        let (token, _) = create_token(&e, &owner);
-        let vault = create_vault(&e, &token, 1_000_000 * SCALAR_7);
-
-        e.as_contract(&address, || {
-            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &default_config(&oracle));
-            let mut market = default_market(&e);
-            market.ratio_cap = crate::constants::SCALAR_18 - 1;
-            execute_queue_set_market(&e, &market);
-        });
-    }
-
-    #[test]
-    #[should_panic(expected = "Error(Contract, #702)")]
-    fn test_market_ratio_cap_above_5x() {
-        let e = setup_env();
-        let (address, owner) = create_trading(&e);
-        let (oracle, _) = create_oracle(&e);
-        let (token, _) = create_token(&e, &owner);
-        let vault = create_vault(&e, &token, 1_000_000 * SCALAR_7);
-
-        e.as_contract(&address, || {
-            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &default_config(&oracle));
-            let mut market = default_market(&e);
-            market.ratio_cap = 6 * crate::constants::SCALAR_18;
-            execute_queue_set_market(&e, &market);
-        });
-    }
 }
 

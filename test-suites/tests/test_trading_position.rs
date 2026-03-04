@@ -17,29 +17,29 @@ fn setup_fixture() -> TestFixture<'static> {
 }
 
 fn open_long_position(fixture: &TestFixture, user: &Address) -> u32 {
-    let (id, _) = fixture.trading.open_position(
+    let (id, _) = fixture.open_and_fill(
         user,
-        &(AssetIndex::BTC as u32),
-        &(1_000 * SCALAR_7),
-        &(10_000 * SCALAR_7),
-        &true,
-        &0,
-        &0,
-        &0,
+        AssetIndex::BTC as u32,
+        1_000 * SCALAR_7,
+        10_000 * SCALAR_7,
+        true,
+        BTC_PRICE,
+        0,
+        0,
     );
     id
 }
 
 fn open_short_position(fixture: &TestFixture, user: &Address) -> u32 {
-    let (id, _) = fixture.trading.open_position(
+    let (id, _) = fixture.open_and_fill(
         user,
-        &(AssetIndex::BTC as u32),
-        &(1_000 * SCALAR_7),
-        &(10_000 * SCALAR_7),
-        &false,
-        &0,
-        &0,
-        &0,
+        AssetIndex::BTC as u32,
+        1_000 * SCALAR_7,
+        10_000 * SCALAR_7,
+        false,
+        BTC_PRICE,
+        0,
+        0,
     );
     id
 }
@@ -93,16 +93,16 @@ fn test_long_open_modify_close_profit() {
     fixture.token.mint(&user, &(100_000 * SCALAR_7));
     let initial_balance = fixture.token.balance(&user);
 
-    // Open long
-    let (position_id, fee) = fixture.trading.open_position(
+    // Open long and fill immediately
+    let (position_id, fee) = fixture.open_and_fill(
         &user,
-        &(AssetIndex::BTC as u32),
-        &(1_000 * SCALAR_7),
-        &(10_000 * SCALAR_7),
-        &true,
-        &0,
-        &0,
-        &0,
+        AssetIndex::BTC as u32,
+        1_000 * SCALAR_7,
+        10_000 * SCALAR_7,
+        true,
+        BTC_PRICE,
+        0,
+        0,
     );
     assert!(fee > 0);
 
@@ -472,7 +472,7 @@ fn test_fill_already_filled_returns_error() {
     let keeper = Address::generate(&fixture.env);
     fixture.token.mint(&user, &(100_000 * SCALAR_7));
 
-    // Open market order (already filled)
+    // Open and fill position (already filled)
     let position_id = open_long_position(&fixture, &user);
 
     let requests = svec![
@@ -588,16 +588,16 @@ fn test_liquidation_underwater() {
     let keeper = Address::generate(&fixture.env);
     fixture.token.mint(&user, &(100_000 * SCALAR_7));
 
-    // Open highly leveraged position (100x)
-    fixture.trading.open_position(
+    // Open highly leveraged position (100x) and fill
+    fixture.open_and_fill(
         &user,
-        &(AssetIndex::BTC as u32),
-        &(100 * SCALAR_7),    // 100 collateral
-        &(10_000 * SCALAR_7), // 10000 notional (100x)
-        &true,
-        &0,
-        &0,
-        &0,
+        AssetIndex::BTC as u32,
+        100 * SCALAR_7,    // 100 collateral
+        10_000 * SCALAR_7, // 10000 notional (100x)
+        true,
+        BTC_PRICE,
+        0,
+        0,
     );
 
     // Price drops 2% — underwater
@@ -659,31 +659,32 @@ fn test_keeper_receives_fee() {
     fixture.create_market(&btc_config);
 
     let new_config = trading::TradingConfig {
-        oracle: fixture.oracle.address.clone(),
         caller_take_rate: 1_000_000, // 10%
-        max_positions: 10,
-        max_utilization: 10 * SCALAR_7,
-        max_price_age: 900,
         min_open_time: 0,
+        vault_skim: 0_2000000, // 20%
+        min_collateral: SCALAR_7,
+        max_collateral: 1_000_000 * SCALAR_7,
+        max_payout: 10 * SCALAR_7,
+        base_fee_dominant: 0_0005000,
+        base_fee_non_dominant: 0_0001000,
     };
-    fixture.trading.queue_set_config(&new_config);
-    fixture.trading.set_config();
+    fixture.trading.set_config(&new_config);
     fixture.trading.set_status(&0u32);
 
     let user = Address::generate(&fixture.env);
     let keeper = Address::generate(&fixture.env);
     fixture.token.mint(&user, &(100_000 * SCALAR_7));
 
-    // Open highly leveraged position for liquidation
-    fixture.trading.open_position(
+    // Open highly leveraged position for liquidation and fill
+    fixture.open_and_fill(
         &user,
-        &(AssetIndex::BTC as u32),
-        &(100 * SCALAR_7),
-        &(10_000 * SCALAR_7),
-        &true,
-        &0,
-        &0,
-        &0,
+        AssetIndex::BTC as u32,
+        100 * SCALAR_7,
+        10_000 * SCALAR_7,
+        true,
+        BTC_PRICE,
+        0,
+        0,
     );
 
     let keeper_balance_before = fixture.token.balance(&keeper);
@@ -711,7 +712,7 @@ fn test_keeper_receives_fee() {
 #[should_panic(expected = "Error(Contract, #761)")]
 fn test_open_blocked_when_frozen() {
     let fixture = setup_fixture();
-    fixture.trading.set_status(&2u32); // Frozen
+    fixture.trading.set_status(&3u32); // Frozen
     let user = Address::generate(&fixture.env);
     fixture.token.mint(&user, &(100_000 * SCALAR_7));
 
@@ -721,7 +722,7 @@ fn test_open_blocked_when_frozen() {
         &(1_000 * SCALAR_7),
         &(10_000 * SCALAR_7),
         &true,
-        &0,
+        &BTC_PRICE,
         &0,
         &0,
     );
@@ -739,8 +740,8 @@ fn test_execute_on_ice_allows_triggers() {
         .trading
         .set_triggers(&position_id, &(110_000 * SCALAR_7), &0);
 
-    // Set to OnIce
-    fixture.trading.set_status(&1u32);
+    // Set to AdminOnIce
+    fixture.trading.set_status(&2u32);
 
     // Price rises to TP
     set_btc_price(&fixture, 111_000_0000000);
@@ -766,7 +767,7 @@ fn test_execute_blocked_when_frozen() {
     fixture.token.mint(&user, &(100_000 * SCALAR_7));
 
     let position_id = open_long_position(&fixture, &user);
-    fixture.trading.set_status(&2u32); // Frozen
+    fixture.trading.set_status(&3u32); // Frozen
 
     let requests = svec![
         &fixture.env,
@@ -815,16 +816,16 @@ fn test_interest_accrual_across_positions() {
     let user = Address::generate(&fixture.env);
     fixture.token.mint(&user, &(100_000 * SCALAR_7));
 
-    // Open first position
-    fixture.trading.open_position(
+    // Open first position and fill
+    fixture.open_and_fill(
         &user,
-        &(AssetIndex::BTC as u32),
-        &(1_000 * SCALAR_7),
-        &(10_000 * SCALAR_7),
-        &true,
-        &0,
-        &0,
-        &0,
+        AssetIndex::BTC as u32,
+        1_000 * SCALAR_7,
+        10_000 * SCALAR_7,
+        true,
+        BTC_PRICE,
+        0,
+        0,
     );
 
     let market_before = fixture.trading.get_market(&(AssetIndex::BTC as u32));
@@ -832,21 +833,21 @@ fn test_interest_accrual_across_positions() {
     // Wait 1 week for interest to accrue
     fixture.jump(SECONDS_PER_WEEK);
 
-    // Open another position — triggers interest accrual
-    fixture.trading.open_position(
+    // Open another position and fill — triggers interest accrual
+    fixture.open_and_fill(
         &user,
-        &(AssetIndex::BTC as u32),
-        &(1_000 * SCALAR_7),
-        &(10_000 * SCALAR_7),
-        &true,
-        &0,
-        &0,
-        &0,
+        AssetIndex::BTC as u32,
+        1_000 * SCALAR_7,
+        10_000 * SCALAR_7,
+        true,
+        BTC_PRICE,
+        0,
+        0,
     );
 
     let market_after = fixture.trading.get_market(&(AssetIndex::BTC as u32));
 
     // Interest index should have increased
-    assert!(market_after.data.long_interest_index > market_before.data.long_interest_index);
+    assert!(market_after.data.long_funding_index > market_before.data.long_funding_index);
     assert!(market_after.data.last_update > market_before.data.last_update);
 }

@@ -104,14 +104,16 @@ pub fn create_vault(e: &Env, token: &Address, initial_assets: i128) -> Address {
 //************************************************
 
 /// Create a default trading config for testing
-pub fn default_config(oracle: &Address) -> TradingConfig {
+pub fn default_config() -> TradingConfig {
     TradingConfig {
-        oracle: oracle.clone(),
         caller_take_rate: 0_1000000, // 10%
-        max_positions: 10,
-        max_utilization: 50 * SCALAR_7, // 50x
-        max_price_age: 3600,            // 1 hour
         min_open_time: 0,               // disabled
+        vault_skim: 0_2000000,          // 20%
+        min_collateral: SCALAR_7,             // 1 token minimum
+        max_collateral: 1_000_000 * SCALAR_7, // 1M tokens maximum
+        max_payout: 10 * SCALAR_7,            // 1000% max payout
+        base_fee_dominant: 0_0005000,     // 0.05%
+        base_fee_non_dominant: 0_0001000, // 0.01%
     }
 }
 
@@ -120,17 +122,9 @@ pub fn default_market(e: &Env) -> MarketConfig {
     MarketConfig {
         asset: StellarAsset::Other(Symbol::new(e, "BTC")),
         enabled: true,
-        max_payout: 10 * SCALAR_7,            // 1000% max payout
-        min_collateral: SCALAR_7,             // 1 token minimum
-        max_collateral: 1_000_000 * SCALAR_7, // 1M tokens maximum
-
         init_margin: 0_0100000,        // 1%
-        maintenance_margin: 0_0050000, // 0.5%
-
-        base_fee: 0_0005000, // 0.05%
-        price_impact_scalar: 8_000_000_000 * SCALAR_7,
         base_hourly_rate: 10_000_000_000_000, // 0.001% per hour in SCALAR_18
-        ratio_cap: 5 * SCALAR_18,             // 5x cap
+        price_impact_scalar: 8_000_000_000 * SCALAR_7,
     }
 }
 
@@ -139,9 +133,14 @@ pub fn default_market_data() -> MarketData {
     MarketData {
         long_notional_size: 0,
         short_notional_size: 0,
-        long_interest_index: 0,
-        short_interest_index: 0,
+        long_funding_index: 0,
+        short_funding_index: 0,
         last_update: 0,
+        funding_rate: 0,
+        long_entry_weighted: 0,
+        short_entry_weighted: 0,
+        long_adl_index: SCALAR_18,
+        short_adl_index: SCALAR_18,
     }
 }
 
@@ -185,17 +184,24 @@ pub fn setup_contract(e: &Env) -> (Address, MockTokenClient<'_>) {
             e,
             &String::from_str(e, "Test"),
             &vault,
-            &default_config(&oracle),
+            &oracle,
+            &default_config(),
         );
         storage::set_status(e, ContractStatus::Active as u32);
 
         storage::set_market_config(e, 0, &default_market(e));
         let mut market_data = default_market_data();
         market_data.last_update = e.ledger().timestamp();
-        market_data.long_interest_index = SCALAR_18;
-        market_data.short_interest_index = SCALAR_18;
+        market_data.long_funding_index = SCALAR_18;
+        market_data.short_funding_index = SCALAR_18;
         storage::set_market_data(e, 0, &market_data);
         storage::next_market_index(e);
+
+        // Initialize global funding timestamp and stored funding rate
+        storage::set_last_funding_update(e, e.ledger().timestamp());
+        let mut market = crate::trading::market::Market::load(e, 0);
+        market.update_funding_rate(e);
+        market.store(e);
     });
 
     // Fund contract for token transfers
@@ -208,13 +214,12 @@ pub fn setup_contract(e: &Env) -> (Address, MockTokenClient<'_>) {
 //           Fuzz / Property Test Wrappers
 //************************************************
 
-/// Wrapper exposing the private `calc_interest` function for fuzz targets.
-pub fn calc_interest_for_test(
+/// Wrapper exposing the private `calc_funding_rate` function for fuzz targets.
+pub fn calc_funding_rate_for_test(
     e: &Env,
     long_notional: i128,
     short_notional: i128,
     base_rate: i128,
-    ratio_cap: i128,
-) -> (i128, i128) {
-    crate::trading::interest::calc_interest(e, long_notional, short_notional, base_rate, ratio_cap)
+) -> i128 {
+    crate::trading::interest::calc_funding_rate(e, long_notional, short_notional, base_rate)
 }

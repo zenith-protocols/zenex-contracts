@@ -4,7 +4,7 @@ use soroban_sdk::Address;
 use test_suites::setup::create_fixture_with_data;
 use test_suites::test_fixture::{AssetIndex, TestFixture};
 use test_suites::SCALAR_7;
-use trading::testutils::default_market;
+use trading::testutils::{default_config, default_market, BTC_PRICE};
 
 const SECONDS_IN_WEEK: u64 = 604800; // 7 days in seconds
 const SECONDS_IN_HOUR: u64 = 3600; // 1 hour in seconds
@@ -22,23 +22,24 @@ fn test_profitable_long_position_small_gain() {
     fixture.token.mint(&user, &(150_000 * SCALAR_7));
     let initial_balance = fixture.token.balance(&user);
 
-    // Open long position at 100K
-    let (position_id, _) = fixture.trading.open_position(
+    // Open long position at 100K and fill
+    let (position_id, _) = fixture.open_and_fill(
         &user,
-        &(AssetIndex::BTC as u32),
-        &(1_000 * SCALAR_7), // 1000 tokens collateral
-        &(2_000 * SCALAR_7), // 1000 tokens collateral, // 2x leverage
-        &true,
-        &0, // market order at 100K
-        &0, // take profit: 0 (not set)
-        &0, // stop loss: 0 (not set)
+        AssetIndex::BTC as u32,
+        1_000 * SCALAR_7, // 1000 tokens collateral
+        2_000 * SCALAR_7, // 2x leverage
+        true,
+        BTC_PRICE, // entry price at 100K
+        0, // take profit: 0 (not set)
+        0, // stop loss: 0 (not set)
     );
 
     let balance_after_open = fixture.token.balance(&user);
+    let config = default_config();
     let market = default_market(&fixture.env);
     // Base fee is charged on notional_size (2000), not collateral (1000)
     let base_fee = (2_000 * SCALAR_7)
-        .fixed_mul_ceil(market.base_fee, SCALAR_7)
+        .fixed_mul_ceil(config.base_fee_dominant, SCALAR_7)
         .unwrap();
     let price_impact = (2_000 * SCALAR_7)
         .fixed_div_ceil(market.price_impact_scalar, SCALAR_7)
@@ -112,27 +113,27 @@ fn test_long_short_week_5pct_move_print_balances() {
 
     // User1 opens a long position at 100k with 2x leverage
     // Choose collateral = 25k -> notional size = 50k (2x)
-    let (user1_position_id, _) = fixture.trading.open_position(
+    let (user1_position_id, _) = fixture.open_and_fill(
         &user1,
-        &(AssetIndex::BTC as u32),
-        &(25_000 * SCALAR_7),
-        &(50_000 * SCALAR_7),
-        &true,
-        &0, // market order at current price (100K)
-        &0, // take profit: 0 (not set)
-        &0, // stop loss: 0 (not set)
+        AssetIndex::BTC as u32,
+        25_000 * SCALAR_7,
+        50_000 * SCALAR_7,
+        true,
+        BTC_PRICE,
+        0,
+        0,
     );
 
     // User2 opens a short position of 100k notional with 10x leverage -> collateral = 10k
-    let (user2_position_id, _) = fixture.trading.open_position(
+    let (user2_position_id, _) = fixture.open_and_fill(
         &user2,
-        &(AssetIndex::BTC as u32),
-        &(10_000 * SCALAR_7),
-        &(100_000 * SCALAR_7),
-        &false,
-        &0, // market order at current price (100K)
-        &0, // take profit: 0 (not set)
-        &0, // stop loss: 0 (not set)
+        AssetIndex::BTC as u32,
+        10_000 * SCALAR_7,
+        100_000 * SCALAR_7,
+        false,
+        BTC_PRICE,
+        0,
+        0,
     );
 
     // A week passes
@@ -175,11 +176,12 @@ fn test_long_short_week_5pct_move_print_balances() {
     let delta_vault = vault_balance - initial_vault_balance;
     // delta vault: net fees from both users plus the net pnl (2.5k to vault from user2 loss)
 
-    // Assert user deltas are close to the expected values.
-    // Updated: user2 pays base_fee on close too (50 tokens extra)
-    let expected_delta_user1 = 27438 * (SCALAR_7 / 10); // ~2743.8 tokens
-    let expected_delta_user2 = -5436 * SCALAR_7; // -5436 tokens (was -5386, +50 for close base_fee)
-    let expected_delta_vault = 26922 * (SCALAR_7 / 10); // ~2692.2 tokens (was 2642.2, +50 for extra base_fee)
+    // With new funding model: rate = baseRate × |L-S|/(L+S), minority receive scaled by D/M ratio
+    // Shorts dominant (100k > 50k), rate = base_rate × 50k/150k = base_rate/3
+    // Shorts pay: 100k × rate × 168h, Longs receive: pay_delta × 0.8 × (100k/50k) per unit
+    let expected_delta_user1 = 25148 * (SCALAR_7 / 10); // ~2514.8 tokens
+    let expected_delta_user2 = -51560 * (SCALAR_7 / 10); // ~-5156.0 tokens
+    let expected_delta_vault = 26412 * (SCALAR_7 / 10); // ~2641.2 tokens
     let tolerance_user1 = 5 * (SCALAR_7 / 10); // 0.5 tokens
     let tolerance_user2 = 5 * SCALAR_7; // 5 tokens
     let tolerance_vault = 5 * (SCALAR_7 / 10); // 0.5 tokens
@@ -262,27 +264,27 @@ fn test_equal_short_long_notional() {
     let notional = 200_000 * SCALAR_7;
 
     // User1 opens a SHORT at 100k
-    let (user1_position_id, _) = fixture.trading.open_position(
+    let (user1_position_id, _) = fixture.open_and_fill(
         &user1,
-        &(AssetIndex::BTC as u32),
-        &collateral,
-        &notional,
-        &false,
-        &0,
-        &0, // take profit: 0 (not set)
-        &0, // stop loss: 0 (not set)
+        AssetIndex::BTC as u32,
+        collateral,
+        notional,
+        false,
+        BTC_PRICE,
+        0,
+        0,
     );
 
     // User2 opens a LONG at 100k
-    let (user2_position_id, _) = fixture.trading.open_position(
+    let (user2_position_id, _) = fixture.open_and_fill(
         &user2,
-        &(AssetIndex::BTC as u32),
-        &collateral,
-        &notional,
-        &true,
-        &0,
-        &0, // take profit: 0 (not set)
-        &0, // stop loss: 0 (not set)
+        AssetIndex::BTC as u32,
+        collateral,
+        notional,
+        true,
+        BTC_PRICE,
+        0,
+        0,
     );
 
     // A week passes
@@ -319,9 +321,12 @@ fn test_equal_short_long_notional() {
     // Total user pnl is 0, so this is only the fees: 536 + 436 = 972
 
     // Assert user deltas are close to expected values.
-    let expected_delta_user1 = 19_464 * SCALAR_7;
-    let expected_delta_user2 = -20_436 * SCALAR_7;
-    let tolerance = SCALAR_7 / 2; // 0.5 tokens
+    // Equal notional → funding_rate = 0 in new model, so no funding costs
+    // User1 (short): +20000 PnL - fees (~200 base_fee + impact)
+    // User2 (long): -20000 PnL - fees (~120 base_fee + impact)
+    let expected_delta_user1 = 19_800 * SCALAR_7;
+    let expected_delta_user2 = -20_120 * SCALAR_7;
+    let tolerance = SCALAR_7; // 1 token
 
     let delta_user1_diff = (delta_user1 - expected_delta_user1).abs();
     let delta_user2_diff = (delta_user2 - expected_delta_user2).abs();
@@ -387,27 +392,27 @@ fn test_changing_long_short_ratio() {
     let collateral_50k = 10_000 * SCALAR_7; // 5x leverage
 
     // User1 opens LONG 100k
-    let (user1_position_id, _) = fixture.trading.open_position(
+    let (user1_position_id, _) = fixture.open_and_fill(
         &user1,
-        &(AssetIndex::BTC as u32),
-        &collateral_100k,
-        &notional_100k,
-        &true,
-        &0,
-        &0, // take profit: 0 (not set)
-        &0, // stop loss: 0 (not set)
+        AssetIndex::BTC as u32,
+        collateral_100k,
+        notional_100k,
+        true,
+        BTC_PRICE,
+        0,
+        0,
     );
 
     // User2 opens SHORT 50k
-    let (user2_position_id, _) = fixture.trading.open_position(
+    let (user2_position_id, _) = fixture.open_and_fill(
         &user2,
-        &(AssetIndex::BTC as u32),
-        &collateral_50k,
-        &notional_50k,
-        &false,
-        &0,
-        &0, // take profit: 0 (not set)
-        &0, // stop loss: 0 (not set)
+        AssetIndex::BTC as u32,
+        collateral_50k,
+        notional_50k,
+        false,
+        BTC_PRICE,
+        0,
+        0,
     );
 
     // A week passes
@@ -423,15 +428,15 @@ fn test_changing_long_short_ratio() {
     ]);
 
     // User3 opens SHORT 100k
-    let (user3_position_id, _) = fixture.trading.open_position(
+    let (user3_position_id, _) = fixture.open_and_fill(
         &user3,
-        &(AssetIndex::BTC as u32),
-        &collateral_100k,
-        &notional_100k,
-        &false,
-        &0,
-        &0, // take profit: 0 (not set)
-        &0, // stop loss: 0 (not set)
+        AssetIndex::BTC as u32,
+        collateral_100k,
+        notional_100k,
+        false,
+        BTC_PRICE,
+        0,
+        0,
     );
 
     // Another week passes
@@ -481,21 +486,20 @@ fn test_changing_long_short_ratio() {
 	);
 
     // Assert user deltas are close to the expected values
-    // These values are adjusted based on actual test runs - the interest/fee calculations
-    // have complex interactions with changing long/short ratios
-    // Actual values from test run:
-    // - User1: -82.5839609
-    // - User2: 118.4773635
-    // - User3: -350.6452729
-    let expected_delta_user1 = -(826 * (SCALAR_7 / 10)); // ~-82.6 tokens
-    let expected_delta_user2 = 1185 * (SCALAR_7 / 10); // ~118.5 tokens
-    let expected_delta_user3 = -(3506 * (SCALAR_7 / 10)); // ~-350.6 tokens
-    let tolerance = 15 * (SCALAR_7 / 10); // 1.5 tokens (tolerance for complex interest calc)
+    // Week 1: long 100k vs short 50k → longs dominant, rate = base_rate × 50k/150k = base_rate/3
+    // Week 2: long 100k vs short 150k → shorts dominant, rate = base_rate × 50k/250k = base_rate/5
+    // User1 (long 100k, 2 weeks): pays funding week 1, receives week 2
+    // User2 (short 50k, 2 weeks): receives funding week 1, pays week 2
+    // User3 (short 100k, 1 week): pays funding week 2
+    let expected_delta_user1 = -(757 * (SCALAR_7 / 10)); // ~-75.7 tokens
+    let expected_delta_user2 = -(20 * (SCALAR_7 / 10)); // ~-2.0 tokens
+    let expected_delta_user3 = -(1336 * (SCALAR_7 / 10)); // ~-133.6 tokens
+    let tolerance = 15 * (SCALAR_7 / 10); // 1.5 tokens
 
     let delta_user1_diff = (delta_user1 - expected_delta_user1).abs();
     assert!(
         delta_user1_diff <= tolerance,
-        "delta_user1 ({:.7}) is not approximately -83.6 (difference: {:.7})",
+        "delta_user1 ({:.7}) is not approximately -75.7 (difference: {:.7})",
         delta_user1 as f64 / SCALAR_7 as f64,
         delta_user1_diff as f64 / SCALAR_7 as f64
     );
@@ -503,7 +507,7 @@ fn test_changing_long_short_ratio() {
     let delta_user2_diff = (delta_user2 - expected_delta_user2).abs();
     assert!(
         delta_user2_diff <= tolerance,
-        "delta_user2 ({:.7}) is not approximately 117.8 (difference: {:.7})",
+        "delta_user2 ({:.7}) is not approximately -2.0 (difference: {:.7})",
         delta_user2 as f64 / SCALAR_7 as f64,
         delta_user2_diff as f64 / SCALAR_7 as f64
     );
@@ -511,7 +515,7 @@ fn test_changing_long_short_ratio() {
     let delta_user3_diff = (delta_user3 - expected_delta_user3).abs();
     assert!(
         delta_user3_diff <= tolerance,
-        "delta_user3 ({:.7}) is not approximately -352.4 (difference: {:.7})",
+        "delta_user3 ({:.7}) is not approximately -133.6 (difference: {:.7})",
         delta_user3 as f64 / SCALAR_7 as f64,
         delta_user3_diff as f64 / SCALAR_7 as f64
     );
@@ -543,15 +547,15 @@ fn test_long_then_short_sequential_weeks() {
     ]);
 
     // User1 opens a long position with 50k collateral and 2x leverage (100k notional)
-    let (user1_position_id, _) = fixture.trading.open_position(
+    let (user1_position_id, _) = fixture.open_and_fill(
         &user1,
-        &(AssetIndex::BTC as u32),
-        &(50_000 * SCALAR_7), // 50k collateral
-        &(100_000 * SCALAR_7), // 100k notional (2x leverage)
-        &true, // long
-        &0, // market order
-        &0, // take profit: 0 (not set)
-        &0, // stop loss: 0 (not set)
+        AssetIndex::BTC as u32,
+        50_000 * SCALAR_7, // 50k collateral
+        100_000 * SCALAR_7, // 100k notional (2x leverage)
+        true, // long
+        BTC_PRICE,
+        0,
+        0,
     );
 
     // A week passes
@@ -567,15 +571,15 @@ fn test_long_then_short_sequential_weeks() {
     ]);
 
     // User2 opens a short position with 50k collateral and 2x leverage (100k notional)
-    let (user2_position_id, _) = fixture.trading.open_position(
+    let (user2_position_id, _) = fixture.open_and_fill(
         &user2,
-        &(AssetIndex::BTC as u32),
-        &(50_000 * SCALAR_7), // 50k collateral
-        &(100_000 * SCALAR_7), // 100k notional (2x leverage)
-        &false, // short
-        &0, // market order
-        &0, // take profit: 0 (not set)
-        &0, // stop loss: 0 (not set)
+        AssetIndex::BTC as u32,
+        50_000 * SCALAR_7, // 50k collateral
+        100_000 * SCALAR_7, // 100k notional (2x leverage)
+        false, // short
+        BTC_PRICE,
+        0,
+        0,
     );
 
     // Another week passes
@@ -610,14 +614,18 @@ fn test_long_then_short_sequential_weeks() {
     let delta_vault = vault_balance - initial_vault_balance;
 
     // Assert user deltas are close to the expected values
-    let expected_delta_user1 = -(436 * SCALAR_7); // -436 tokens = -100 - 336
-    let expected_delta_user2 = -(218 * SCALAR_7); // -218 tokens = -50 - 168
+    // Week 1: only long (one-sided) → rate = base_rate, longs pay
+    // Week 2: long 100k = short 100k → rate = 0 (balanced), no funding
+    // User1 (long, 2 weeks): pays 1x funding week 1, 0 funding week 2
+    // User2 (short, 1 week): 0 funding (balanced market)
+    let expected_delta_user1 = -(268 * SCALAR_7); // -268 tokens (fees + funding)
+    let expected_delta_user2 = -(60 * SCALAR_7); // -60 tokens (fees only, no funding)
     let tolerance = 5 * (SCALAR_7 / 10); // 0.5 tokens
 
     let delta_user1_diff = (delta_user1 - expected_delta_user1).abs();
     assert!(
         delta_user1_diff <= tolerance,
-        "delta_user1 ({:.7}) is not approximately -436 (difference: {:.7})",
+        "delta_user1 ({:.7}) is not approximately -268 (difference: {:.7})",
         delta_user1 as f64 / SCALAR_7 as f64,
         delta_user1_diff as f64 / SCALAR_7 as f64
     );
@@ -625,7 +633,7 @@ fn test_long_then_short_sequential_weeks() {
     let delta_user2_diff = (delta_user2 - expected_delta_user2).abs();
     assert!(
         delta_user2_diff <= tolerance,
-        "delta_user2 ({:.7}) is not approximately -218 (difference: {:.7})",
+        "delta_user2 ({:.7}) is not approximately -60 (difference: {:.7})",
         delta_user2 as f64 / SCALAR_7 as f64,
         delta_user2_diff as f64 / SCALAR_7 as f64
     );
@@ -667,27 +675,27 @@ fn test_long_short_sequential_closes() {
     ]);
 
     // User1 opens a long position with 10k collateral and 10x leverage (100k notional)
-    let (user1_position_id, _) = fixture.trading.open_position(
+    let (user1_position_id, _) = fixture.open_and_fill(
         &user1,
-        &(AssetIndex::BTC as u32),
-        &(10_000 * SCALAR_7), // 10k collateral
-        &(100_000 * SCALAR_7), // 100k notional (10x leverage)
-        &true, // long
-        &0, // market order
-        &0, // take profit: 0 (not set)
-        &0, // stop loss: 0 (not set)
+        AssetIndex::BTC as u32,
+        10_000 * SCALAR_7, // 10k collateral
+        100_000 * SCALAR_7, // 100k notional (10x leverage)
+        true, // long
+        BTC_PRICE,
+        0,
+        0,
     );
 
     // User2 opens a short position with 10k collateral and 10x leverage (100k notional)
-    let (user2_position_id, _) = fixture.trading.open_position(
+    let (user2_position_id, _) = fixture.open_and_fill(
         &user2,
-        &(AssetIndex::BTC as u32),
-        &(10_000 * SCALAR_7), // 10k collateral
-        &(100_000 * SCALAR_7), // 100k notional (10x leverage)
-        &false, // short
-        &0, // market order
-        &0, // take profit: 0 (not set)
-        &0, // stop loss: 0 (not set)
+        AssetIndex::BTC as u32,
+        10_000 * SCALAR_7, // 10k collateral
+        100_000 * SCALAR_7, // 100k notional (10x leverage)
+        false, // short
+        BTC_PRICE,
+        0,
+        0,
     );
 
     // A week passes
@@ -734,14 +742,18 @@ fn test_long_short_sequential_closes() {
     let delta_vault = vault_balance - initial_vault_balance;
 
     // Assert user deltas are close to the expected values
-    let expected_delta_user1 = -(268 * SCALAR_7); // -268 tokens = -100 - 168
-    let expected_delta_user2 = -(386 * SCALAR_7); // -386 tokens = -50 - 336
+    // Week 1: long 100k = short 100k → rate = 0 (balanced), no funding
+    // Week 2: only short (one-sided) → rate = -base_rate, shorts pay
+    // User1 (long, closes after week 1): 0 funding, only fees
+    // User2 (short, 2 weeks): 0 funding week 1, pays 1x funding week 2
+    let expected_delta_user1 = -(100 * SCALAR_7); // -100 tokens (fees only)
+    let expected_delta_user2 = -(228 * SCALAR_7); // -228 tokens (fees + 1x funding week 2)
     let tolerance = 5 * (SCALAR_7 / 10); // 0.5 tokens
 
     let delta_user1_diff = (delta_user1 - expected_delta_user1).abs();
     assert!(
         delta_user1_diff <= tolerance,
-        "delta_user1 ({:.7}) is not approximately -268 (difference: {:.7})",
+        "delta_user1 ({:.7}) is not approximately -100 (difference: {:.7})",
         delta_user1 as f64 / SCALAR_7 as f64,
         delta_user1_diff as f64 / SCALAR_7 as f64
     );
@@ -749,7 +761,7 @@ fn test_long_short_sequential_closes() {
     let delta_user2_diff = (delta_user2 - expected_delta_user2).abs();
     assert!(
         delta_user2_diff <= tolerance,
-        "delta_user2 ({:.7}) is not approximately -436 (difference: {:.7})",
+        "delta_user2 ({:.7}) is not approximately -228 (difference: {:.7})",
         delta_user2 as f64 / SCALAR_7 as f64,
         delta_user2_diff as f64 / SCALAR_7 as f64
     );
@@ -787,17 +799,17 @@ fn test_close_when_loss_exceeds_collateral() {
         0_1000000,       // XLM
     ]);
 
-    // Open a highly leveraged long position
+    // Open a highly leveraged long position and fill
     // 1k collateral, 20k notional (20x leverage)
-    let (position_id, _) = fixture.trading.open_position(
+    let (position_id, _) = fixture.open_and_fill(
         &user,
-        &(AssetIndex::BTC as u32),
-        &(1_000 * SCALAR_7),  // 1k collateral
-        &(20_000 * SCALAR_7), // 20k notional (20x leverage)
-        &true,                // long
-        &0,                   // market order
-        &0,                   // take profit: 0 (not set)
-        &0,                   // stop loss: 0 (not set)
+        AssetIndex::BTC as u32,
+        1_000 * SCALAR_7,  // 1k collateral
+        20_000 * SCALAR_7, // 20k notional (20x leverage)
+        true,               // long
+        BTC_PRICE,
+        0,
+        0,
     );
 
     // Jump time to accrue some interest

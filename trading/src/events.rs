@@ -13,32 +13,6 @@ pub struct SetConfig {
 
 #[contractevent]
 #[derive(Clone)]
-pub struct QueueSetConfig {
-    pub config: TradingConfig,
-}
-
-#[contractevent]
-#[derive(Clone)]
-pub struct CancelSetConfig {
-    pub config: TradingConfig,
-}
-
-#[contractevent]
-#[derive(Clone)]
-pub struct QueueSetMarket {
-    #[topic]
-    pub asset: Asset,
-}
-
-#[contractevent]
-#[derive(Clone)]
-pub struct CancelSetMarket {
-    #[topic]
-    pub asset: Asset,
-}
-
-#[contractevent]
-#[derive(Clone)]
 pub struct SetMarket {
     #[topic]
     pub asset: Asset,
@@ -52,19 +26,6 @@ pub struct SetStatus {
 }
 
 // Position Events
-
-#[contractevent]
-#[derive(Clone)]
-pub struct OpenMarket {
-    #[topic]
-    pub asset_index: u32,
-    #[topic]
-    pub user: Address,
-    #[topic]
-    pub position_id: u32,
-    pub base_fee: i128,
-    pub impact_fee: i128,
-}
 
 #[contractevent]
 #[derive(Clone)]
@@ -92,7 +53,7 @@ pub struct ClosePosition {
     pub pnl: i128,
     pub base_fee: i128,
     pub impact_fee: i128,
-    pub interest: i128,
+    pub funding: i128,
 }
 
 #[contractevent]
@@ -121,7 +82,7 @@ pub struct Liquidation {
     pub pnl: i128,
     pub base_fee: i128,
     pub impact_fee: i128,
-    pub interest: i128,
+    pub funding: i128,
 }
 
 #[contractevent]
@@ -137,7 +98,7 @@ pub struct TakeProfit {
     pub pnl: i128,
     pub base_fee: i128,
     pub impact_fee: i128,
-    pub interest: i128,
+    pub funding: i128,
 }
 
 #[contractevent]
@@ -153,7 +114,7 @@ pub struct StopLoss {
     pub pnl: i128,
     pub base_fee: i128,
     pub impact_fee: i128,
-    pub interest: i128,
+    pub funding: i128,
 }
 
 #[contractevent]
@@ -192,4 +153,19 @@ pub struct SetTriggers {
     pub position_id: u32,
     pub take_profit: i128,
     pub stop_loss: i128,
+}
+
+#[contractevent]
+#[derive(Clone)]
+pub struct ApplyFunding {
+    #[topic]
+    pub asset_index: u32,
+    pub funding_rate: i128,
+}
+
+#[contractevent]
+#[derive(Clone)]
+pub struct ADLTriggered {
+    pub reduction_pct: i128,     // Reduction percentage (SCALAR_18)
+    pub deficit: i128,           // Deficit amount (token_decimals)
 }

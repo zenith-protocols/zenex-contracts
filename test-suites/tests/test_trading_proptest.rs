@@ -4,6 +4,7 @@ use soroban_sdk::Address;
 use test_suites::setup::create_fixture_with_data;
 use test_suites::test_fixture::AssetIndex;
 use test_suites::SCALAR_7;
+use trading::testutils::BTC_PRICE;
 
 const SECONDS_PER_WEEK: u64 = 604800;
 
@@ -22,7 +23,7 @@ proptest! {
         leverage_raw in 2u32..50,              // 2x–50x leverage
         is_long in proptest::bool::ANY,
     ) {
-        let fixture = create_fixture_with_data(false);
+        let fixture = create_fixture_with_data(true);
         let user = Address::generate(&fixture.env);
         let collateral = (collateral_raw as i128) * SCALAR_7;
         let notional = collateral * (leverage_raw as i128);
@@ -34,15 +35,15 @@ proptest! {
             + fixture.token.balance(&fixture.trading.address);
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            fixture.trading.open_position(
+            fixture.open_and_fill(
                 &user,
-                &(AssetIndex::BTC as u32),
-                &collateral,
-                &notional,
-                &is_long,
-                &0,
-                &0,
-                &0,
+                AssetIndex::BTC as u32,
+                collateral,
+                notional,
+                is_long,
+                BTC_PRICE,
+                0,
+                0,
             )
         }));
 
@@ -65,22 +66,22 @@ proptest! {
     fn prop_contract_balance_zero_after_all_closed(
         count in 1u32..4,
     ) {
-        let fixture = create_fixture_with_data(false);
+        let fixture = create_fixture_with_data(true);
         let user = Address::generate(&fixture.env);
         fixture.token.mint(&user, &(1_000_000 * SCALAR_7));
 
         let mut position_ids = vec![];
         for _ in 0..count {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                fixture.trading.open_position(
+                fixture.open_and_fill(
                     &user,
-                    &(AssetIndex::BTC as u32),
-                    &(100 * SCALAR_7),
-                    &(1_000 * SCALAR_7),
-                    &true,
-                    &0,
-                    &0,
-                    &0,
+                    AssetIndex::BTC as u32,
+                    100 * SCALAR_7,
+                    1_000 * SCALAR_7,
+                    true,
+                    BTC_PRICE,
+                    0,
+                    0,
                 )
             }));
             if let Ok((id, _)) = result {
@@ -102,7 +103,7 @@ proptest! {
         collateral_raw in 100u64..5_000,
         leverage_raw in 2u32..20,
     ) {
-        let fixture = create_fixture_with_data(false);
+        let fixture = create_fixture_with_data(true);
         let user = Address::generate(&fixture.env);
         let collateral = (collateral_raw as i128) * SCALAR_7;
         let notional = collateral * (leverage_raw as i128);
@@ -112,15 +113,15 @@ proptest! {
         let vault_before = fixture.token.balance(&fixture.vault.address);
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            fixture.trading.open_position(
+            fixture.open_and_fill(
                 &user,
-                &(AssetIndex::BTC as u32),
-                &collateral,
-                &notional,
-                &true,
-                &0,
-                &0,
-                &0,
+                AssetIndex::BTC as u32,
+                collateral,
+                notional,
+                true,
+                BTC_PRICE,
+                0,
+                0,
             )
         }));
 
@@ -149,19 +150,19 @@ proptest! {
             return Ok(());
         }
 
-        let fixture = create_fixture_with_data(false);
+        let fixture = create_fixture_with_data(true);
         let user = Address::generate(&fixture.env);
         fixture.token.mint(&user, &(1_000_000 * SCALAR_7));
 
-        let (position_id, _) = fixture.trading.open_position(
+        let (position_id, _) = fixture.open_and_fill(
             &user,
-            &(AssetIndex::BTC as u32),
-            &(10_000 * SCALAR_7),
-            &(20_000 * SCALAR_7), // 2x leverage
-            &is_long,
-            &0,
-            &0,
-            &0,
+            AssetIndex::BTC as u32,
+            10_000 * SCALAR_7,
+            20_000 * SCALAR_7, // 2x leverage
+            is_long,
+            BTC_PRICE,
+            0,
+            0,
         );
 
         // Change price
