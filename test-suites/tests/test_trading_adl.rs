@@ -1,16 +1,16 @@
 use soroban_sdk::testutils::Address as _;
-use soroban_sdk::{vec as svec, Address};
+use soroban_sdk::Address;
 use test_suites::setup::create_fixture_with_data;
 use test_suites::test_fixture::{AssetIndex, TestFixture};
 use test_suites::SCALAR_7;
-use trading::testutils::BTC_PRICE;
+use trading::testutils::{BTC_FEED_ID, BTC_PRICE, PRICE_SCALAR};
 
 // ==========================================
 // Helper Functions
 // ==========================================
 
 fn setup_fixture() -> TestFixture<'static> {
-    create_fixture_with_data(false)
+    create_fixture_with_data()
 }
 
 fn open_long(fixture: &TestFixture, user: &Address, collateral: i128, notional: i128) -> u32 {
@@ -42,13 +42,7 @@ fn open_short(fixture: &TestFixture, user: &Address, collateral: i128, notional:
 }
 
 fn set_btc_price(fixture: &TestFixture, price: i128) {
-    fixture.oracle.set_price_stable(&svec![
-        &fixture.env,
-        1_0000000,    // USD
-        price,        // BTC
-        2000_0000000, // ETH
-        0_1000000,    // XLM
-    ]);
+    fixture.set_price(BTC_FEED_ID, price);
 }
 
 /// Opens enough long positions to create a deficit when price moves up.
@@ -81,22 +75,33 @@ fn create_deficit_short_positions(fixture: &TestFixture, user: &Address) -> Vec<
     ids
 }
 
+/// Helper: trigger the Active → OnIce → ADL flow.
+/// Moves price to create a deficit, then calls update_status twice:
+/// first to transition Active → OnIce, then to trigger ADL.
+fn trigger_adl(fixture: &TestFixture, price: i128) {
+    set_btc_price(fixture, price);
+    // Active → OnIce (net PnL >= 95% of vault)
+    fixture.trading.update_status(&fixture.dummy_price());
+    // OnIce → ADL (net PnL >= 90% and deficit exists)
+    fixture.trading.update_status(&fixture.dummy_price());
+}
+
 // ==========================================
 // 1. No deficit reverts
 // ==========================================
 
 #[test]
-#[should_panic(expected = "Error(Contract, #781)")]
-fn test_adl_reverts_when_not_on_ice() {
+#[should_panic(expected = "Error(Contract, #782)")]
+fn test_update_status_active_threshold_not_met() {
     let fixture = setup_fixture();
     let user = Address::generate(&fixture.env);
     fixture.token.mint(&user, &(100_000 * SCALAR_7));
 
     open_long(&fixture, &user, 1_000 * SCALAR_7, 10_000 * SCALAR_7);
-    set_btc_price(&fixture, 110_000 * SCALAR_7);
+    set_btc_price(&fixture, 110_000 * PRICE_SCALAR);
 
-    // Should fail — contract is Active, not OnIce
-    fixture.trading.trigger_adl();
+    // Should fail — threshold not met (vault well-funded relative to PnL)
+    fixture.trading.update_status(&fixture.dummy_price());
 }
 
 #[test]
@@ -104,17 +109,21 @@ fn test_adl_reverts_when_not_on_ice() {
 fn test_adl_no_deficit_reverts() {
     let fixture = setup_fixture();
     let user = Address::generate(&fixture.env);
-    fixture.token.mint(&user, &(100_000 * SCALAR_7));
+    fixture.token.mint(&user, &(10_000_000 * SCALAR_7));
 
-    // Open a small position, vault is well-funded
-    open_long(&fixture, &user, 1_000 * SCALAR_7, 10_000 * SCALAR_7);
+    // Open large positions (500M total notional)
+    create_deficit_long_positions(&fixture, &user);
 
-    // Price goes up (longs profit) but vault has 100M — no deficit
-    set_btc_price(&fixture, 110_000 * SCALAR_7);
+    // High price → breaches 95% threshold → Active → OnIce
+    set_btc_price(&fixture, 150_000 * PRICE_SCALAR);
+    fixture.trading.update_status(&fixture.dummy_price());
 
-    // Set to AdminOnIce so ADL can be attempted
-    fixture.trading.set_status(&2u32);
-    fixture.trading.trigger_adl();
+    // Drop price so PnL is between 90% and 100% of vault (no actual deficit)
+    // At $120K: PnL = 500M * 20% = 100M, vault ≈ 106M → no deficit
+    set_btc_price(&fixture, 120_000 * PRICE_SCALAR);
+
+    // OnIce → do_adl → NoDeficit (net_liability <= vault_balance)
+    fixture.trading.update_status(&fixture.dummy_price());
 }
 
 // ==========================================
@@ -129,24 +138,21 @@ fn test_adl_triggers_and_reduces_aggregates() {
 
     create_deficit_long_positions(&fixture, &user);
 
-    let market_before = fixture.trading.get_market(&(AssetIndex::BTC as u32));
-    let long_notional_before = market_before.data.long_notional_size;
+    let market_before = fixture.trading.get_market_data(&(AssetIndex::BTC as u32));
+    let long_notional_before = market_before.long_notional_size;
     assert!(long_notional_before > 0);
 
-    // Move price up 50% → unrealized PnL = 500M * 50% = 250M > vault ~100M
-    set_btc_price(&fixture, 150_000 * SCALAR_7);
+    // Move price up 50% → PnL = 250M > vault ~100M → deficit
+    trigger_adl(&fixture, 150_000 * PRICE_SCALAR);
 
-    fixture.trading.set_status(&2u32); // AdminOnIce
-    fixture.trading.trigger_adl();
-
-    let market_after = fixture.trading.get_market(&(AssetIndex::BTC as u32));
-    assert!(market_after.data.long_notional_size < long_notional_before);
-    assert!(market_after.data.long_entry_weighted < market_before.data.long_entry_weighted);
+    let market_after = fixture.trading.get_market_data(&(AssetIndex::BTC as u32));
+    assert!(market_after.long_notional_size < long_notional_before);
+    assert!(market_after.long_entry_weighted < market_before.long_entry_weighted);
 
     let scalar_18: i128 = 1_000_000_000_000_000_000;
-    assert!(market_after.data.long_adl_index < scalar_18);
+    assert!(market_after.long_adl_index < scalar_18);
     // Short side should be unaffected
-    assert_eq!(market_after.data.short_adl_index, scalar_18);
+    assert_eq!(market_after.short_adl_index, scalar_18);
 }
 
 // ==========================================
@@ -165,15 +171,13 @@ fn test_adl_reduces_position_notional_on_close() {
     let position_before = fixture.trading.get_position(&pos_id);
     let notional_before = position_before.notional_size;
 
-    // Create deficit
-    set_btc_price(&fixture, 150_000 * SCALAR_7);
-    fixture.trading.set_status(&2u32); // AdminOnIce
-    fixture.trading.trigger_adl();
+    // Create deficit and trigger ADL
+    trigger_adl(&fixture, 150_000 * PRICE_SCALAR);
 
     // Market aggregates should be reduced (ADL acts on aggregates, not individual positions)
-    let market = fixture.trading.get_market(&(AssetIndex::BTC as u32));
+    let market = fixture.trading.get_market_data(&(AssetIndex::BTC as u32));
     // 5 positions of 100M each = 500M total; ADL should reduce this
-    assert!(market.data.long_notional_size < 500_000_000 * SCALAR_7);
+    assert!(market.long_notional_size < 500_000_000 * SCALAR_7);
 
     // Raw position in storage is unchanged (ADL applied via index on close)
     let position_raw = fixture.trading.get_position(&pos_id);
@@ -181,7 +185,7 @@ fn test_adl_reduces_position_notional_on_close() {
     assert_eq!(position_raw.collateral, position_before.collateral);
 
     // Close applies ADL reduction — pnl reflects the reduced notional
-    let (pnl, _fee) = fixture.trading.close_position(&pos_id);
+    let (pnl, _fee) = fixture.trading.close_position(&pos_id, &fixture.dummy_price());
     assert!(pnl > 0); // Still profitable (price went up)
 }
 
@@ -197,12 +201,10 @@ fn test_position_after_adl_unaffected() {
 
     create_deficit_long_positions(&fixture, &user);
 
-    // Trigger ADL
-    set_btc_price(&fixture, 150_000 * SCALAR_7);
-    fixture.trading.set_status(&2u32); // AdminOnIce
-    fixture.trading.trigger_adl();
+    // Trigger ADL (status ends up as OnIce)
+    trigger_adl(&fixture, 150_000 * PRICE_SCALAR);
 
-    // Restore to Active and open a new position
+    // Admin restores Active so we can open new positions
     fixture.trading.set_status(&0u32);
     set_btc_price(&fixture, BTC_PRICE);
     let new_pos_id = open_long(
@@ -229,30 +231,28 @@ fn test_adl_compounds_correctly() {
 
     create_deficit_long_positions(&fixture, &user);
 
-    let market_original = fixture.trading.get_market(&(AssetIndex::BTC as u32));
-    let notional_original = market_original.data.long_notional_size;
+    let market_original = fixture.trading.get_market_data(&(AssetIndex::BTC as u32));
+    let notional_original = market_original.long_notional_size;
 
     // First ADL
-    set_btc_price(&fixture, 150_000 * SCALAR_7);
-    fixture.trading.set_status(&2u32); // AdminOnIce
-    fixture.trading.trigger_adl();
+    trigger_adl(&fixture, 150_000 * PRICE_SCALAR);
 
-    let market_after_first = fixture.trading.get_market(&(AssetIndex::BTC as u32));
-    let notional_after_first = market_after_first.data.long_notional_size;
+    let market_after_first = fixture.trading.get_market_data(&(AssetIndex::BTC as u32));
+    let notional_after_first = market_after_first.long_notional_size;
     assert!(notional_after_first < notional_original);
 
-    // Price rises further — second ADL
-    set_btc_price(&fixture, 250_000 * SCALAR_7);
-    fixture.trading.trigger_adl();
+    // Price rises further — second ADL (already OnIce, just need one update_status)
+    set_btc_price(&fixture, 250_000 * PRICE_SCALAR);
+    fixture.trading.update_status(&fixture.dummy_price());
 
-    let market_after_second = fixture.trading.get_market(&(AssetIndex::BTC as u32));
-    let notional_after_second = market_after_second.data.long_notional_size;
+    let market_after_second = fixture.trading.get_market_data(&(AssetIndex::BTC as u32));
+    let notional_after_second = market_after_second.long_notional_size;
     assert!(notional_after_second < notional_after_first);
 
     // ADL index compounds
     let scalar_18: i128 = 1_000_000_000_000_000_000;
-    assert!(market_after_second.data.long_adl_index < market_after_first.data.long_adl_index);
-    assert!(market_after_second.data.long_adl_index < scalar_18);
+    assert!(market_after_second.long_adl_index < market_after_first.long_adl_index);
+    assert!(market_after_second.long_adl_index < scalar_18);
 }
 
 // ==========================================
@@ -267,24 +267,21 @@ fn test_adl_short_side_winning() {
 
     create_deficit_short_positions(&fixture, &user);
 
-    let market_before = fixture.trading.get_market(&(AssetIndex::BTC as u32));
+    let market_before = fixture.trading.get_market_data(&(AssetIndex::BTC as u32));
 
     // Price drops 50% → shorts profit: PnL = 500M * 50% = 250M > vault ~100M
-    set_btc_price(&fixture, 50_000 * SCALAR_7);
+    trigger_adl(&fixture, 50_000 * PRICE_SCALAR);
 
-    fixture.trading.set_status(&2u32); // AdminOnIce
-    fixture.trading.trigger_adl();
-
-    let market = fixture.trading.get_market(&(AssetIndex::BTC as u32));
+    let market = fixture.trading.get_market_data(&(AssetIndex::BTC as u32));
     let scalar_18: i128 = 1_000_000_000_000_000_000;
 
     // Short ADL index should have decreased
-    assert!(market.data.short_adl_index < scalar_18);
+    assert!(market.short_adl_index < scalar_18);
     // Long ADL index should be unchanged (longs are losing)
-    assert_eq!(market.data.long_adl_index, scalar_18);
+    assert_eq!(market.long_adl_index, scalar_18);
 
     // Market short notional should be reduced
-    assert!(market.data.short_notional_size < market_before.data.short_notional_size);
+    assert!(market.short_notional_size < market_before.short_notional_size);
 }
 
 // ==========================================
@@ -300,13 +297,11 @@ fn test_close_after_adl_settles() {
     let ids = create_deficit_long_positions(&fixture, &user);
     let pos_id = ids[0];
 
-    // Trigger ADL
-    set_btc_price(&fixture, 150_000 * SCALAR_7);
-    fixture.trading.set_status(&2u32); // AdminOnIce
-    fixture.trading.trigger_adl();
+    // Trigger ADL (status ends up as OnIce)
+    trigger_adl(&fixture, 150_000 * PRICE_SCALAR);
 
-    // Close position — should not panic (allowed in AdminOnIce)
-    let (pnl, fee) = fixture.trading.close_position(&pos_id);
+    // Close position — allowed in OnIce status
+    let (pnl, fee) = fixture.trading.close_position(&pos_id, &fixture.dummy_price());
 
     // Position should be gone
     assert!(!fixture.position_exists(pos_id));
@@ -330,19 +325,16 @@ fn test_adl_100pct_cap() {
     let pos_id = ids[0];
 
     // Extreme price movement — 10x
-    set_btc_price(&fixture, 1_000_000 * SCALAR_7);
-
-    fixture.trading.set_status(&2u32); // AdminOnIce
-    fixture.trading.trigger_adl();
+    trigger_adl(&fixture, 1_000_000 * PRICE_SCALAR);
 
     // After ADL, position notional should be >= 0
     let pos = fixture.trading.get_position(&pos_id);
     assert!(pos.notional_size >= 0);
 
     // Market aggregates should still be non-negative
-    let market = fixture.trading.get_market(&(AssetIndex::BTC as u32));
-    assert!(market.data.long_notional_size >= 0);
-    assert!(market.data.long_adl_index >= 0);
+    let market = fixture.trading.get_market_data(&(AssetIndex::BTC as u32));
+    assert!(market.long_notional_size >= 0);
+    assert!(market.long_adl_index >= 0);
 }
 
 // ==========================================
@@ -358,19 +350,19 @@ fn test_entry_weighted_tracking() {
     // Open position — entry_weighted should be updated
     let pos1 = open_long(&fixture, &user, 1_000 * SCALAR_7, 10_000 * SCALAR_7);
 
-    let market = fixture.trading.get_market(&(AssetIndex::BTC as u32));
-    assert!(market.data.long_entry_weighted > 0);
-    let ew_after_open = market.data.long_entry_weighted;
+    let market = fixture.trading.get_market_data(&(AssetIndex::BTC as u32));
+    assert!(market.long_entry_weighted > 0);
+    let ew_after_open = market.long_entry_weighted;
 
     // Open another position at same price
     let _pos2 = open_long(&fixture, &user, 1_000 * SCALAR_7, 10_000 * SCALAR_7);
-    let market = fixture.trading.get_market(&(AssetIndex::BTC as u32));
+    let market = fixture.trading.get_market_data(&(AssetIndex::BTC as u32));
     // Entry weighted should roughly double
-    let ew_after_second = market.data.long_entry_weighted;
+    let ew_after_second = market.long_entry_weighted;
     assert!(ew_after_second > ew_after_open);
 
     // Close first position — entry weighted should decrease
-    fixture.trading.close_position(&pos1);
-    let market = fixture.trading.get_market(&(AssetIndex::BTC as u32));
-    assert!(market.data.long_entry_weighted < ew_after_second);
+    fixture.trading.close_position(&pos1, &fixture.dummy_price());
+    let market = fixture.trading.get_market_data(&(AssetIndex::BTC as u32));
+    assert!(market.long_entry_weighted < ew_after_second);
 }

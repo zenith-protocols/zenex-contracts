@@ -47,7 +47,7 @@ impl StrategyVault {
         if amount <= 0 {
             panic_with_error!(env, StrategyVaultError::InvalidAmount);
         }
-        if !storage::get_strategies(env).contains(strategy) {
+        if storage::get_strategy(env) != *strategy {
             panic_with_error!(env, StrategyVaultError::UnauthorizedStrategy);
         }
 

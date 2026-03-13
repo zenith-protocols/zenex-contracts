@@ -3,8 +3,8 @@ use crate::{
     types::{MarketConfig, MarketData, Position, TradingConfig},
 };
 use soroban_sdk::{
-    contracttype, panic_with_error, token::TokenClient, unwrap::UnwrapOptimized, Address, Env,
-    IntoVal, String, TryFromVal, Val, Vec,
+    contracttype, panic_with_error, unwrap::UnwrapOptimized, Address, Env,
+    IntoVal, TryFromVal, Val, Vec,
 };
 
 /********** Ledger Thresholds **********/
@@ -29,15 +29,15 @@ const LEDGER_BUMP_USER: u32 = LEDGER_THRESHOLD_USER + 20 * ONE_DAY_LEDGERS; // ~
 #[contracttype]
 pub enum TradingStorageKey {
     // Instance storage
-    Name,
     Status,
     Vault,
     Token,
-    Oracle,
+    PriceVerifier,
     Config,
-    MarketCounter,
+    Markets,
     PositionCounter,
     LastFundingUpdate,
+    Treasury,
     // Persistent storage
     MarketConfig(u32),
     MarketData(u32),
@@ -74,14 +74,6 @@ fn get_persistent_default<K: IntoVal<Env, Val>, V: TryFromVal<Env, Val>, F: FnOn
 
 /********** Config **********/
 
-pub fn set_name(e: &Env, name: &String) {
-    e.storage().instance().set(&TradingStorageKey::Name, name);
-}
-
-pub fn has_name(e: &Env) -> bool {
-    e.storage().instance().has(&TradingStorageKey::Name)
-}
-
 pub fn get_config(e: &Env) -> TradingConfig {
     e.storage()
         .instance()
@@ -93,11 +85,6 @@ pub fn set_config(e: &Env, config: &TradingConfig) {
     e.storage()
         .instance()
         .set(&TradingStorageKey::Config, config);
-}
-
-pub fn get_token_scalar(e: &Env, token: &Address) -> i128 {
-    let decimals = TokenClient::new(e, token).decimals();
-    10i128.pow(decimals)
 }
 
 pub fn get_last_funding_update(e: &Env) -> u64 {
@@ -126,17 +113,30 @@ pub fn set_vault(e: &Env, vault: &Address) {
         .set(&TradingStorageKey::Vault, vault);
 }
 
-pub fn get_oracle(e: &Env) -> Address {
+pub fn get_price_verifier(e: &Env) -> Address {
     e.storage()
         .instance()
-        .get(&TradingStorageKey::Oracle)
+        .get(&TradingStorageKey::PriceVerifier)
         .unwrap_optimized()
 }
 
-pub fn set_oracle(e: &Env, oracle: &Address) {
+pub fn set_price_verifier(e: &Env, price_verifier: &Address) {
     e.storage()
         .instance()
-        .set(&TradingStorageKey::Oracle, oracle);
+        .set(&TradingStorageKey::PriceVerifier, price_verifier);
+}
+
+pub fn get_treasury(e: &Env) -> Address {
+    e.storage()
+        .instance()
+        .get(&TradingStorageKey::Treasury)
+        .unwrap_optimized()
+}
+
+pub fn set_treasury(e: &Env, treasury: &Address) {
+    e.storage()
+        .instance()
+        .set(&TradingStorageKey::Treasury, treasury);
 }
 
 pub fn get_token(e: &Env) -> Address {
@@ -167,23 +167,22 @@ pub fn set_status(e: &Env, status: u32) {
 
 /********** Market **********/
 
-pub fn get_market_count(e: &Env) -> u32 {
+pub fn get_markets(e: &Env) -> Vec<u32> {
     e.storage()
         .instance()
-        .get(&TradingStorageKey::MarketCounter)
-        .unwrap_or(0)
+        .get(&TradingStorageKey::Markets)
+        .unwrap_or(Vec::new(e))
 }
 
-pub fn next_market_index(e: &Env) -> u32 {
-    let key = TradingStorageKey::MarketCounter;
-    let current: u32 = e.storage().instance().get(&key).unwrap_or(0);
-    e.storage().instance().set(&key, &(current + 1));
-    current
+pub fn set_markets(e: &Env, markets: &Vec<u32>) {
+    e.storage()
+        .instance()
+        .set(&TradingStorageKey::Markets, markets);
 }
 
-pub fn get_market_config(e: &Env, asset_index: u32) -> MarketConfig {
-    let key = TradingStorageKey::MarketConfig(asset_index);
-    let result = e
+pub fn get_market_config(e: &Env, feed_id: u32) -> MarketConfig {
+    let key = TradingStorageKey::MarketConfig(feed_id);
+    let config: MarketConfig = e
         .storage()
         .persistent()
         .get(&key)
@@ -191,19 +190,19 @@ pub fn get_market_config(e: &Env, asset_index: u32) -> MarketConfig {
     e.storage()
         .persistent()
         .extend_ttl(&key, LEDGER_THRESHOLD_SHARED, LEDGER_BUMP_SHARED);
-    result
+    config
 }
 
-pub fn set_market_config(e: &Env, asset_index: u32, config: &MarketConfig) {
-    let key = TradingStorageKey::MarketConfig(asset_index);
+pub fn set_market_config(e: &Env, feed_id: u32, config: &MarketConfig) {
+    let key = TradingStorageKey::MarketConfig(feed_id);
     e.storage().persistent().set(&key, config);
     e.storage()
         .persistent()
         .extend_ttl(&key, LEDGER_THRESHOLD_SHARED, LEDGER_BUMP_SHARED);
 }
 
-pub fn get_market_data(e: &Env, asset_index: u32) -> MarketData {
-    let key = TradingStorageKey::MarketData(asset_index);
+pub fn get_market_data(e: &Env, feed_id: u32) -> MarketData {
+    let key = TradingStorageKey::MarketData(feed_id);
     let result = e
         .storage()
         .persistent()
@@ -215,8 +214,8 @@ pub fn get_market_data(e: &Env, asset_index: u32) -> MarketData {
     result
 }
 
-pub fn set_market_data(e: &Env, asset_index: u32, data: &MarketData) {
-    let key = TradingStorageKey::MarketData(asset_index);
+pub fn set_market_data(e: &Env, feed_id: u32, data: &MarketData) {
+    let key = TradingStorageKey::MarketData(feed_id);
     e.storage().persistent().set(&key, data);
     e.storage()
         .persistent()

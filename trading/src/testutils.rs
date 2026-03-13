@@ -3,19 +3,90 @@
 use crate::constants::{SCALAR_7, SCALAR_18};
 use crate::contract::TradingContract;
 use crate::storage;
-use crate::types::{ContractStatus, MarketConfig, MarketData, TradingConfig};
-use sep_40_oracle::testutils::{MockPriceOracleClient, MockPriceOracleWASM};
-use sep_40_oracle::Asset as StellarAsset;
+use crate::types::{MarketConfig, MarketData, TradingConfig};
 use sep_41_token::testutils::{MockTokenClient, MockTokenWASM};
 use soroban_sdk::testutils::{Address as _, Ledger as _};
-use soroban_sdk::{contract, contractimpl, Address, Env, IntoVal, String, Symbol};
+use soroban_sdk::{contract, contractimpl, contracttype, Address, Bytes, Env, IntoVal, Map, Vec};
 
 //************************************************
 //           Test Constants
 //************************************************
 
-/// Default BTC price in SCALAR_7
-pub const BTC_PRICE: i128 = 100_000_0000000; // 100,000 USD
+/// Default BTC price raw (exponent -8), used in mock price verifier
+pub const BTC_PRICE_RAW: i128 = 10_000_000_000_000; // $100,000 with exponent -8
+
+/// Default BTC price (raw Pyth value with exponent -8)
+pub const BTC_PRICE: i128 = BTC_PRICE_RAW; // $100,000 = 10_000_000_000_000
+
+/// BTC feed ID for Pyth Lazer
+pub const BTC_FEED_ID: u32 = 1;
+
+/// Price scalar matching mock exponent -8 (10^8)
+pub const PRICE_SCALAR: i128 = 100_000_000;
+
+//************************************************
+//           Mock Price Verifier
+//************************************************
+
+/// Mock price-verifier that simulates verify functions.
+/// Stores a map of feed_id → normalized price (i128) in instance storage.
+#[contract]
+pub struct MockPriceVerifier;
+
+/// PriceData type matching price-verifier's return type.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MockPriceData {
+    pub feed_id: u32,
+    pub price: i128,
+    pub exponent: i32,
+    pub publish_time: u64,
+}
+
+/// Storage key for mock price-verifier prices.
+#[contracttype]
+#[derive(Clone)]
+pub enum MockPVKey {
+    Prices,
+}
+
+#[contractimpl]
+impl MockPriceVerifier {
+    /// Set the normalized price for a feed_id.
+    pub fn set_price(e: Env, feed_id: u32, price: i128) {
+        let mut prices: Map<u32, i128> = e
+            .storage()
+            .instance()
+            .get(&MockPVKey::Prices)
+            .unwrap_or(Map::new(&e));
+        prices.set(feed_id, price);
+        e.storage()
+            .instance()
+            .set(&MockPVKey::Prices, &prices);
+    }
+
+    /// Verify price feeds (mock: ignores price bytes, returns all stored prices).
+    pub fn verify_prices(e: Env, _price: Bytes) -> Vec<MockPriceData> {
+        let prices: Map<u32, i128> = e
+            .storage()
+            .instance()
+            .get(&MockPVKey::Prices)
+            .expect("no prices configured");
+        let mut results: Vec<MockPriceData> = Vec::new(&e);
+        let keys = prices.keys();
+        for i in 0..keys.len() {
+            let feed_id = keys.get(i).unwrap();
+            let price = prices.get(feed_id).unwrap();
+            results.push_back(MockPriceData {
+                feed_id,
+                price,
+                exponent: -8,
+                publish_time: e.ledger().timestamp(),
+            });
+        }
+        results
+    }
+}
 
 //************************************************
 //           Mock Vault
@@ -27,22 +98,36 @@ pub struct MockVault;
 #[contractimpl]
 impl MockVault {
     pub fn __constructor(e: Env, token: Address) {
-        e.storage().instance().set(&Symbol::new(&e, "token"), &token);
+        e.storage().instance().set(&soroban_sdk::Symbol::new(&e, "token"), &token);
     }
 
     pub fn query_asset(e: Env) -> Address {
-        e.storage().instance().get(&Symbol::new(&e, "token")).unwrap()
+        e.storage().instance().get(&soroban_sdk::Symbol::new(&e, "token")).unwrap()
     }
 
     pub fn total_assets(e: Env) -> i128 {
-        let token: Address = e.storage().instance().get(&Symbol::new(&e, "token")).unwrap();
+        let token: Address = e.storage().instance().get(&soroban_sdk::Symbol::new(&e, "token")).unwrap();
         soroban_sdk::token::TokenClient::new(&e, &token).balance(&e.current_contract_address())
     }
 
     pub fn strategy_withdraw(e: Env, strategy: Address, amount: i128) {
-        let token: Address = e.storage().instance().get(&Symbol::new(&e, "token")).unwrap();
+        let token: Address = e.storage().instance().get(&soroban_sdk::Symbol::new(&e, "token")).unwrap();
         soroban_sdk::token::TokenClient::new(&e, &token)
             .transfer(&e.current_contract_address(), &strategy, &amount);
+    }
+}
+
+//************************************************
+//           Mock Treasury
+//************************************************
+
+#[contract]
+pub struct MockTreasury;
+
+#[contractimpl]
+impl MockTreasury {
+    pub fn get_rate(_e: Env) -> i128 {
+        0_0500000 // 5% protocol fee
     }
 }
 
@@ -50,37 +135,44 @@ impl MockVault {
 //           Contract Setup Helpers
 //************************************************
 
-/// Create a trading contract for unit testing.
-/// Returns (contract_address, owner_address)
+pub fn create_treasury(e: &Env) -> Address {
+    e.register(MockTreasury, ())
+}
+
 pub fn create_trading(e: &Env) -> (Address, Address) {
+    create_trading_with_vault(e, 100_000 * SCALAR_7)
+}
+
+pub fn create_trading_with_vault(e: &Env, vault_amount: i128) -> (Address, Address) {
+    e.mock_all_auths();
     let owner = Address::generate(e);
-    let address = e.register(TradingContract {}, (owner.clone(),));
+    let (price_verifier, _) = create_price_verifier(e);
+    let (token, _) = create_token(e, &owner);
+    let vault = create_vault(e, &token, vault_amount);
+    let treasury = create_treasury(e);
+    let address = e.register(TradingContract {}, (
+        owner.clone(),
+        token,
+        vault,
+        price_verifier,
+        treasury,
+        default_config(),
+    ));
     (address, owner)
 }
 
-/// Create a mock oracle with default setup and return (address, client)
-pub fn create_oracle<'a>(e: &Env) -> (Address, MockPriceOracleClient<'a>) {
-    use sep_40_oracle::testutils::Asset;
-    use soroban_sdk::vec as svec;
+/// Create a mock price-verifier with BTC price set.
+/// Returns (price_verifier_address, MockPriceVerifierClient)
+pub fn create_price_verifier(e: &Env) -> (Address, MockPriceVerifierClient<'_>) {
+    let address = e.register(MockPriceVerifier, ());
+    let client = MockPriceVerifierClient::new(e, &address);
 
-    let address = e.register(MockPriceOracleWASM, ());
-    let client = MockPriceOracleClient::new(e, &address);
-    let admin = Address::generate(e);
-
-    // Set up oracle with BTC asset, 7 decimals, 300s resolution
-    client.set_data(
-        &admin,
-        &Asset::Other(Symbol::new(e, "USD")),
-        &svec![e, Asset::Other(Symbol::new(e, "BTC"))],
-        &7,
-        &300,
-    );
-    client.set_price_stable(&svec![e, BTC_PRICE]);
+    // BTC at $100,000 normalized to 10 decimals
+    client.set_price(&BTC_FEED_ID, &BTC_PRICE_RAW);
 
     (address, client)
 }
 
-/// Create a mock token and return (address, client)
 pub fn create_token<'a>(e: &Env, admin: &Address) -> (Address, MockTokenClient<'a>) {
     let address = Address::generate(e);
     e.register_at(&address, MockTokenWASM, ());
@@ -89,8 +181,6 @@ pub fn create_token<'a>(e: &Env, admin: &Address) -> (Address, MockTokenClient<'
     (address, client)
 }
 
-/// Create a mock vault and fund it with tokens.
-/// Returns the vault address.
 pub fn create_vault(e: &Env, token: &Address, initial_assets: i128) -> Address {
     let address = e.register(MockVault, (token.clone(),));
     if initial_assets > 0 {
@@ -103,24 +193,21 @@ pub fn create_vault(e: &Env, token: &Address, initial_assets: i128) -> Address {
 //           Default Configs
 //************************************************
 
-/// Create a default trading config for testing
 pub fn default_config() -> TradingConfig {
     TradingConfig {
         caller_take_rate: 0_1000000, // 10%
-        min_open_time: 0,               // disabled
-        vault_skim: 0_2000000,          // 20%
-        min_collateral: SCALAR_7,             // 1 token minimum
-        max_collateral: 1_000_000 * SCALAR_7, // 1M tokens maximum
-        max_payout: 10 * SCALAR_7,            // 1000% max payout
+        min_open_time: 0,
+        vault_skim: 0_2000000,       // 20%
+        min_collateral: SCALAR_7,
+        max_collateral: 1_000_000 * SCALAR_7,
+        max_payout: 10 * SCALAR_7,   // 1000% max payout
         base_fee_dominant: 0_0005000,     // 0.05%
         base_fee_non_dominant: 0_0001000, // 0.01%
     }
 }
 
-/// Create a default market config for testing
-pub fn default_market(e: &Env) -> MarketConfig {
+pub fn default_market(_e: &Env) -> MarketConfig {
     MarketConfig {
-        asset: StellarAsset::Other(Symbol::new(e, "BTC")),
         enabled: true,
         init_margin: 0_0100000,        // 1%
         base_hourly_rate: 10_000_000_000_000, // 0.001% per hour in SCALAR_18
@@ -128,27 +215,14 @@ pub fn default_market(e: &Env) -> MarketConfig {
     }
 }
 
-/// Create default market data (empty market)
 pub fn default_market_data() -> MarketData {
-    MarketData {
-        long_notional_size: 0,
-        short_notional_size: 0,
-        long_funding_index: 0,
-        short_funding_index: 0,
-        last_update: 0,
-        funding_rate: 0,
-        long_entry_weighted: 0,
-        short_entry_weighted: 0,
-        long_adl_index: SCALAR_18,
-        short_adl_index: SCALAR_18,
-    }
+    MarketData::default()
 }
 
 //************************************************
 //           Environment Setup
 //************************************************
 
-/// Create a default test environment with mock auth and ledger info.
 pub fn setup_env() -> Env {
     let e = Env::default();
     e.mock_all_auths();
@@ -156,7 +230,6 @@ pub fn setup_env() -> Env {
     e
 }
 
-/// Advance the ledger to the given timestamp (sequence_number derived as timestamp / 10).
 pub fn jump(e: &Env, timestamp: u64) {
     e.ledger().set(soroban_sdk::testutils::LedgerInfo {
         timestamp,
@@ -170,41 +243,46 @@ pub fn jump(e: &Env, timestamp: u64) {
     });
 }
 
-/// Fully initialize a trading contract with oracle, vault, token, and BTC market.
-///
-/// Returns (contract_address, token_client).
+/// Dummy price bytes for tests (mock price-verifier ignores contents).
+pub fn dummy_price(e: &Env) -> Bytes {
+    Bytes::from_array(e, &[0u8; 1])
+}
+
+/// Fully initialize a trading contract with price-verifier, vault, token, and BTC market.
 pub fn setup_contract(e: &Env) -> (Address, MockTokenClient<'_>) {
-    let (contract, owner) = create_trading(e);
-    let (oracle, _) = create_oracle(e);
+    let owner = Address::generate(e);
+    let (price_verifier, _) = create_price_verifier(e);
     let (token, token_client) = create_token(e, &owner);
     let vault = create_vault(e, &token, 100_000_000 * SCALAR_7);
+    let treasury = create_treasury(e);
+
+    let contract = e.register(TradingContract {}, (
+        owner.clone(),
+        token.clone(),
+        vault,
+        price_verifier,
+        treasury,
+        default_config(),
+    ));
 
     e.as_contract(&contract, || {
-        crate::trading::execute_initialize(
-            e,
-            &String::from_str(e, "Test"),
-            &vault,
-            &oracle,
-            &default_config(),
-        );
-        storage::set_status(e, ContractStatus::Active as u32);
-
-        storage::set_market_config(e, 0, &default_market(e));
+        storage::set_market_config(e, BTC_FEED_ID, &default_market(e));
         let mut market_data = default_market_data();
         market_data.last_update = e.ledger().timestamp();
         market_data.long_funding_index = SCALAR_18;
         market_data.short_funding_index = SCALAR_18;
-        storage::set_market_data(e, 0, &market_data);
-        storage::next_market_index(e);
+        storage::set_market_data(e, BTC_FEED_ID, &market_data);
+        let mut markets = storage::get_markets(e);
+        markets.push_back(BTC_FEED_ID);
+        storage::set_markets(e, &markets);
 
-        // Initialize global funding timestamp and stored funding rate
         storage::set_last_funding_update(e, e.ledger().timestamp());
-        let mut market = crate::trading::market::Market::load(e, 0);
-        market.update_funding_rate(e);
-        market.store(e);
+        let market_config = storage::get_market_config(e, BTC_FEED_ID);
+        let mut data = storage::get_market_data(e, BTC_FEED_ID);
+        data.update_funding_rate(e, market_config.base_hourly_rate);
+        storage::set_market_data(e, BTC_FEED_ID, &data);
     });
 
-    // Fund contract for token transfers
     token_client.mint(&contract, &(10_000_000 * SCALAR_7));
 
     (contract, token_client)
@@ -214,12 +292,11 @@ pub fn setup_contract(e: &Env) -> (Address, MockTokenClient<'_>) {
 //           Fuzz / Property Test Wrappers
 //************************************************
 
-/// Wrapper exposing the private `calc_funding_rate` function for fuzz targets.
 pub fn calc_funding_rate_for_test(
     e: &Env,
     long_notional: i128,
     short_notional: i128,
     base_rate: i128,
 ) -> i128 {
-    crate::trading::interest::calc_funding_rate(e, long_notional, short_notional, base_rate)
+    crate::trading::funding::calc_funding_rate(e, long_notional, short_notional, base_rate)
 }

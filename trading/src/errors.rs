@@ -8,14 +8,13 @@ pub enum TradingError {
     Unauthorized = 1,
 
     // Configuration
-    AlreadyInitialized = 700,
     NotInitialized = 701,
     InvalidConfig = 702,
     // Market
     MarketNotFound = 710,
     MarketDisabled = 712,
 
-    // Oracle/Price
+    // Price
     PriceNotFound = 720,
     PriceStale = 721,
 
@@ -29,6 +28,7 @@ pub enum TradingError {
     CollateralBelowMinimum = 736,
     CollateralAboveMaximum = 737,
     LeverageBelowMinimum = 738,
+    LeverageAboveMaximum = 739,
     CollateralUnchanged = 740,
     WithdrawalBreaksMargin = 741,
     InvalidTakeProfitPrice = 742,
@@ -50,6 +50,9 @@ pub enum TradingError {
 
     // Market limits
     MaxMarketsReached = 770,
+
+    // Funding
+    FundingTooEarly = 790,
 
     // ADL / Circuit breaker
     NoDeficit = 780,

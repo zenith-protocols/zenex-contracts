@@ -1,4 +1,5 @@
-use crate::constants::SCALAR_18;
+use crate::constants::{ONE_HOUR_SECONDS, SCALAR_18};
+use crate::types::MarketData;
 use soroban_fixed_point_math::SorobanFixedPoint;
 use soroban_sdk::Env;
 
@@ -41,6 +42,51 @@ pub fn calc_funding_rate(
             if is_long_dominant { rate } else { -rate }
         }
     }
+}
+
+/// Accrues funding using the stored signed rate.
+/// Payers pay full delta per unit. Receivers get: pay_delta × (dominant/minority) per unit.
+/// Total received equals total paid (self-balancing). Vault skim is applied at close time.
+pub fn accrue_funding(e: &Env, data: &mut MarketData) {
+    let current_time = e.ledger().timestamp();
+    let seconds_elapsed = current_time.saturating_sub(data.last_update) as i128;
+
+    if seconds_elapsed <= 0 {
+        return;
+    }
+
+    let hour = ONE_HOUR_SECONDS as i128;
+    let hours_scaled = seconds_elapsed.fixed_mul_floor(e, &SCALAR_18, &hour);
+
+    let pay_delta = data
+        .funding_rate
+        .abs()
+        .fixed_mul_ceil(e, &hours_scaled, &SCALAR_18);
+
+    if data.funding_rate > 0 {
+        // Longs pay
+        data.long_funding_index += pay_delta;
+        // Shorts receive (scaled by L/S ratio)
+        if data.short_notional_size > 0 {
+            let ratio = data.long_notional_size
+                .fixed_div_floor(e, &data.short_notional_size, &SCALAR_18);
+            let receive_delta = pay_delta
+                .fixed_mul_floor(e, &ratio, &SCALAR_18);
+            data.short_funding_index -= receive_delta;
+        }
+    } else if data.funding_rate < 0 {
+        // Shorts pay
+        data.short_funding_index += pay_delta;
+        // Longs receive (scaled by S/L ratio)
+        if data.long_notional_size > 0 {
+            let ratio = data.short_notional_size
+                .fixed_div_floor(e, &data.long_notional_size, &SCALAR_18);
+            let receive_delta = pay_delta
+                .fixed_mul_floor(e, &ratio, &SCALAR_18);
+            data.long_funding_index -= receive_delta;
+        }
+    }
+    data.last_update = current_time;
 }
 
 #[cfg(test)]
@@ -161,4 +207,49 @@ mod tests {
         assert!(rate <= BASE_RATE);
         assert!(rate > BASE_RATE * 999 / 1000); // within 0.1% of base_rate
     }
+
+    #[test]
+    fn test_accrue_funding_longs_pay() {
+        use crate::testutils::{create_trading, default_market_data, jump};
+
+        let e = Env::default();
+        jump(&e, 0);
+
+        let (address, _) = create_trading(&e);
+
+        e.as_contract(&address, || {
+            let mut data = default_market_data();
+            data.long_notional_size = 2000 * SCALAR_18;
+            data.short_notional_size = 1000 * SCALAR_18;
+            data.funding_rate = 10_000_000_000_000; // positive = longs pay
+            data.last_update = 0;
+
+            // Advance time by 1 hour
+            jump(&e, 3600);
+
+            accrue_funding(&e, &mut data);
+
+            // Funding should have accrued — longs pay, index increases
+            assert!(data.long_funding_index > 0);
+            assert_eq!(data.last_update, 3600);
+        });
+    }
+
+    #[test]
+    fn test_update_funding_rate() {
+        use crate::testutils::default_market_data;
+
+        let e = Env::default();
+
+        let mut data = default_market_data();
+        data.long_notional_size = 2000 * SCALAR_18;
+        data.short_notional_size = 1000 * SCALAR_18;
+
+        let base_hourly_rate = 10_000_000_000_000i128;
+        data.update_funding_rate(&e, base_hourly_rate);
+
+        // Longs dominant → positive rate
+        assert!(data.funding_rate > 0);
+    }
+
 }

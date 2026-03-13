@@ -4,7 +4,7 @@ use soroban_sdk::Address;
 use test_suites::setup::create_fixture_with_data;
 use test_suites::test_fixture::AssetIndex;
 use test_suites::SCALAR_7;
-use trading::testutils::BTC_PRICE;
+use trading::testutils::{BTC_FEED_ID, BTC_PRICE, PRICE_SCALAR};
 
 const SECONDS_PER_WEEK: u64 = 604800;
 
@@ -23,7 +23,7 @@ proptest! {
         leverage_raw in 2u32..50,              // 2x–50x leverage
         is_long in proptest::bool::ANY,
     ) {
-        let fixture = create_fixture_with_data(true);
+        let fixture = create_fixture_with_data();
         let user = Address::generate(&fixture.env);
         let collateral = (collateral_raw as i128) * SCALAR_7;
         let notional = collateral * (leverage_raw as i128);
@@ -32,7 +32,8 @@ proptest! {
 
         let total_before = fixture.token.balance(&user)
             + fixture.token.balance(&fixture.vault.address)
-            + fixture.token.balance(&fixture.trading.address);
+            + fixture.token.balance(&fixture.trading.address)
+            + fixture.token.balance(&fixture.treasury);
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             fixture.open_and_fill(
@@ -49,11 +50,12 @@ proptest! {
 
         if let Ok((position_id, _)) = result {
             // Close immediately — no time, no price change
-            let _ = fixture.trading.close_position(&position_id);
+            let _ = fixture.trading.close_position(&position_id, &fixture.dummy_price());
 
             let total_after = fixture.token.balance(&user)
                 + fixture.token.balance(&fixture.vault.address)
-                + fixture.token.balance(&fixture.trading.address);
+                + fixture.token.balance(&fixture.trading.address)
+                + fixture.token.balance(&fixture.treasury);
 
             // Total tokens must be conserved (fees move between accounts, not destroyed)
             prop_assert_eq!(total_before, total_after);
@@ -66,7 +68,7 @@ proptest! {
     fn prop_contract_balance_zero_after_all_closed(
         count in 1u32..4,
     ) {
-        let fixture = create_fixture_with_data(true);
+        let fixture = create_fixture_with_data();
         let user = Address::generate(&fixture.env);
         fixture.token.mint(&user, &(1_000_000 * SCALAR_7));
 
@@ -90,7 +92,7 @@ proptest! {
         }
 
         for id in &position_ids {
-            let _ = fixture.trading.close_position(id);
+            let _ = fixture.trading.close_position(id, &fixture.dummy_price());
         }
 
         let contract_balance = fixture.token.balance(&fixture.trading.address);
@@ -103,7 +105,7 @@ proptest! {
         collateral_raw in 100u64..5_000,
         leverage_raw in 2u32..20,
     ) {
-        let fixture = create_fixture_with_data(true);
+        let fixture = create_fixture_with_data();
         let user = Address::generate(&fixture.env);
         let collateral = (collateral_raw as i128) * SCALAR_7;
         let notional = collateral * (leverage_raw as i128);
@@ -129,7 +131,7 @@ proptest! {
             // Hold for a week — interest accrues
             fixture.jump(SECONDS_PER_WEEK);
 
-            let _ = fixture.trading.close_position(&position_id);
+            let _ = fixture.trading.close_position(&position_id, &fixture.dummy_price());
 
             let vault_after = fixture.token.balance(&fixture.vault.address);
             prop_assert!(
@@ -150,7 +152,7 @@ proptest! {
             return Ok(());
         }
 
-        let fixture = create_fixture_with_data(true);
+        let fixture = create_fixture_with_data();
         let user = Address::generate(&fixture.env);
         fixture.token.mint(&user, &(1_000_000 * SCALAR_7));
 
@@ -166,16 +168,10 @@ proptest! {
         );
 
         // Change price
-        let new_price = 100_000_0000000 + (price_change_pct as i128) * 1_000_0000000;
-        fixture.oracle.set_price_stable(&soroban_sdk::vec![
-            &fixture.env,
-            1_0000000,
-            new_price,
-            2000_0000000,
-            0_1000000,
-        ]);
+        let new_price = 100_000 * PRICE_SCALAR + (price_change_pct as i128) * 1_000 * PRICE_SCALAR;
+        fixture.set_price(BTC_FEED_ID, new_price);
 
-        let (pnl, _) = fixture.trading.close_position(&position_id);
+        let (pnl, _) = fixture.trading.close_position(&position_id, &fixture.dummy_price());
 
         if is_long {
             if price_change_pct > 0 {

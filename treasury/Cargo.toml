@@ -1,5 +1,5 @@
 [package]
-name = "trading-admin"
+name = "treasury"
 version = "0.0.0"
 edition = "2021"
 publish = false
@@ -9,19 +9,14 @@ crate-type = ["lib", "cdylib"]
 doctest = false
 
 [features]
-testutils = [
-    "soroban-sdk/testutils",
-    "trading/testutils",
-]
+testutils = ["soroban-sdk/testutils"]
 
 [dependencies]
 soroban-sdk = { workspace = true }
-soroban-fixed-point-math = { workspace = true }
 stellar-access = { workspace = true }
-stellar-contract-utils = { workspace = true }
 stellar-macros = { workspace = true }
-trading = { path = "../trading", features = ["library"] }
+stellar-contract-utils = { workspace = true }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
-trading = { path = "../trading", features = ["testutils"] }
+sep-41-token = { workspace = true, features = ["testutils"] }

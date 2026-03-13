@@ -1,17 +1,18 @@
-use crate::constants::SCALAR_18;
+use crate::constants::{MAINTENANCE_MARGIN_DIVISOR, MAX_POSITIONS, SCALAR_7, SCALAR_18};
+use crate::errors::TradingError;
 use crate::storage;
-use crate::trading::market::Market;
-use crate::types::TradingConfig;
+use crate::types::{MarketConfig, MarketData, TradingConfig};
 pub(crate) use crate::types::Position;
 use soroban_fixed_point_math::SorobanFixedPoint;
-use soroban_sdk::{Address, Env};
+use soroban_sdk::{panic_with_error, Address, Env};
 
-/// Breakdown of position fees
-/// Used for close calculations and event emission
+// ── Result structs ──────────────────────────────────────────────────
+
 pub struct FeeBreakdown {
     pub base_fee: i128,
     pub impact_fee: i128,
     pub funding: i128,
+    pub vault_skim: i128,
 }
 
 impl FeeBreakdown {
@@ -20,54 +21,74 @@ impl FeeBreakdown {
     }
 }
 
-/// Implementation of position-related methods
+pub struct FillResult {
+    pub is_dominant: bool,
+    pub fee_dominant: i128,
+    pub fee_non_dominant: i128,
+    pub price_impact_fee: i128,
+}
+
+pub struct CloseResult {
+    pub pnl: i128,
+    pub fees: FeeBreakdown,
+    pub user_payout: i128,
+    pub vault_transfer: i128,
+}
+
+pub struct LiquidationCheck {
+    pub is_liquidatable: bool,
+    pub pnl: i128,
+    pub fees: FeeBreakdown,
+}
+
+// ── Position methods ────────────────────────────────────────────────
+
 impl Position {
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    pub fn create(
         e: &Env,
         user: Address,
-        filled: bool,
-        asset_index: u32,
+        feed_id: u32,
         is_long: bool,
-        stop_loss: i128,
-        take_profit: i128,
         entry_price: i128,
         collateral: i128,
         notional_size: i128,
-        entry_funding_index: i128,
-        entry_adl_index: i128,
-    ) -> Self {
-        Position {
+        stop_loss: i128,
+        take_profit: i128,
+    ) -> (u32, Self) {
+        if notional_size <= 0 || entry_price <= 0 || take_profit < 0 || stop_loss < 0 {
+            panic_with_error!(e, TradingError::NegativeValueNotAllowed);
+        }
+        let positions = storage::get_user_positions(e, &user);
+        if positions.len() >= MAX_POSITIONS {
+            panic_with_error!(e, TradingError::MaxPositionsReached);
+        }
+
+        let id = storage::next_position_id(e);
+        let position = Position {
             user,
-            filled,
-            asset_index,
+            filled: false,
+            feed_id,
             is_long,
             stop_loss,
             take_profit,
             entry_price,
             collateral,
             notional_size,
-            entry_funding_index,
+            entry_funding_index: 0,
             created_at: e.ledger().timestamp(),
-            entry_adl_index,
-        }
+            entry_adl_index: 0,
+        };
+        storage::add_user_position(e, &position.user, id);
+        (id, position)
     }
 
-    pub fn load(e: &Env, position_id: u32) -> Self {
-        storage::get_position(e, position_id)
-    }
-
-    pub fn store(&self, e: &Env, id: u32) {
-        storage::set_position(e, id, self);
-    }
-
-    /// Returns the ADL-adjusted notional size using entry vs current ADL index.
-    /// Does not mutate the position — works like funding index comparison.
-    pub fn effective_notional(&self, e: &Env, market: &Market) -> i128 {
+    /// Returns the ADL-adjusted notional size.
+    pub fn effective_notional(&self, e: &Env, data: &MarketData) -> i128 {
         let current_index = if self.is_long {
-            market.data.long_adl_index
+            data.long_adl_index
         } else {
-            market.data.short_adl_index
+            data.short_adl_index
         };
 
         if self.entry_adl_index != current_index && self.entry_adl_index != 0 {
@@ -78,45 +99,153 @@ impl Position {
         }
     }
 
-    pub fn calculate_fee_breakdown(&self, e: &Env, market: &Market, config: &TradingConfig, token_scalar: i128) -> FeeBreakdown {
-        // Pay base fee when closing a position on the dominant side
-        // If balanced (both sides equal), both sides pay the base fee
-        let same_side_notional = if self.is_long {
-            market.data.long_notional_size
+    /// Transition pending → filled. Snapshots funding/ADL indices, computes fill fees.
+    /// Caller must set `self.entry_price` beforehand if the fill price differs from creation.
+    /// Caller is responsible for `data.update_stats()` afterward.
+    pub fn fill(
+        &mut self,
+        e: &Env,
+        data: &MarketData,
+        market_config: &MarketConfig,
+        config: &TradingConfig,
+    ) -> FillResult {
+        self.filled = true;
+        self.created_at = e.ledger().timestamp();
+        self.entry_funding_index = if self.is_long {
+            data.long_funding_index
         } else {
-            market.data.short_notional_size
+            data.short_funding_index
+        };
+        self.entry_adl_index = if self.is_long {
+            data.long_adl_index
+        } else {
+            data.short_adl_index
+        };
+
+        let is_dominant = if self.is_long {
+            data.long_notional_size + self.notional_size > data.short_notional_size
+        } else {
+            data.short_notional_size + self.notional_size > data.long_notional_size
+        };
+
+        let fee_dominant = self
+            .notional_size
+            .fixed_mul_ceil(e, &config.base_fee_dominant, &SCALAR_7);
+        let fee_non_dominant = self
+            .notional_size
+            .fixed_mul_ceil(e, &config.base_fee_non_dominant, &SCALAR_7);
+        let price_impact_fee = self
+            .notional_size
+            .fixed_div_ceil(e, &market_config.price_impact_scalar, &SCALAR_7);
+
+        FillResult {
+            is_dominant,
+            fee_dominant,
+            fee_non_dominant,
+            price_impact_fee,
+        }
+    }
+
+    /// Compute settlement for closing this position. Pure calculation — no side effects.
+    /// Caller must ADL-adjust `self.notional_size` via `effective_notional()` beforehand.
+    pub fn close(
+        &self,
+        e: &Env,
+        data: &MarketData,
+        market_config: &MarketConfig,
+        config: &TradingConfig,
+        current_price: i128,
+        price_scalar: i128,
+    ) -> CloseResult {
+        let pnl = self.calculate_pnl(e, current_price, price_scalar);
+        let fees = self.calculate_fee_breakdown(e, data, market_config, config);
+
+        let equity = self.collateral + pnl - fees.total_fee();
+        let max_payout = self
+            .collateral
+            .fixed_mul_floor(e, &config.max_payout, &SCALAR_7);
+        let user_payout = equity.max(0).min(max_payout);
+        let vault_transfer = self.collateral - user_payout;
+
+        CloseResult {
+            pnl,
+            fees,
+            user_payout,
+            vault_transfer,
+        }
+    }
+
+    /// Check whether this position is liquidatable at the given price.
+    /// Returns pre-computed fees so the caller can use them for caller_fee without recomputing.
+    pub fn check_liquidation(
+        &self,
+        e: &Env,
+        data: &MarketData,
+        market_config: &MarketConfig,
+        config: &TradingConfig,
+        current_price: i128,
+        price_scalar: i128,
+    ) -> LiquidationCheck {
+        let pnl = self.calculate_pnl(e, current_price, price_scalar);
+        let fees = self.calculate_fee_breakdown(e, data, market_config, config);
+        let equity = self.collateral + pnl - fees.total_fee();
+        let maintenance_margin = SCALAR_7 / MAINTENANCE_MARGIN_DIVISOR;
+        let required_margin = self
+            .notional_size
+            .fixed_mul_floor(e, &maintenance_margin, &SCALAR_7);
+
+        LiquidationCheck {
+            is_liquidatable: equity < required_margin,
+            pnl,
+            fees,
+        }
+    }
+
+    pub fn calculate_fee_breakdown(&self, e: &Env, data: &MarketData, market_config: &MarketConfig, config: &TradingConfig) -> FeeBreakdown {
+        let same_side_notional = if self.is_long {
+            data.long_notional_size
+        } else {
+            data.short_notional_size
         };
         let other_side_notional = if self.is_long {
-            market.data.short_notional_size
+            data.short_notional_size
         } else {
-            market.data.long_notional_size
+            data.long_notional_size
         };
 
         let base_fee = if same_side_notional >= other_side_notional {
             self.notional_size
-                .fixed_mul_ceil(e, &config.base_fee_dominant, &token_scalar)
+                .fixed_mul_ceil(e, &config.base_fee_dominant, &SCALAR_7)
         } else {
             self.notional_size
-                .fixed_mul_ceil(e, &config.base_fee_non_dominant, &token_scalar)
+                .fixed_mul_ceil(e, &config.base_fee_non_dominant, &SCALAR_7)
         };
 
         let impact_fee = self
             .notional_size
-            .fixed_div_ceil(e, &market.config.price_impact_scalar, &token_scalar);
+            .fixed_div_ceil(e, &market_config.price_impact_scalar, &SCALAR_7);
 
         let funding_index = if self.is_long {
-            market.data.long_funding_index
+            data.long_funding_index
         } else {
-            market.data.short_funding_index
+            data.short_funding_index
         };
         let funding = self
             .notional_size
             .fixed_mul_floor(e, &(funding_index - self.entry_funding_index), &SCALAR_18);
 
+        // Vault skim: when position received funding (negative), vault takes a cut
+        let vault_skim = if funding < 0 {
+            (-funding).fixed_mul_ceil(e, &config.vault_skim, &SCALAR_7)
+        } else {
+            0
+        };
+
         FeeBreakdown {
             base_fee,
             impact_fee,
             funding,
+            vault_skim,
         }
     }
 
@@ -130,7 +259,6 @@ impl Position {
         if price_diff == 0 {
             0
         } else {
-            // PnL = notional_size * (price_change / entry_price)
             let price_change_ratio =
                 price_diff.fixed_div_floor(e, &self.entry_price, &price_scalar);
             self.notional_size
@@ -167,22 +295,14 @@ impl Position {
 mod tests {
     use super::*;
     use crate::constants::{SCALAR_7, SCALAR_18};
-    use crate::testutils::{create_trading, default_config, default_market, default_market_data};
+    use crate::testutils::{create_trading, default_config, default_market, default_market_data, BTC_FEED_ID};
     use soroban_sdk::{testutils::Address as _, Address, Env};
-
-    fn create_test_market(e: &Env) -> Market {
-        Market {
-            asset_index: 0,
-            config: default_market(e),
-            data: default_market_data()
-        }
-    }
 
     fn create_test_position(e: &Env) -> Position {
         Position {
             user: Address::generate(e),
             filled: true,
-            asset_index: 0,
+            feed_id: 1,
             is_long: true,
             stop_loss: 0,
             take_profit: 0,
@@ -294,13 +414,13 @@ mod tests {
         let e = Env::default();
         let (address, _) = create_trading(&e);
         let position = create_test_position(&e);
-        let mut market = create_test_market(&e);
-        market.data.long_notional_size = 100_000 * SCALAR_7;
-        market.data.short_notional_size = 100_000 * SCALAR_7;
+        let market_config = default_market(&e);
+        let mut data = default_market_data();
+        data.long_notional_size = 100_000 * SCALAR_7;
+        data.short_notional_size = 100_000 * SCALAR_7;
 
         e.as_contract(&address, || {
-
-            let fees = position.calculate_fee_breakdown(&e, &market, &default_config(), SCALAR_7);
+            let fees = position.calculate_fee_breakdown(&e, &data, &market_config, &default_config());
 
             // Both sides pay base fee when balanced
             assert_eq!(fees.base_fee, 5 * SCALAR_7);
@@ -313,22 +433,21 @@ mod tests {
     fn test_fee_long_dominant() {
         let e = Env::default();
         let (address, _) = create_trading(&e);
-        let mut market = create_test_market(&e);
-        market.data.long_notional_size = 200_000 * SCALAR_7;
-        market.data.short_notional_size = 100_000 * SCALAR_7;
+        let market_config = default_market(&e);
+        let mut data = default_market_data();
+        data.long_notional_size = 200_000 * SCALAR_7;
+        data.short_notional_size = 100_000 * SCALAR_7;
 
         e.as_contract(&address, || {
-
-
             // Long pays dominant base fee (0.05% of 10000 = 5)
             let long_pos = create_test_position(&e);
-            let long_fees = long_pos.calculate_fee_breakdown(&e, &market, &default_config(), SCALAR_7);
+            let long_fees = long_pos.calculate_fee_breakdown(&e, &data, &market_config, &default_config());
             assert_eq!(long_fees.base_fee, 5 * SCALAR_7);
 
             // Short pays non-dominant base fee (0.01% of 10000 = 1)
             let mut short_pos = create_test_position(&e);
             short_pos.is_long = false;
-            let short_fees = short_pos.calculate_fee_breakdown(&e, &market, &default_config(), SCALAR_7);
+            let short_fees = short_pos.calculate_fee_breakdown(&e, &data, &market_config, &default_config());
             assert_eq!(short_fees.base_fee, 1 * SCALAR_7);
         });
     }
@@ -337,22 +456,21 @@ mod tests {
     fn test_fee_short_dominant() {
         let e = Env::default();
         let (address, _) = create_trading(&e);
-        let mut market = create_test_market(&e);
-        market.data.long_notional_size = 100_000 * SCALAR_7;
-        market.data.short_notional_size = 200_000 * SCALAR_7;
+        let market_config = default_market(&e);
+        let mut data = default_market_data();
+        data.long_notional_size = 100_000 * SCALAR_7;
+        data.short_notional_size = 200_000 * SCALAR_7;
 
         e.as_contract(&address, || {
-
-
             // Long pays non-dominant base fee (0.01% of 10000 = 1)
             let long_pos = create_test_position(&e);
-            let long_fees = long_pos.calculate_fee_breakdown(&e, &market, &default_config(), SCALAR_7);
+            let long_fees = long_pos.calculate_fee_breakdown(&e, &data, &market_config, &default_config());
             assert_eq!(long_fees.base_fee, 1 * SCALAR_7);
 
             // Short pays dominant base fee (0.05% of 10000 = 5)
             let mut short_pos = create_test_position(&e);
             short_pos.is_long = false;
-            let short_fees = short_pos.calculate_fee_breakdown(&e, &market, &default_config(), SCALAR_7);
+            let short_fees = short_pos.calculate_fee_breakdown(&e, &data, &market_config, &default_config());
             assert_eq!(short_fees.base_fee, 5 * SCALAR_7);
         });
     }
@@ -361,16 +479,15 @@ mod tests {
     fn test_fee_with_funding() {
         let e = Env::default();
         let (address, _) = create_trading(&e);
+        let market_config = default_market(&e);
         let mut position = create_test_position(&e);
         position.entry_funding_index = 0;
 
-        let mut market = create_test_market(&e);
-        // Simulate funding accrual
-        market.data.long_funding_index = SCALAR_18 / 100; // 1% funding
+        let mut data = default_market_data();
+        data.long_funding_index = SCALAR_18 / 100; // 1% funding
 
         e.as_contract(&address, || {
-
-            let fees = position.calculate_fee_breakdown(&e, &market, &default_config(), SCALAR_7);
+            let fees = position.calculate_fee_breakdown(&e, &data, &market_config, &default_config());
 
             // Funding = notional * (current_index - entry_index)
             // = 10000 * 0.01 = 100 tokens
@@ -383,15 +500,15 @@ mod tests {
     fn test_fee_total() {
         let e = Env::default();
         let (address, _) = create_trading(&e);
+        let market_config = default_market(&e);
         let position = create_test_position(&e);
-        let mut market = create_test_market(&e);
-        market.data.long_notional_size = 100_000 * SCALAR_7;
-        market.data.short_notional_size = 100_000 * SCALAR_7;
-        market.data.long_funding_index = SCALAR_18 / 100;
+        let mut data = default_market_data();
+        data.long_notional_size = 100_000 * SCALAR_7;
+        data.short_notional_size = 100_000 * SCALAR_7;
+        data.long_funding_index = SCALAR_18 / 100;
 
         e.as_contract(&address, || {
-
-            let fees = position.calculate_fee_breakdown(&e, &market, &default_config(), SCALAR_7);
+            let fees = position.calculate_fee_breakdown(&e, &data, &market_config, &default_config());
             let total = fees.total_fee();
 
             assert_eq!(total, fees.base_fee + fees.impact_fee + fees.funding);
@@ -513,41 +630,42 @@ mod tests {
     }
 
     #[test]
-    fn test_position_new() {
-        use crate::testutils::jump;
+    fn test_position_create() {
+        use crate::testutils::{create_trading, jump};
 
         let e = Env::default();
         jump(&e, 1000);
 
+        let (address, _) = create_trading(&e);
         let user = Address::generate(&e);
 
-        let position = Position::new(
-            &e,
-            user.clone(),           // user
-            true,                   // filled
-            0,                      // asset_index
-            true,                   // is_long
-            90_000 * SCALAR_7,      // stop_loss
-            110_000 * SCALAR_7,     // take_profit
-            100_000 * SCALAR_7,     // entry_price
-            1_000 * SCALAR_7,       // collateral
-            10_000 * SCALAR_7,      // notional_size
-            0,                      // entry_funding_index
-            SCALAR_18,              // entry_adl_index
-        );
+        e.as_contract(&address, || {
+            let (id, position) = Position::create(
+                &e,
+                user.clone(),
+                BTC_FEED_ID,
+                true,
+                100_000 * SCALAR_7,
+                1_000 * SCALAR_7,
+                10_000 * SCALAR_7,
+                90_000 * SCALAR_7,
+                110_000 * SCALAR_7,
+            );
 
-        assert_eq!(position.user, user);
-        assert_eq!(position.filled, true);
-        assert_eq!(position.asset_index, 0);
-        assert_eq!(position.is_long, true);
-        assert_eq!(position.stop_loss, 90_000 * SCALAR_7);
-        assert_eq!(position.take_profit, 110_000 * SCALAR_7);
-        assert_eq!(position.entry_price, 100_000 * SCALAR_7);
-        assert_eq!(position.collateral, 1_000 * SCALAR_7);
-        assert_eq!(position.notional_size, 10_000 * SCALAR_7);
-        assert_eq!(position.entry_funding_index, 0);
-        assert_eq!(position.entry_adl_index, SCALAR_18);
-        assert_eq!(position.created_at, 1000);
+            assert_eq!(id, 0);
+            assert_eq!(position.user, user);
+            assert!(!position.filled);
+            assert_eq!(position.feed_id, BTC_FEED_ID);
+            assert!(position.is_long);
+            assert_eq!(position.stop_loss, 90_000 * SCALAR_7);
+            assert_eq!(position.take_profit, 110_000 * SCALAR_7);
+            assert_eq!(position.entry_price, 100_000 * SCALAR_7);
+            assert_eq!(position.collateral, 1_000 * SCALAR_7);
+            assert_eq!(position.notional_size, 10_000 * SCALAR_7);
+            assert_eq!(position.entry_funding_index, 0);
+            assert_eq!(position.entry_adl_index, 0);
+            assert_eq!(position.created_at, 1000);
+        });
     }
 
     #[test]
@@ -561,25 +679,20 @@ mod tests {
         let user = Address::generate(&e);
 
         e.as_contract(&address, || {
-            // Create and store a position
-            let position = Position::new(
+            let (id, position) = Position::create(
                 &e,
                 user.clone(),
+                BTC_FEED_ID,
                 true,
-                0,
-                true,
-                90_000 * SCALAR_7,
-                110_000 * SCALAR_7,
                 100_000 * SCALAR_7,
                 1_000 * SCALAR_7,
                 10_000 * SCALAR_7,
-                0,
-                SCALAR_18,
+                90_000 * SCALAR_7,
+                110_000 * SCALAR_7,
             );
-            position.store(&e, 1);
+            storage::set_position(&e, id, &position);
 
-            // Load it back
-            let loaded = Position::load(&e, 1);
+            let loaded = storage::get_position(&e, id);
             assert_eq!(loaded.user, user);
             assert_eq!(loaded.entry_price, 100_000 * SCALAR_7);
         });

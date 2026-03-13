@@ -4,7 +4,7 @@
 //! mechanism: depositors cannot transfer, withdraw, or redeem their shares
 //! until lock_time seconds after their last deposit.
 
-use soroban_sdk::{contract, contractimpl, Address, Env, MuxedAddress, String, Vec};
+use soroban_sdk::{contract, contractimpl, Address, Env, MuxedAddress, String};
 use stellar_tokens::{
     fungible::{Base, FungibleToken},
     vault::{FungibleVault, Vault},
@@ -24,7 +24,7 @@ impl StrategyVaultContract {
     /// * `symbol` - Symbol for the vault share token
     /// * `asset` - Address of the underlying token contract
     /// * `decimals_offset` - Virtual offset for inflation attack protection (0-10)
-    /// * `strategies` - List of authorized strategy contract addresses
+    /// * `strategy` - Authorized strategy contract address (trading contract)
     /// * `lock_time` - Delay in seconds before depositors can transfer their shares
     pub fn __constructor(
         e: Env,
@@ -32,7 +32,7 @@ impl StrategyVaultContract {
         symbol: String,
         asset: Address,
         decimals_offset: u32,
-        strategies: Vec<Address>,
+        strategy: Address,
         lock_time: u64,
     ) {
         Vault::set_asset(&e, asset);
@@ -41,7 +41,7 @@ impl StrategyVaultContract {
 
         // Initialize custom storage
         storage::set_lock_time(&e, &lock_time);
-        storage::set_strategies(&e, &strategies);
+        storage::set_strategy(&e, &strategy);
     }
 
     /// Returns the lock time in seconds

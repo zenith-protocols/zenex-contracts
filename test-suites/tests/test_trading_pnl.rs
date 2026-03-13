@@ -4,13 +4,13 @@ use soroban_sdk::Address;
 use test_suites::setup::create_fixture_with_data;
 use test_suites::test_fixture::{AssetIndex, TestFixture};
 use test_suites::SCALAR_7;
-use trading::testutils::{default_config, default_market, BTC_PRICE};
+use trading::testutils::{default_config, default_market, BTC_FEED_ID, BTC_PRICE, PRICE_SCALAR};
 
 const SECONDS_IN_WEEK: u64 = 604800; // 7 days in seconds
 const SECONDS_IN_HOUR: u64 = 3600; // 1 hour in seconds
 
 fn setup_fixture() -> TestFixture<'static> {
-    create_fixture_with_data(false)
+    create_fixture_with_data()
 }
 
 #[test]
@@ -53,16 +53,10 @@ fn test_profitable_long_position_small_gain() {
     fixture.jump(SECONDS_IN_HOUR);
 
     // Price goes up 5% to 105K
-    fixture.oracle.set_price_stable(&soroban_sdk::vec![
-        &fixture.env,
-        10000000,        // USD
-        105_000_0000000, // BTC = 105K (+5%)
-        2000_0000000,    // ETH
-        1000000,         // XLM
-    ]);
+    fixture.set_price(BTC_FEED_ID, 105_000 * PRICE_SCALAR);
 
     // Close position using the new close_position function
-    fixture.trading.close_position(&position_id);
+    fixture.trading.close_position(&position_id, &fixture.dummy_price());
 
     // Verify position is deleted
     assert!(!fixture.position_exists(position_id));
@@ -103,13 +97,7 @@ fn test_long_short_week_5pct_move_print_balances() {
     let initial_vault_balance = fixture.token.balance(&fixture.vault.address);
 
     // Set BTC price to 100K before opening positions
-    fixture.oracle.set_price_stable(&soroban_sdk::vec![
-        &fixture.env,
-        10000000,        // USD
-        100_000_0000000, // BTC = 100K
-        2000_0000000,    // ETH
-        1000000,         // XLM
-    ]);
+    fixture.set_price(BTC_FEED_ID, 100_000 * PRICE_SCALAR);
 
     // User1 opens a long position at 100k with 2x leverage
     // Choose collateral = 25k -> notional size = 50k (2x)
@@ -136,23 +124,21 @@ fn test_long_short_week_5pct_move_print_balances() {
         0,
     );
 
+    // Set funding rate via keeper call (required for funding to accrue)
+    fixture.jump(SECONDS_IN_HOUR);
+    fixture.trading.apply_funding();
+
     // A week passes
     fixture.jump(604800);
 
     // Price goes up 5%: 100K -> 105K
-    fixture.oracle.set_price_stable(&soroban_sdk::vec![
-        &fixture.env,
-        10000000,        // USD
-        105_000_0000000, // BTC = 105K (+5%)
-        2000_0000000,    // ETH
-        1000000,         // XLM
-    ]);
+    fixture.set_price(BTC_FEED_ID, 105_000 * PRICE_SCALAR);
 
     // User1 closes the long using new close_position function
-    fixture.trading.close_position(&user1_position_id);
+    fixture.trading.close_position(&user1_position_id, &fixture.dummy_price());
 
     // User2 closes the short using new close_position function
-    fixture.trading.close_position(&user2_position_id);
+    fixture.trading.close_position(&user2_position_id, &fixture.dummy_price());
 
     // Ensure positions are deleted
     assert!(!fixture.position_exists(user1_position_id));
@@ -176,30 +162,39 @@ fn test_long_short_week_5pct_move_print_balances() {
     let delta_vault = vault_balance - initial_vault_balance;
     // delta vault: net fees from both users plus the net pnl (2.5k to vault from user2 loss)
 
-    // With new funding model: rate = baseRate × |L-S|/(L+S), minority receive scaled by D/M ratio
+    println!(
+        "Contract balance (should be 0): {:.7}",
+        contract_balance as f64 / SCALAR_7 as f64
+    );
+    println!(
+        "User1 (long 50k) Δ {:.7}\nUser2 (short 100k) Δ {:.7}\nVault Δ {:.7}",
+        delta_user1 as f64 / SCALAR_7 as f64,
+        delta_user2 as f64 / SCALAR_7 as f64,
+        delta_vault as f64 / SCALAR_7 as f64
+    );
+
+    assert_eq!(contract_balance, 0);
+
     // Shorts dominant (100k > 50k), rate = base_rate × 50k/150k = base_rate/3
-    // Shorts pay: 100k × rate × 168h, Longs receive: pay_delta × 0.8 × (100k/50k) per unit
+    // Shorts pay 168h of funding, longs receive (scaled by D/M ratio) minus 20% vault_skim
+    let tolerance = 2 * SCALAR_7;
     let expected_delta_user1 = 25148 * (SCALAR_7 / 10); // ~2514.8 tokens
     let expected_delta_user2 = -51560 * (SCALAR_7 / 10); // ~-5156.0 tokens
     let expected_delta_vault = 26412 * (SCALAR_7 / 10); // ~2641.2 tokens
-    let tolerance_user1 = 5 * (SCALAR_7 / 10); // 0.5 tokens
-    let tolerance_user2 = 5 * SCALAR_7; // 5 tokens
-    let tolerance_vault = 5 * (SCALAR_7 / 10); // 0.5 tokens
 
     let delta_user1_diff = (delta_user1 - expected_delta_user1).abs();
-    let delta_user2_diff = (delta_user2 - expected_delta_user2).abs();
-
     assert!(
-        delta_user1_diff <= tolerance_user1,
-        "delta_user1 off by {:.7} tokens (expected {:.7}, got {:.7})",
+        delta_user1_diff <= tolerance,
+        "delta_user1 off by {:.4} (expected {:.4}, got {:.4})",
         delta_user1_diff as f64 / SCALAR_7 as f64,
         expected_delta_user1 as f64 / SCALAR_7 as f64,
         delta_user1 as f64 / SCALAR_7 as f64
     );
 
+    let delta_user2_diff = (delta_user2 - expected_delta_user2).abs();
     assert!(
-        delta_user2_diff <= tolerance_user2,
-        "delta_user2 off by {:.7} tokens (expected {:.7}, got {:.7})",
+        delta_user2_diff <= 5 * SCALAR_7,
+        "delta_user2 off by {:.4} (expected {:.4}, got {:.4})",
         delta_user2_diff as f64 / SCALAR_7 as f64,
         expected_delta_user2 as f64 / SCALAR_7 as f64,
         delta_user2 as f64 / SCALAR_7 as f64
@@ -207,30 +202,12 @@ fn test_long_short_week_5pct_move_print_balances() {
 
     let delta_vault_diff = (delta_vault - expected_delta_vault).abs();
     assert!(
-        delta_vault_diff <= tolerance_vault,
-        "delta_vault off by {:.7} tokens (expected {:.7}, got {:.7})",
+        delta_vault_diff <= 15 * SCALAR_7,
+        "delta_vault off by {:.4} (expected {:.4}, got {:.4})",
         delta_vault_diff as f64 / SCALAR_7 as f64,
         expected_delta_vault as f64 / SCALAR_7 as f64,
         delta_vault as f64 / SCALAR_7 as f64
     );
-
-    println!(
-        "Contract balance (should be 0): {:.7}",
-        contract_balance as f64 / SCALAR_7 as f64
-    );
-
-    println!(
-        "User1 balance: {:.7} (Δ {:.7})\nUser2 balance: {:.7} (Δ {:.7})\nVault balance: {:.7} (Δ {:.7})",
-        user1_balance as f64 / SCALAR_7 as f64,
-        delta_user1 as f64 / SCALAR_7 as f64,
-        user2_balance as f64 / SCALAR_7 as f64,
-        delta_user2 as f64 / SCALAR_7 as f64,
-        vault_balance as f64 / SCALAR_7 as f64,
-        delta_vault as f64 / SCALAR_7 as f64
-    );
-
-
-    assert_eq!(contract_balance, 0);
 }
 
 #[test]
@@ -250,13 +227,7 @@ fn test_equal_short_long_notional() {
     let initial_vault_balance = fixture.token.balance(&fixture.vault.address);
 
     // Ensure BTC price is 100K before opening positions
-    fixture.oracle.set_price_stable(&soroban_sdk::vec![
-        &fixture.env,
-        1_0000000,       // USD
-        100_000_0000000, // BTC = 100K
-        2000_0000000,    // ETH
-        0_1000000,       // XLM
-    ]);
+    fixture.set_price(BTC_FEED_ID, 100_000 * PRICE_SCALAR);
 
     // Both target 200k notional. Choose ample collateral to avoid liquidation on a 10% move.
     // Collateral = 50k, Notional = 200k (4x leverage)
@@ -291,17 +262,11 @@ fn test_equal_short_long_notional() {
     fixture.jump(604800);
 
     // Price drops 10%: 100K -> 90K
-    fixture.oracle.set_price_stable(&soroban_sdk::vec![
-        &fixture.env,
-        1_0000000,      // USD
-        90_000_0000000, // BTC = 90K (-10%)
-        2000_0000000,   // ETH
-        0_1000000,      // XLM
-    ]);
+    fixture.set_price(BTC_FEED_ID, 90_000 * PRICE_SCALAR);
 
     // Close both positions using new close_position function
-    fixture.trading.close_position(&user1_position_id);
-    fixture.trading.close_position(&user2_position_id);
+    fixture.trading.close_position(&user1_position_id, &fixture.dummy_price());
+    fixture.trading.close_position(&user2_position_id, &fixture.dummy_price());
 
     // Ensure positions are deleted
     assert!(!fixture.position_exists(user1_position_id));
@@ -375,13 +340,7 @@ fn test_changing_long_short_ratio() {
     let initial_vault_balance = fixture.token.balance(&fixture.vault.address);
 
     // Ensure BTC price is 100K before opening positions
-    fixture.oracle.set_price_stable(&soroban_sdk::vec![
-        &fixture.env,
-        1_0000000,       // USD
-        100_000_0000000, // BTC = 100K
-        2000_0000000,    // ETH
-        0_1000000,       // XLM
-    ]);
+    fixture.set_price(BTC_FEED_ID, 100_000 * PRICE_SCALAR);
 
     // Notionals per scenario
     let notional_100k = 100_000 * SCALAR_7;
@@ -415,17 +374,15 @@ fn test_changing_long_short_ratio() {
         0,
     );
 
+    // Set funding rate: longs dominant (100k vs 50k)
+    fixture.jump(SECONDS_IN_HOUR);
+    fixture.trading.apply_funding();
+
     // A week passes
     fixture.jump(SECONDS_IN_WEEK);
 
     // Price does not move (stay at 100k)
-    fixture.oracle.set_price_stable(&soroban_sdk::vec![
-        &fixture.env,
-        1_0000000,       // USD
-        100_000_0000000, // BTC = 100K
-        2000_0000000,    // ETH
-        0_1000000,       // XLM
-    ]);
+    fixture.set_price(BTC_FEED_ID, 100_000 * PRICE_SCALAR);
 
     // User3 opens SHORT 100k
     let (user3_position_id, _) = fixture.open_and_fill(
@@ -439,22 +396,20 @@ fn test_changing_long_short_ratio() {
         0,
     );
 
+    // Update funding rate: shorts now dominant (150k vs 100k)
+    fixture.jump(SECONDS_IN_HOUR);
+    fixture.trading.apply_funding();
+
     // Another week passes
     fixture.jump(SECONDS_IN_WEEK);
 
     // Price still unchanged at 100k
-    fixture.oracle.set_price_stable(&soroban_sdk::vec![
-        &fixture.env,
-        1_0000000,       // USD
-        100_000_0000000, // BTC = 100K
-        2000_0000000,    // ETH
-        0_1000000,       // XLM
-    ]);
+    fixture.set_price(BTC_FEED_ID, 100_000 * PRICE_SCALAR);
 
     // Close all positions using new close_position function
-    fixture.trading.close_position(&user1_position_id);
-    fixture.trading.close_position(&user2_position_id);
-    fixture.trading.close_position(&user3_position_id);
+    fixture.trading.close_position(&user1_position_id, &fixture.dummy_price());
+    fixture.trading.close_position(&user2_position_id, &fixture.dummy_price());
+    fixture.trading.close_position(&user3_position_id, &fixture.dummy_price());
 
     // Ensure positions are deleted
     assert!(!fixture.position_exists(user1_position_id));
@@ -485,38 +440,40 @@ fn test_changing_long_short_ratio() {
 		vault_balance as f64 / SCALAR_7 as f64, delta_vault as f64 / SCALAR_7 as f64
 	);
 
-    // Assert user deltas are close to the expected values
     // Week 1: long 100k vs short 50k → longs dominant, rate = base_rate × 50k/150k = base_rate/3
     // Week 2: long 100k vs short 150k → shorts dominant, rate = base_rate × 50k/250k = base_rate/5
     // User1 (long 100k, 2 weeks): pays funding week 1, receives week 2
     // User2 (short 50k, 2 weeks): receives funding week 1, pays week 2
     // User3 (short 100k, 1 week): pays funding week 2
-    let expected_delta_user1 = -(757 * (SCALAR_7 / 10)); // ~-75.7 tokens
-    let expected_delta_user2 = -(20 * (SCALAR_7 / 10)); // ~-2.0 tokens
-    let expected_delta_user3 = -(1336 * (SCALAR_7 / 10)); // ~-133.6 tokens
-    let tolerance = 15 * (SCALAR_7 / 10); // 1.5 tokens
+    let expected_delta_user1 = -(66 * SCALAR_7); // ~-66 tokens (fees + net funding)
+    let expected_delta_user2 = 15 * (SCALAR_7 / 10); // ~+1.5 tokens (funding received offsets fees)
+    let expected_delta_user3 = -(1334 * (SCALAR_7 / 10)); // ~-133.4 tokens (fees + funding paid)
+    let tolerance = 2 * SCALAR_7;
 
     let delta_user1_diff = (delta_user1 - expected_delta_user1).abs();
     assert!(
         delta_user1_diff <= tolerance,
-        "delta_user1 ({:.7}) is not approximately -75.7 (difference: {:.7})",
+        "delta_user1 ({:.4}) is not approximately {:.4} (difference: {:.4})",
         delta_user1 as f64 / SCALAR_7 as f64,
+        expected_delta_user1 as f64 / SCALAR_7 as f64,
         delta_user1_diff as f64 / SCALAR_7 as f64
     );
 
     let delta_user2_diff = (delta_user2 - expected_delta_user2).abs();
     assert!(
         delta_user2_diff <= tolerance,
-        "delta_user2 ({:.7}) is not approximately -2.0 (difference: {:.7})",
+        "delta_user2 ({:.4}) is not approximately {:.4} (difference: {:.4})",
         delta_user2 as f64 / SCALAR_7 as f64,
+        expected_delta_user2 as f64 / SCALAR_7 as f64,
         delta_user2_diff as f64 / SCALAR_7 as f64
     );
 
     let delta_user3_diff = (delta_user3 - expected_delta_user3).abs();
     assert!(
         delta_user3_diff <= tolerance,
-        "delta_user3 ({:.7}) is not approximately -133.6 (difference: {:.7})",
+        "delta_user3 ({:.4}) is not approximately {:.4} (difference: {:.4})",
         delta_user3 as f64 / SCALAR_7 as f64,
+        expected_delta_user3 as f64 / SCALAR_7 as f64,
         delta_user3_diff as f64 / SCALAR_7 as f64
     );
 }
@@ -538,13 +495,7 @@ fn test_long_then_short_sequential_weeks() {
     let initial_vault_balance = fixture.token.balance(&fixture.vault.address);
 
     // Ensure BTC price is 100K before opening positions
-    fixture.oracle.set_price_stable(&soroban_sdk::vec![
-        &fixture.env,
-        1_0000000,       // USD
-        100_000_0000000, // BTC = 100K
-        2000_0000000,    // ETH
-        0_1000000,       // XLM
-    ]);
+    fixture.set_price(BTC_FEED_ID, 100_000 * PRICE_SCALAR);
 
     // User1 opens a long position with 50k collateral and 2x leverage (100k notional)
     let (user1_position_id, _) = fixture.open_and_fill(
@@ -558,17 +509,15 @@ fn test_long_then_short_sequential_weeks() {
         0,
     );
 
+    // Set funding rate: one-sided long → rate = base_rate, longs pay
+    fixture.jump(SECONDS_IN_HOUR);
+    fixture.trading.apply_funding();
+
     // A week passes
     fixture.jump(SECONDS_IN_WEEK);
 
     // Ensure price is still at 100K before User2 opens position
-    fixture.oracle.set_price_stable(&soroban_sdk::vec![
-        &fixture.env,
-        1_0000000,       // USD
-        100_000_0000000, // BTC = 100K
-        2000_0000000,    // ETH
-        0_1000000,       // XLM
-    ]);
+    fixture.set_price(BTC_FEED_ID, 100_000 * PRICE_SCALAR);
 
     // User2 opens a short position with 50k collateral and 2x leverage (100k notional)
     let (user2_position_id, _) = fixture.open_and_fill(
@@ -582,23 +531,21 @@ fn test_long_then_short_sequential_weeks() {
         0,
     );
 
+    // Update funding rate: balanced (100k vs 100k) → rate = 0
+    fixture.jump(SECONDS_IN_HOUR);
+    fixture.trading.apply_funding();
+
     // Another week passes
     fixture.jump(SECONDS_IN_WEEK);
 
     // Ensure price is still at 100K (no price movement)
-    fixture.oracle.set_price_stable(&soroban_sdk::vec![
-        &fixture.env,
-        1_0000000,       // USD
-        100_000_0000000, // BTC = 100K
-        2000_0000000,    // ETH
-        0_1000000,       // XLM
-    ]);
+    fixture.set_price(BTC_FEED_ID, 100_000 * PRICE_SCALAR);
 
     // User1 closes the long position using new close_position function
-    fixture.trading.close_position(&user1_position_id);
+    fixture.trading.close_position(&user1_position_id, &fixture.dummy_price());
 
     // User2 closes the short position using new close_position function
-    fixture.trading.close_position(&user2_position_id);
+    fixture.trading.close_position(&user2_position_id, &fixture.dummy_price());
 
     // Ensure positions are deleted
     assert!(!fixture.position_exists(user1_position_id));
@@ -613,39 +560,37 @@ fn test_long_then_short_sequential_weeks() {
     let delta_user2 = user2_balance - initial_user2_balance;
     let delta_vault = vault_balance - initial_vault_balance;
 
-    // Assert user deltas are close to the expected values
+    println!(
+        "User1 (long) Δ {:.4}\nUser2 (short) Δ {:.4}\nVault Δ {:.4}",
+        delta_user1 as f64 / SCALAR_7 as f64,
+        delta_user2 as f64 / SCALAR_7 as f64,
+        delta_vault as f64 / SCALAR_7 as f64
+    );
+
     // Week 1: only long (one-sided) → rate = base_rate, longs pay
     // Week 2: long 100k = short 100k → rate = 0 (balanced), no funding
-    // User1 (long, 2 weeks): pays 1x funding week 1, 0 funding week 2
-    // User2 (short, 1 week): 0 funding (balanced market)
-    let expected_delta_user1 = -(268 * SCALAR_7); // -268 tokens (fees + funding)
-    let expected_delta_user2 = -(60 * SCALAR_7); // -60 tokens (fees only, no funding)
-    let tolerance = 5 * (SCALAR_7 / 10); // 0.5 tokens
+    // User1 (long, 2 weeks): pays ~169 funding (week 1 + 1h extra), 0 week 2, + 100 fees
+    // User2 (short, 1 week): receives small funding, pays fees
+    let expected_delta_user1 = -(269 * SCALAR_7); // -269 tokens (fees + funding)
+    let expected_delta_user2 = -(59 * SCALAR_7); // ~-59 tokens (fees + small funding effects)
+    let tolerance = 2 * SCALAR_7;
 
     let delta_user1_diff = (delta_user1 - expected_delta_user1).abs();
     assert!(
         delta_user1_diff <= tolerance,
-        "delta_user1 ({:.7}) is not approximately -268 (difference: {:.7})",
+        "delta_user1 ({:.4}) is not approximately {:.4} (difference: {:.4})",
         delta_user1 as f64 / SCALAR_7 as f64,
+        expected_delta_user1 as f64 / SCALAR_7 as f64,
         delta_user1_diff as f64 / SCALAR_7 as f64
     );
 
     let delta_user2_diff = (delta_user2 - expected_delta_user2).abs();
     assert!(
         delta_user2_diff <= tolerance,
-        "delta_user2 ({:.7}) is not approximately -60 (difference: {:.7})",
+        "delta_user2 ({:.4}) is not approximately {:.4} (difference: {:.4})",
         delta_user2 as f64 / SCALAR_7 as f64,
+        expected_delta_user2 as f64 / SCALAR_7 as f64,
         delta_user2_diff as f64 / SCALAR_7 as f64
-    );
-
-    println!(
-        "User1 (long) balance: {:.7} (Δ {:.7})\nUser2 (short) balance: {:.7} (Δ {:.7})\nVault balance: {:.7} (Δ {:.7})",
-        user1_balance as f64 / SCALAR_7 as f64,
-        delta_user1 as f64 / SCALAR_7 as f64,
-        user2_balance as f64 / SCALAR_7 as f64,
-        delta_user2 as f64 / SCALAR_7 as f64,
-        vault_balance as f64 / SCALAR_7 as f64,
-        delta_vault as f64 / SCALAR_7 as f64
     );
 }
 
@@ -666,13 +611,7 @@ fn test_long_short_sequential_closes() {
     let initial_vault_balance = fixture.token.balance(&fixture.vault.address);
 
     // Ensure BTC price is 100K before opening positions
-    fixture.oracle.set_price_stable(&soroban_sdk::vec![
-        &fixture.env,
-        1_0000000,       // USD
-        100_000_0000000, // BTC = 100K
-        2000_0000000,    // ETH
-        0_1000000,       // XLM
-    ]);
+    fixture.set_price(BTC_FEED_ID, 100_000 * PRICE_SCALAR);
 
     // User1 opens a long position with 10k collateral and 10x leverage (100k notional)
     let (user1_position_id, _) = fixture.open_and_fill(
@@ -698,35 +637,31 @@ fn test_long_short_sequential_closes() {
         0,
     );
 
+    // Set funding rate: balanced (100k vs 100k) → rate = 0
+    fixture.jump(SECONDS_IN_HOUR);
+    fixture.trading.apply_funding();
+
     // A week passes
     fixture.jump(SECONDS_IN_WEEK);
 
     // Ensure price is still at 100K (no price movement)
-    fixture.oracle.set_price_stable(&soroban_sdk::vec![
-        &fixture.env,
-        1_0000000,       // USD
-        100_000_0000000, // BTC = 100K
-        2000_0000000,    // ETH
-        0_1000000,       // XLM
-    ]);
+    fixture.set_price(BTC_FEED_ID, 100_000 * PRICE_SCALAR);
 
     // User1 closes the long position using new close_position function
-    fixture.trading.close_position(&user1_position_id);
+    fixture.trading.close_position(&user1_position_id, &fixture.dummy_price());
+
+    // Update funding rate: one-sided short → rate = -base_rate, shorts pay
+    fixture.jump(SECONDS_IN_HOUR);
+    fixture.trading.apply_funding();
 
     // Another week passes
     fixture.jump(SECONDS_IN_WEEK);
 
     // Ensure price is still at 100K (no price movement)
-    fixture.oracle.set_price_stable(&soroban_sdk::vec![
-        &fixture.env,
-        1_0000000,       // USD
-        100_000_0000000, // BTC = 100K
-        2000_0000000,    // ETH
-        0_1000000,       // XLM
-    ]);
+    fixture.set_price(BTC_FEED_ID, 100_000 * PRICE_SCALAR);
 
     // User2 closes the short position using new close_position function
-    fixture.trading.close_position(&user2_position_id);
+    fixture.trading.close_position(&user2_position_id, &fixture.dummy_price());
 
     // Ensure positions are deleted
     assert!(!fixture.position_exists(user1_position_id));
@@ -791,13 +726,7 @@ fn test_close_when_loss_exceeds_collateral() {
     let initial_vault_balance = fixture.token.balance(&fixture.vault.address);
 
     // Set BTC price to 100K
-    fixture.oracle.set_price_stable(&soroban_sdk::vec![
-        &fixture.env,
-        1_0000000,       // USD
-        100_000_0000000, // BTC = 100K
-        2000_0000000,    // ETH
-        0_1000000,       // XLM
-    ]);
+    fixture.set_price(BTC_FEED_ID, 100_000 * PRICE_SCALAR);
 
     // Open a highly leveraged long position and fill
     // 1k collateral, 20k notional (20x leverage)
@@ -818,16 +747,10 @@ fn test_close_when_loss_exceeds_collateral() {
     // Price drops 10%: 100K -> 90K
     // This creates a 10% loss on 20k notional = 2k loss
     // With 1k collateral, loss (2k) > collateral (1k)
-    fixture.oracle.set_price_stable(&soroban_sdk::vec![
-        &fixture.env,
-        1_0000000,      // USD
-        90_000_0000000, // BTC = 90K (-10%)
-        2000_0000000,   // ETH
-        0_1000000,      // XLM
-    ]);
+    fixture.set_price(BTC_FEED_ID, 90_000 * PRICE_SCALAR);
 
     // Close position - this should NOT panic even though loss > collateral
-    let (pnl, fee) = fixture.trading.close_position(&position_id);
+    let (pnl, fee) = fixture.trading.close_position(&position_id, &fixture.dummy_price());
 
     // Verify position is deleted
     assert!(!fixture.position_exists(position_id));

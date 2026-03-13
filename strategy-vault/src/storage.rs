@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, unwrap::UnwrapOptimized, Address, Env, Vec as SorobanVec};
+use soroban_sdk::{contracttype, unwrap::UnwrapOptimized, Address, Env};
 use stellar_tokens::fungible::{
     BALANCE_EXTEND_AMOUNT, BALANCE_TTL_THRESHOLD, INSTANCE_EXTEND_AMOUNT, INSTANCE_TTL_THRESHOLD,
 };
@@ -7,7 +7,7 @@ use stellar_tokens::fungible::{
 #[contracttype]
 pub enum StrategyStorageKey {
     LockTime,
-    Strategies,
+    Strategy,
     LastDepositTime(Address),
 }
 
@@ -30,17 +30,17 @@ pub fn set_lock_time(e: &Env, lock_time: &u64) {
         .set::<StrategyStorageKey, u64>(&StrategyStorageKey::LockTime, lock_time);
 }
 
-pub fn get_strategies(e: &Env) -> SorobanVec<Address> {
+pub fn get_strategy(e: &Env) -> Address {
     e.storage()
         .instance()
-        .get::<StrategyStorageKey, SorobanVec<Address>>(&StrategyStorageKey::Strategies)
+        .get::<StrategyStorageKey, Address>(&StrategyStorageKey::Strategy)
         .unwrap_optimized()
 }
 
-pub fn set_strategies(e: &Env, strategies: &SorobanVec<Address>) {
+pub fn set_strategy(e: &Env, strategy: &Address) {
     e.storage()
         .instance()
-        .set::<StrategyStorageKey, SorobanVec<Address>>(&StrategyStorageKey::Strategies, strategies);
+        .set::<StrategyStorageKey, Address>(&StrategyStorageKey::Strategy, strategy);
 }
 
 pub fn get_last_deposit_time(e: &Env, user: &Address) -> Option<u64> {

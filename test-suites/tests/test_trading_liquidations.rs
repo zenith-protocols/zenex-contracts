@@ -3,13 +3,13 @@ use soroban_sdk::{vec as svec, Address};
 use test_suites::setup::create_fixture_with_data;
 use test_suites::test_fixture::{AssetIndex, TestFixture};
 use test_suites::SCALAR_7;
-use trading::testutils::BTC_PRICE;
+use trading::testutils::{BTC_FEED_ID, BTC_PRICE, PRICE_SCALAR};
 use trading::ExecuteRequest;
 
 const SECONDS_IN_WEEK: u64 = 604800; // 7 days in seconds
 
 fn setup_fixture() -> TestFixture<'static> {
-    create_fixture_with_data(false)
+    create_fixture_with_data()
 }
 
 #[test]
@@ -25,13 +25,7 @@ fn test_long_position_liquidation_after_week() {
     fixture.token.mint(&user, &(100_000 * SCALAR_7));
 
     // Set BTC price to 100K
-    fixture.oracle.set_price_stable(&svec![
-        &fixture.env,
-        1_0000000,       // USD
-        100_000_0000000, // BTC = 100K
-        2000_0000000,    // ETH
-        0_1000000,       // XLM
-    ]);
+    fixture.set_price(BTC_FEED_ID, 100_000 * PRICE_SCALAR);
 
     // Open long position: 10k collateral, 100k notional (10x leverage) and fill
     let (position_id, _) = fixture.open_and_fill(
@@ -45,25 +39,19 @@ fn test_long_position_liquidation_after_week() {
         0,
     );
 
+    // Set funding rate: one-sided long → rate = base_rate, longs pay
+    fixture.jump(3600);
+    fixture.trading.apply_funding();
+
     // A week passes
     fixture.jump(SECONDS_IN_WEEK);
 
     // Price drops to make position liquidatable
-    // New funding model: one-sided → rate = base_rate (naturally bounded in [0, baseRate])
-    // Over 1 week (168h): funding = 100k × base_rate × 168 = 168 tokens
-    // equity = 10000 + PnL - (50 close_fee + 168 funding) < 500
-    // → PnL < -9282 → price < 90,718
-    let current_price = 90_710_0000000;
-    fixture.oracle.set_price_stable(&svec![
-        &fixture.env,
-        1_0000000,      // USD
-        current_price,  // BTC = 90,710
-        2000_0000000,   // ETH
-        0_1000000,      // XLM
-    ]);
+    let current_price = 90_710 * PRICE_SCALAR;
+    fixture.set_price(BTC_FEED_ID, current_price);
 
     // Attempt liquidation
-    let result = fixture.trading.execute(
+    fixture.trading.execute(
         &liquidator,
         &svec![
             &fixture.env,
@@ -72,22 +60,9 @@ fn test_long_position_liquidation_after_week() {
                 position_id,
             },
         ],
+        &fixture.dummy_price(),
     );
 
-    // Check if position liquidated
-    let result_code = result.get(0).unwrap();
-
-    // Debug output
-    println!("\nTest at price: {}", current_price);
-    println!("Result code: {} (0=success, 20=BadRequest/not eligible)", result_code);
-
-    // Test passes if liquidation was successful (result code 0) and position is deleted
-    assert_eq!(
-        result_code,
-        0u32,
-        "Liquidation should succeed when equity < maintenance margin (after accounting for interest). Result code {} indicates failure.",
-        result_code
-    );
     assert!(
         !fixture.position_exists(position_id),
         "Position should be deleted after successful liquidation"
@@ -99,9 +74,9 @@ fn test_long_position_liquidation_after_week() {
 }
 
 #[test]
+#[should_panic(expected = "Error(Contract, #746)")]
 fn test_long_position_not_liquidatable_at_threshold() {
     // This test verifies that a position is NOT liquidatable when equity is just above maintenance margin
-    // At price 90,730, with interest accumulation over 1 week, equity is above the 500 maintenance margin
     let fixture = setup_fixture();
     let user = Address::generate(&fixture.env);
     let liquidator = Address::generate(&fixture.env);
@@ -110,13 +85,7 @@ fn test_long_position_not_liquidatable_at_threshold() {
     fixture.token.mint(&user, &(100_000 * SCALAR_7));
 
     // Set BTC price to 100K
-    fixture.oracle.set_price_stable(&svec![
-        &fixture.env,
-        1_0000000,       // USD
-        100_000_0000000, // BTC = 100K
-        2000_0000000,    // ETH
-        0_1000000,       // XLM
-    ]);
+    fixture.set_price(BTC_FEED_ID, 100_000 * PRICE_SCALAR);
 
     // Open long position: 10k collateral, 100k notional (10x leverage) and fill
     let (position_id, _) = fixture.open_and_fill(
@@ -130,24 +99,19 @@ fn test_long_position_not_liquidatable_at_threshold() {
         0,
     );
 
+    // Set funding rate: one-sided long → rate = base_rate, longs pay
+    fixture.jump(3600);
+    fixture.trading.apply_funding();
+
     // A week passes
     fixture.jump(SECONDS_IN_WEEK);
 
     // Price drops to just above liquidation threshold
-    // equity = 10000 + PnL - (50 close_fee + 168 funding) >= 500
-    // → PnL >= -9282 → price >= 90,718
-    // Use 90,730 to be safely above threshold
-    let current_price = 90_730_0000000;
-    fixture.oracle.set_price_stable(&svec![
-        &fixture.env,
-        1_0000000,      // USD
-        current_price,  // BTC = 90,730
-        2000_0000000,   // ETH
-        0_1000000,      // XLM
-    ]);
+    let current_price = 90_730 * PRICE_SCALAR;
+    fixture.set_price(BTC_FEED_ID, current_price);
 
-    // Attempt liquidation
-    let result = fixture.trading.execute(
+    // Attempt liquidation — should panic with PositionNotLiquidatable
+    fixture.trading.execute(
         &liquidator,
         &svec![
             &fixture.env,
@@ -156,26 +120,6 @@ fn test_long_position_not_liquidatable_at_threshold() {
                 position_id,
             },
         ],
-    );
-
-    // Check that liquidation failed
-    let position_after = fixture.trading.get_position(&position_id);
-    let result_code = result.get(0).unwrap();
-
-    // Debug output
-    println!("\nTest at price: {}", current_price);
-    println!("Result code: {} (0=success, 20=BadRequest/not eligible)", result_code);
-    println!("Position filled: {}", position_after.filled);
-
-    // Test passes if liquidation FAILED (result code 746 = PositionNotLiquidatable) and position still exists
-    assert_eq!(
-        result_code,
-        746u32,  // TradingError::PositionNotLiquidatable
-        "Liquidation should fail when equity >= maintenance margin. Result code {} indicates it succeeded when it shouldn't.",
-        result_code
-    );
-    assert!(
-        position_after.filled,
-        "Position should remain open (filled=true) when equity >= maintenance margin"
+        &fixture.dummy_price(),
     );
 }

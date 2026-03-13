@@ -38,6 +38,7 @@ pub struct QueuedConfig {
 #[contracttype]
 #[derive(Clone)]
 pub struct QueuedMarket {
+    pub feed_id: u32,
     pub config: MarketConfig,
     pub unlock_time: u64,
     pub nonce: u32,
@@ -65,7 +66,7 @@ pub trait TradingAdmin {
     fn set_config(e: Env);
 
     /// (Owner only) Queue a new market for the trading contract
-    fn queue_set_market(e: Env, config: MarketConfig) -> u32;
+    fn queue_set_market(e: Env, feed_id: u32, config: MarketConfig) -> u32;
 
     /// (Owner only) Cancel a queued market
     fn cancel_set_market(e: Env, nonce: u32);
@@ -137,11 +138,12 @@ impl TradingAdmin for TradingAdminContract {
     }
 
     #[only_owner]
-    fn queue_set_market(e: Env, config: MarketConfig) -> u32 {
+    fn queue_set_market(e: Env, feed_id: u32, config: MarketConfig) -> u32 {
         let delay: u64 = e.storage().instance().get(&AdminStorageKey::Delay).unwrap();
         let unlock_time = e.ledger().timestamp() + delay;
         let nonce = next_market_nonce(&e);
         let queued = QueuedMarket {
+            feed_id,
             config,
             unlock_time,
             nonce,
@@ -171,7 +173,7 @@ impl TradingAdmin for TradingAdminContract {
         }
 
         let trading: Address = e.storage().instance().get(&AdminStorageKey::Trading).unwrap();
-        TradingClient::new(&e, &trading).set_market(&queued.config);
+        TradingClient::new(&e, &trading).set_market(&queued.feed_id, &queued.config);
         e.storage().temporary().remove(&key);
     }
 

@@ -3,11 +3,14 @@ resolver = "2"
 members = [
   "account",
   "ed25519-verifier",
+  "price-verifier",
   "strategy-vault",
   "test-suites",
   "trading",
   "trading-admin",
+  "treasury",
   "webauthn-verifier",
+  "zenex-factory",
 ]
 
 [workspace.dependencies.soroban-sdk]

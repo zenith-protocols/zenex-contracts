@@ -3,7 +3,7 @@
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
     token::StellarAssetClient,
-    Address, Env, String, Vec,
+    Address, Env, String,
 };
 
 use crate::{StrategyVaultContract, StrategyVaultContractClient};
@@ -30,7 +30,6 @@ fn setup_test<'a>() -> (
     StellarAssetClient::new(&env, &token.address()).mint(&user, &(100_000 * SCALAR_7));
 
     // Deploy vault
-    let strategies = Vec::from_array(&env, [strategy.clone()]);
     let vault_address = env.register(
         StrategyVaultContract,
         (
@@ -38,7 +37,7 @@ fn setup_test<'a>() -> (
             String::from_str(&env, "vTKN"),
             token.address(),
             0u32,
-            strategies,
+            strategy.clone(),
             LOCK_TIME,
         ),
     );

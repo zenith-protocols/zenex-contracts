@@ -3,37 +3,28 @@ use crate::dependencies::VaultClient;
 use crate::errors::TradingError;
 use crate::events::ADLTriggered;
 use crate::storage;
-use crate::trading::oracle::{get_price_scalar, load_price};
 use crate::types::MarketData;
-use crate::validation::require_on_ice;
 use soroban_fixed_point_math::SorobanFixedPoint;
-use soroban_sdk::{panic_with_error, Env, Vec};
+use soroban_sdk::{panic_with_error, Env, Map, Vec};
 
-/// Permissionless ADL trigger. Anyone can call.
-/// Computes vault deficit from aggregates (O(num_markets)),
-/// then adjusts winning-side aggregates and factors.
-pub fn execute_trigger_adl(e: &Env) {
-    require_on_ice(e);
-
-    let oracle = storage::get_oracle(e);
+/// Core ADL logic operating on pre-verified prices.
+/// Called by `execute_update_status` when OnIce and threshold still met.
+pub(crate) fn do_adl(e: &Env, markets: &Vec<u32>, price_map: &Map<u32, (i128, i128)>) {
     let vault = storage::get_vault(e);
-    let price_scalar = get_price_scalar(e, &oracle);
-    let market_count = storage::get_market_count(e);
 
-    // Pass 1: load all market data + configs, compute winner/loser PnL
+    // Pass 1: load all market data, compute winner/loser PnL
     let mut total_winner_pnl: i128 = 0;
     let mut total_loser_pnl: i128 = 0;
-    let mut cached: Vec<(MarketData, i128, i128)> = Vec::new(e); // (data, long_pnl, short_pnl)
+    let mut cached: Vec<(u32, MarketData, i128, i128)> = Vec::new(e);
 
-    for i in 0..market_count {
-        let data = storage::get_market_data(e, i);
-        let mkt_config = storage::get_market_config(e, i);
-        let price = load_price(e, &oracle, &mkt_config.asset);
+    for feed_id in markets.iter() {
+        let data = storage::get_market_data(e, feed_id);
+        let (price, ps) = price_map.get(feed_id).unwrap();
 
-        let long_pnl = price.fixed_mul_floor(e, &data.long_entry_weighted, &price_scalar)
+        let long_pnl = price.fixed_mul_floor(e, &data.long_entry_weighted, &ps)
             - data.long_notional_size;
         let short_pnl = data.short_notional_size
-            - price.fixed_mul_floor(e, &data.short_entry_weighted, &price_scalar);
+            - price.fixed_mul_floor(e, &data.short_entry_weighted, &ps);
 
         if long_pnl > 0 {
             total_winner_pnl += long_pnl;
@@ -47,27 +38,24 @@ pub fn execute_trigger_adl(e: &Env) {
             total_loser_pnl += short_pnl.abs();
         }
 
-        cached.push_back((data, long_pnl, short_pnl));
+        cached.push_back((feed_id, data, long_pnl, short_pnl));
     }
 
     let net_liability = total_winner_pnl - total_loser_pnl;
     let vault_balance = VaultClient::new(e, &vault).total_assets();
 
-    // Revert if vault is healthy
     if net_liability <= vault_balance {
         panic_with_error!(e, TradingError::NoDeficit);
     }
 
     let deficit = net_liability - vault_balance;
-    // reduction_pct in SCALAR_18
     let reduction_pct = deficit.fixed_div_floor(e, &total_winner_pnl, &SCALAR_18);
-    // Cap at 100%
     let reduction_pct = reduction_pct.min(SCALAR_18);
     let factor = SCALAR_18 - reduction_pct;
 
-    // Pass 2: adjust winning-side aggregates using cached data
-    for i in 0..market_count {
-        let (mut data, long_pnl, short_pnl) = cached.get(i).unwrap();
+    // Pass 2: adjust winning-side aggregates
+    for i in 0..cached.len() {
+        let (feed_id, mut data, long_pnl, short_pnl) = cached.get(i).unwrap();
         let mut changed = false;
 
         if long_pnl > 0 {
@@ -97,11 +85,10 @@ pub fn execute_trigger_adl(e: &Env) {
         }
 
         if changed {
-            storage::set_market_data(e, i, &data);
+            storage::set_market_data(e, feed_id, &data);
         }
     }
 
-    // Emit event
     ADLTriggered {
         reduction_pct,
         deficit,

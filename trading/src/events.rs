@@ -1,22 +1,16 @@
-use sep_40_oracle::Asset;
 use soroban_sdk::{contractevent, Address};
-
-use crate::TradingConfig;
 
 // Configuration Events
 
 #[contractevent]
 #[derive(Clone)]
-pub struct SetConfig {
-    pub config: TradingConfig,
-}
+pub struct SetConfig {}
 
 #[contractevent]
 #[derive(Clone)]
 pub struct SetMarket {
     #[topic]
-    pub asset: Asset,
-    pub asset_index: u32,
+    pub feed_id: u32,
 }
 
 #[contractevent]
@@ -31,7 +25,20 @@ pub struct SetStatus {
 #[derive(Clone)]
 pub struct PlaceLimit {
     #[topic]
-    pub asset_index: u32,
+    pub feed_id: u32,
+    #[topic]
+    pub user: Address,
+    #[topic]
+    pub position_id: u32,
+    pub base_fee: i128,
+    pub impact_fee: i128,
+}
+
+#[contractevent]
+#[derive(Clone)]
+pub struct OpenMarket {
+    #[topic]
+    pub feed_id: u32,
     #[topic]
     pub user: Address,
     #[topic]
@@ -44,7 +51,7 @@ pub struct PlaceLimit {
 #[derive(Clone)]
 pub struct ClosePosition {
     #[topic]
-    pub asset_index: u32,
+    pub feed_id: u32,
     #[topic]
     pub user: Address,
     #[topic]
@@ -60,7 +67,7 @@ pub struct ClosePosition {
 #[derive(Clone)]
 pub struct FillLimit {
     #[topic]
-    pub asset_index: u32,
+    pub feed_id: u32,
     #[topic]
     pub user: Address,
     #[topic]
@@ -73,7 +80,7 @@ pub struct FillLimit {
 #[derive(Clone)]
 pub struct Liquidation {
     #[topic]
-    pub asset_index: u32,
+    pub feed_id: u32,
     #[topic]
     pub user: Address,
     #[topic]
@@ -89,7 +96,7 @@ pub struct Liquidation {
 #[derive(Clone)]
 pub struct TakeProfit {
     #[topic]
-    pub asset_index: u32,
+    pub feed_id: u32,
     #[topic]
     pub user: Address,
     #[topic]
@@ -105,7 +112,7 @@ pub struct TakeProfit {
 #[derive(Clone)]
 pub struct StopLoss {
     #[topic]
-    pub asset_index: u32,
+    pub feed_id: u32,
     #[topic]
     pub user: Address,
     #[topic]
@@ -121,7 +128,7 @@ pub struct StopLoss {
 #[derive(Clone)]
 pub struct CancelLimit {
     #[topic]
-    pub asset_index: u32,
+    pub feed_id: u32,
     #[topic]
     pub user: Address,
     #[topic]
@@ -134,7 +141,7 @@ pub struct CancelLimit {
 #[derive(Clone)]
 pub struct ModifyCollateral {
     #[topic]
-    pub asset_index: u32,
+    pub feed_id: u32,
     #[topic]
     pub user: Address,
     #[topic]
@@ -146,7 +153,7 @@ pub struct ModifyCollateral {
 #[derive(Clone)]
 pub struct SetTriggers {
     #[topic]
-    pub asset_index: u32,
+    pub feed_id: u32,
     #[topic]
     pub user: Address,
     #[topic]
@@ -157,11 +164,7 @@ pub struct SetTriggers {
 
 #[contractevent]
 #[derive(Clone)]
-pub struct ApplyFunding {
-    #[topic]
-    pub asset_index: u32,
-    pub funding_rate: i128,
-}
+pub struct ApplyFunding {}
 
 #[contractevent]
 #[derive(Clone)]

@@ -1,8 +1,8 @@
-use crate::test_fixture::{AssetIndex, TestFixture};
-use trading::testutils::default_market;
+use crate::test_fixture::{TestFixture, ETH_FEED_ID, XLM_FEED_ID};
+use trading::testutils::{default_market, BTC_FEED_ID};
 
-pub fn create_fixture_with_data<'a>(wasm: bool) -> TestFixture<'a> {
-    let mut fixture = TestFixture::create(wasm);
+pub fn create_fixture_with_data<'a>() -> TestFixture<'a> {
+    let fixture = TestFixture::create();
 
     fixture.token.mint(&fixture.owner, &100_000_000_0000000);
     // ERC-4626 deposit(assets, receiver, from, operator)
@@ -10,28 +10,12 @@ pub fn create_fixture_with_data<'a>(wasm: bool) -> TestFixture<'a> {
 
     let base_config = default_market(&fixture.env);
 
-    // Create market configs with correct assets
-    let btc_config = trading::MarketConfig {
-        asset: fixture.assets[AssetIndex::BTC].clone(),
-        ..base_config.clone()
-    };
-    let eth_config = trading::MarketConfig {
-        asset: fixture.assets[AssetIndex::ETH].clone(),
-        ..base_config.clone()
-    };
-    let xlm_config = trading::MarketConfig {
-        asset: fixture.assets[AssetIndex::XLM].clone(),
-        ..base_config.clone()
-    };
+    // Create markets identified by feed_id (no asset field needed)
+    fixture.create_market(BTC_FEED_ID, &base_config);
+    fixture.create_market(ETH_FEED_ID, &base_config);
+    fixture.create_market(XLM_FEED_ID, &base_config);
 
-    fixture.create_market(&btc_config);
-    fixture.create_market(&eth_config);
-    fixture.create_market(&xlm_config);
-
-    // Set status to Active (0) so tests can open positions
-    // Status values: 0=Active, 1=OnIce, 2=Frozen, 99=Setup
-    fixture.trading.set_status(&0u32);
-
+    // Contract starts Active from constructor, no need to set_status
     fixture
 }
 
@@ -43,7 +27,7 @@ mod tests {
 
     #[test]
     fn test_create_fixture_with_data() {
-        let fixture: TestFixture<'_> = create_fixture_with_data(false);
+        let fixture: TestFixture<'_> = create_fixture_with_data();
         let _freek = Address::generate(&fixture.env);
     }
 }

@@ -1,471 +1,276 @@
-use crate::constants::{MAX_MARKETS, SCALAR_18, UTILIZATION_THRESHOLD_DEN, UTILIZATION_THRESHOLD_NUM};
+use crate::constants::{MAX_MARKETS, MAX_STALENESS_KEEPER, SCALAR_7, UTIL_FREEZE, UTIL_UNFREEZE};
 use crate::dependencies::VaultClient;
 use crate::errors::TradingError;
-use crate::trading::oracle::{get_price_scalar, load_price};
+use crate::trading::adl::do_adl;
+use crate::trading::price_verifier::{check_staleness, scalar_from_exponent, PriceData};
 use soroban_fixed_point_math::SorobanFixedPoint;
 use crate::events::{SetConfig, SetMarket, SetStatus};
 use crate::types::{ContractStatus, MarketConfig, TradingConfig};
 use crate::validation::{require_valid_config, require_valid_market_config};
 use crate::{storage, MarketData};
-use soroban_sdk::{panic_with_error, Address, Env, String};
-
-pub fn execute_initialize(e: &Env, name: &String, vault: &Address, oracle: &Address, config: &TradingConfig) {
-    if storage::has_name(e) {
-        panic_with_error!(e, TradingError::AlreadyInitialized);
-    }
-    storage::set_name(e, name);
-    let vault_client = VaultClient::new(e, vault);
-    let token = vault_client.query_asset();
-    storage::set_vault(e, vault);
-    storage::set_token(e, &token);
-    storage::set_oracle(e, oracle);
-
-    require_valid_config(e, config, &token);
-    storage::set_config(e, config);
-
-    storage::set_status(e, ContractStatus::Setup as u32);
-}
+use soroban_sdk::{panic_with_error, Address, Env, Map, Vec};
+use soroban_sdk::unwrap::UnwrapOptimized;
+use stellar_access::ownable;
 
 pub fn execute_set_config(e: &Env, config: &TradingConfig) {
-    let token = storage::get_token(e);
-    require_valid_config(e, config, &token);
+    require_valid_config(e, config);
     storage::set_config(e, config);
-    SetConfig {
-        config: config.clone(),
-    }
-    .publish(e);
+    (SetConfig {}).publish(e);
 }
 
+pub fn execute_set_market(e: &Env, feed_id: u32, config: &MarketConfig) {
+    require_valid_market_config(e, config);
 
+    let mut markets = storage::get_markets(e);
+    let is_new = !markets.contains(&feed_id);
 
-pub fn execute_set_market(e: &Env, config: &MarketConfig) {
-    let token = storage::get_token(e);
-    require_valid_market_config(e, config, &token);
+    if is_new {
+        if markets.len() >= MAX_MARKETS {
+            panic_with_error!(e, TradingError::MaxMarketsReached);
+        }
+        markets.push_back(feed_id);
+        storage::set_markets(e, &markets);
 
-    // Enforce market cap
-    if storage::get_market_count(e) >= MAX_MARKETS {
-        panic_with_error!(e, TradingError::MaxMarketsReached);
+        let mut initial_data = MarketData::default();
+        initial_data.last_update = e.ledger().timestamp();
+        storage::set_market_data(e, feed_id, &initial_data);
+
+        if markets.len() == 1 {
+            storage::set_last_funding_update(e, e.ledger().timestamp());
+        }
     }
 
-    // Get next market index from counter
-    let asset_index = storage::next_market_index(e);
-
-    // Store market config
-    storage::set_market_config(e, asset_index, config);
-
-    // Initialize MarketData with default values
-    let initial_market_data = MarketData {
-        long_notional_size: 0,
-        short_notional_size: 0,
-        long_funding_index: 0,
-        short_funding_index: 0,
-        last_update: e.ledger().timestamp(),
-        funding_rate: 0,
-        long_entry_weighted: 0,
-        short_entry_weighted: 0,
-        long_adl_index: SCALAR_18,
-        short_adl_index: SCALAR_18,
-    };
-    storage::set_market_data(e, asset_index, &initial_market_data);
-
-    // Initialize global funding timestamp on first market
-    if asset_index == 0 {
-        storage::set_last_funding_update(e, e.ledger().timestamp());
-    }
-
-    SetMarket {
-        asset: config.asset.clone(),
-        asset_index,
-    }
-    .publish(e);
+    storage::set_market_config(e, feed_id, config);
+    SetMarket { feed_id }.publish(e);
 }
 
-/// Admin-only status changes: AdminOnIce, Frozen, Active (from admin states)
+/// Admin-only status transitions (AdminOnIce, Frozen, Active from admin states).
+/// Note: caller must already be authorized (e.g. via #[only_owner] on the contract method).
 pub fn execute_set_status(e: &Env, status: u32) {
     let new_status = ContractStatus::from_u32(e, status);
-    // Admin cannot set permissionless OnIce (use set_on_ice instead)
-    if new_status == ContractStatus::OnIce {
-        panic_with_error!(e, TradingError::InvalidStatus);
+
+    // Only admin-level statuses or restoring from admin states
+    match new_status {
+        ContractStatus::OnIce => panic_with_error!(e, TradingError::InvalidStatus),
+        _ => {}
     }
+
     storage::set_status(e, status);
     SetStatus { status }.publish(e);
 }
 
-/// Permissionless circuit breaker: anyone can call when net trader PnL >= 90% of vault
-pub fn execute_set_on_ice(e: &Env) {
+/// Permissionless status update based on price data.
+/// - Active: if utilization threshold met -> OnIce
+/// - OnIce: if threshold dropped -> Active, else if deficit -> ADL
+pub fn execute_update_status(e: &Env, feeds: &Vec<PriceData>) {
     let current = ContractStatus::from_u32(e, storage::get_status(e));
-    // Only transition from Active
-    if current != ContractStatus::Active {
-        panic_with_error!(e, TradingError::InvalidStatus);
-    }
 
-    let (net_pnl, vault_balance) = compute_net_pnl_and_vault(e);
-
-    // net_pnl * 10 >= vault_balance * 9 → net_pnl >= 90% of vault
-    if net_pnl * UTILIZATION_THRESHOLD_DEN < vault_balance * UTILIZATION_THRESHOLD_NUM {
-        panic_with_error!(e, TradingError::ThresholdNotMet);
-    }
-
-    let status = ContractStatus::OnIce as u32;
-    storage::set_status(e, status);
-    SetStatus { status }.publish(e);
-}
-
-/// Permissionless restore: anyone can call when net trader PnL < 90% of vault
-pub fn execute_restore_active(e: &Env) {
-    let current = ContractStatus::from_u32(e, storage::get_status(e));
-    // Only restore from permissionless OnIce
-    if current != ContractStatus::OnIce {
-        panic_with_error!(e, TradingError::InvalidStatus);
-    }
-
-    let (net_pnl, vault_balance) = compute_net_pnl_and_vault(e);
-
-    // net_pnl * 10 < vault_balance * 9 → net_pnl < 90% of vault
-    if net_pnl * UTILIZATION_THRESHOLD_DEN >= vault_balance * UTILIZATION_THRESHOLD_NUM {
-        panic_with_error!(e, TradingError::ThresholdStillMet);
-    }
-
-    let status = ContractStatus::Active as u32;
-    storage::set_status(e, status);
-    SetStatus { status }.publish(e);
-}
-
-/// Compute net trader PnL across all markets and vault balance
-fn compute_net_pnl_and_vault(e: &Env) -> (i128, i128) {
-    let oracle = storage::get_oracle(e);
     let vault = storage::get_vault(e);
-    let price_scalar = get_price_scalar(e, &oracle);
-    let market_count = storage::get_market_count(e);
+    let markets = storage::get_markets(e);
+
+    // Build price map: feed_id → (price, price_scalar)
+    let mut price_map: Map<u32, (i128, i128)> = Map::new(e);
+    for feed in feeds.iter() {
+        check_staleness(e, feed.publish_time, MAX_STALENESS_KEEPER);
+        price_map.set(feed.feed_id, (feed.price, scalar_from_exponent(feed.exponent)));
+    }
 
     let mut net_pnl: i128 = 0;
-    for i in 0..market_count {
-        let data = storage::get_market_data(e, i);
-        let mkt_config = storage::get_market_config(e, i);
-        let price = load_price(e, &oracle, &mkt_config.asset);
+    for feed_id in markets.iter() {
+        let data = storage::get_market_data(e, feed_id);
+        let (price, ps) = price_map.get(feed_id).unwrap();
 
-        let long_pnl = price.fixed_mul_floor(e, &data.long_entry_weighted, &price_scalar)
+        let long_pnl = price.fixed_mul_floor(e, &data.long_entry_weighted, &ps)
             - data.long_notional_size;
         let short_pnl = data.short_notional_size
-            - price.fixed_mul_floor(e, &data.short_entry_weighted, &price_scalar);
+            - price.fixed_mul_floor(e, &data.short_entry_weighted, &ps);
 
         net_pnl += long_pnl + short_pnl;
     }
 
     let vault_balance = VaultClient::new(e, &vault).total_assets();
-    (net_pnl, vault_balance)
+
+    match current {
+        ContractStatus::Active => {
+            let freeze_line = vault_balance.fixed_mul_floor(e, &UTIL_FREEZE, &SCALAR_7);
+            if net_pnl < freeze_line {
+                panic_with_error!(e, TradingError::ThresholdNotMet);
+            }
+            storage::set_status(e, ContractStatus::OnIce as u32);
+            SetStatus { status: ContractStatus::OnIce as u32 }.publish(e);
+        }
+        ContractStatus::OnIce => {
+            let unfreeze_line = vault_balance.fixed_mul_floor(e, &UTIL_UNFREEZE, &SCALAR_7);
+            if net_pnl < unfreeze_line {
+                storage::set_status(e, ContractStatus::Active as u32);
+                SetStatus { status: ContractStatus::Active as u32 }.publish(e);
+            } else {
+                do_adl(e, &markets, &price_map);
+            }
+        }
+        _ => panic_with_error!(e, TradingError::InvalidStatus),
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::constants::SCALAR_7;
+    use crate::constants::{SCALAR_7, SCALAR_18};
+    use crate::storage;
     use crate::testutils::{
-        create_oracle, create_token, create_trading, create_vault, default_config, default_market,
-        setup_env,
+        create_trading, create_trading_with_vault, default_market,
+        default_market_data, jump, BTC_FEED_ID, BTC_PRICE, PRICE_SCALAR,
     };
+    use crate::trading::price_verifier::PriceData;
+    use crate::types::ContractStatus;
+    use soroban_sdk::{vec, Env};
 
     #[test]
-    fn test_initialize() {
-        let e = setup_env();
-        let (address, owner) = create_trading(&e);
-        let (oracle, _) = create_oracle(&e);
-        let (token, _) = create_token(&e, &owner);
-        let vault = create_vault(&e, &token, 1_000_000 * SCALAR_7);
+    fn test_constructor_initializes() {
+        let e = Env::default();
+        e.mock_all_auths();
+        jump(&e, 1000);
 
-        e.as_contract(&address, || {
-            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &oracle, &default_config());
-            assert_eq!(storage::get_status(&e), ContractStatus::Setup as u32);
-            assert_eq!(storage::get_vault(&e), vault);
-            assert_eq!(storage::get_token(&e), token);
-        });
-    }
+        let (contract, _owner) = create_trading(&e);
 
-    #[test]
-    #[should_panic(expected = "Error(Contract, #700)")]
-    fn test_initialize_twice() {
-        let e = setup_env();
-        let (address, owner) = create_trading(&e);
-        let (oracle, _) = create_oracle(&e);
-        let (token, _) = create_token(&e, &owner);
-        let vault = create_vault(&e, &token, 1_000_000 * SCALAR_7);
-
-        e.as_contract(&address, || {
-            let config = default_config();
-            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &oracle, &config);
-            execute_initialize(&e, &String::from_str(&e, "Test2"), &vault, &oracle, &config);
+        e.as_contract(&contract, || {
+            assert_eq!(storage::get_status(&e), ContractStatus::Active as u32);
+            // Verify storage was populated by constructor
+            let _ = storage::get_vault(&e);
+            let _ = storage::get_price_verifier(&e);
+            let _ = storage::get_token(&e);
+            let _ = storage::get_config(&e);
         });
     }
 
     #[test]
     fn test_set_config() {
-        let e = setup_env();
-        let (address, owner) = create_trading(&e);
-        let (oracle, _) = create_oracle(&e);
-        let (token, _) = create_token(&e, &owner);
-        let vault = create_vault(&e, &token, 1_000_000 * SCALAR_7);
+        let e = Env::default();
+        e.mock_all_auths();
+        jump(&e, 1000);
 
-        e.as_contract(&address, || {
-            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &oracle, &default_config());
+        let (contract, _owner) = create_trading(&e);
 
-            let mut new_config = default_config();
-            new_config.caller_take_rate = 0_2000000; // 20%
-            execute_set_config(&e, &new_config);
+        e.as_contract(&contract, || {
+            let mut new_config = crate::testutils::default_config();
+            new_config.caller_take_rate = 0_0500000; // 5%
+            super::execute_set_config(&e, &new_config);
 
-            assert_eq!(storage::get_config(&e).caller_take_rate, 0_2000000);
+            let stored = storage::get_config(&e);
+            assert_eq!(stored.caller_take_rate, 0_0500000);
         });
     }
 
     #[test]
     fn test_set_market() {
-        let e = setup_env();
-        let (address, owner) = create_trading(&e);
-        let (oracle, _) = create_oracle(&e);
-        let (token, _) = create_token(&e, &owner);
-        let vault = create_vault(&e, &token, 1_000_000 * SCALAR_7);
+        let e = Env::default();
+        e.mock_all_auths();
+        jump(&e, 1000);
 
-        e.as_contract(&address, || {
-            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &oracle, &default_config());
+        let (contract, _owner) = create_trading(&e);
 
-            let market = default_market(&e);
-            execute_set_market(&e, &market);
-            assert!(storage::get_market_config(&e, 0).enabled);
-        });
-    }
+        e.as_contract(&contract, || {
+            let market_config = default_market(&e);
+            super::execute_set_market(&e, BTC_FEED_ID, &market_config);
 
-    // ==========================================
-    // set_status tests
-    // ==========================================
+            let markets = storage::get_markets(&e);
+            assert_eq!(markets.len(), 1);
+            assert_eq!(markets.get(0).unwrap(), BTC_FEED_ID);
+            let stored = storage::get_market_config(&e, BTC_FEED_ID);
+            assert_eq!(stored.enabled, market_config.enabled);
 
-    #[test]
-    #[should_panic(expected = "Error(Contract, #760)")]
-    fn test_set_status_invalid() {
-        let e = setup_env();
-        execute_set_status(&e, 42);
-    }
-
-    #[test]
-    #[should_panic(expected = "Error(Contract, #760)")]
-    fn test_admin_cannot_set_permissionless_on_ice() {
-        let e = setup_env();
-        execute_set_status(&e, 1); // OnIce (permissionless only)
-    }
-
-    // ==========================================
-    // require_valid_config validation
-    // ==========================================
-
-    #[test]
-    #[should_panic(expected = "Error(Contract, #735)")]
-    fn test_config_negative_caller_take_rate() {
-        let e = setup_env();
-        let (address, owner) = create_trading(&e);
-        let (oracle, _) = create_oracle(&e);
-        let (token, _) = create_token(&e, &owner);
-        let vault = create_vault(&e, &token, 1_000_000 * SCALAR_7);
-
-        e.as_contract(&address, || {
-            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &oracle, &default_config());
-            let mut config = default_config();
-            config.caller_take_rate = -1;
-            execute_set_config(&e, &config);
+            let data = storage::get_market_data(&e, BTC_FEED_ID);
+            assert_eq!(data.long_notional_size, 0);
+            assert_eq!(data.short_notional_size, 0);
+            assert_eq!(data.long_adl_index, SCALAR_18);
+            assert_eq!(data.short_adl_index, SCALAR_18);
         });
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #702)")]
-    fn test_config_caller_take_rate_over_100() {
-        let e = setup_env();
-        let (address, owner) = create_trading(&e);
-        let (oracle, _) = create_oracle(&e);
-        let (token, _) = create_token(&e, &owner);
-        let vault = create_vault(&e, &token, 1_000_000 * SCALAR_7);
+    fn test_set_status() {
+        let e = Env::default();
+        e.mock_all_auths();
+        jump(&e, 1000);
 
-        e.as_contract(&address, || {
-            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &oracle, &default_config());
-            let mut config = default_config();
-            config.caller_take_rate = SCALAR_7 + 1;
-            execute_set_config(&e, &config);
+        let (contract, _owner) = create_trading(&e);
+        let client = crate::TradingClient::new(&e, &contract);
+
+        // Admin can set to AdminOnIce
+        client.set_status(&(ContractStatus::AdminOnIce as u32));
+        e.as_contract(&contract, || {
+            assert_eq!(storage::get_status(&e), ContractStatus::AdminOnIce as u32);
         });
-    }
 
-    // ==========================================
-    // require_valid_market_config validation
-    // ==========================================
-
-    #[test]
-    #[should_panic(expected = "Error(Contract, #735)")]
-    fn test_market_zero_init_margin() {
-        let e = setup_env();
-        let (address, owner) = create_trading(&e);
-        let (oracle, _) = create_oracle(&e);
-        let (token, _) = create_token(&e, &owner);
-        let vault = create_vault(&e, &token, 1_000_000 * SCALAR_7);
-
-        e.as_contract(&address, || {
-            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &oracle, &default_config());
-            let mut market = default_market(&e);
-            market.init_margin = 0;
-            execute_set_market(&e, &market);
+        // Admin can set back to Active from AdminOnIce
+        client.set_status(&(ContractStatus::Active as u32));
+        e.as_contract(&contract, || {
+            assert_eq!(storage::get_status(&e), ContractStatus::Active as u32);
         });
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #735)")]
-    fn test_market_negative_init_margin() {
-        let e = setup_env();
-        let (address, owner) = create_trading(&e);
-        let (oracle, _) = create_oracle(&e);
-        let (token, _) = create_token(&e, &owner);
-        let vault = create_vault(&e, &token, 1_000_000 * SCALAR_7);
+    fn test_update_status_active_to_on_ice() {
+        let e = Env::default();
+        e.mock_all_auths();
+        jump(&e, 1000);
 
-        e.as_contract(&address, || {
-            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &oracle, &default_config());
-            let mut market = default_market(&e);
-            market.init_margin = -1;
-            execute_set_market(&e, &market);
+        // Very small vault so net PnL easily exceeds 90%
+        let (contract, _owner) = create_trading_with_vault(&e, 100 * SCALAR_7);
+
+        e.as_contract(&contract, || {
+            storage::set_status(&e, ContractStatus::Active as u32);
+
+            let market_config = default_market(&e);
+            super::execute_set_market(&e, BTC_FEED_ID, &market_config);
+
+            // Create a market state where net PnL >= 90% of vault
+            let mut data = default_market_data();
+            data.last_update = e.ledger().timestamp();
+            data.long_notional_size = 1000 * SCALAR_7;
+            data.long_entry_weighted = 1000 * SCALAR_7 * PRICE_SCALAR / (50_000 * PRICE_SCALAR);
+            storage::set_market_data(&e, BTC_FEED_ID, &data);
+
+            let feeds = vec![&e, PriceData {
+                feed_id: BTC_FEED_ID,
+                price: BTC_PRICE,
+                exponent: -8,
+                publish_time: e.ledger().timestamp(),
+            }];
+            super::execute_update_status(&e, &feeds);
+            assert_eq!(storage::get_status(&e), ContractStatus::OnIce as u32);
         });
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #735)")]
-    fn test_config_negative_base_fee() {
-        let e = setup_env();
-        let (address, owner) = create_trading(&e);
-        let (oracle, _) = create_oracle(&e);
-        let (token, _) = create_token(&e, &owner);
-        let vault = create_vault(&e, &token, 1_000_000 * SCALAR_7);
+    #[should_panic(expected = "Error(Contract, #782)")]
+    fn test_update_status_threshold_not_met() {
+        let e = Env::default();
+        e.mock_all_auths();
+        jump(&e, 1000);
 
-        e.as_contract(&address, || {
-            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &oracle, &default_config());
-            let mut config = default_config();
-            config.base_fee_dominant = -1;
-            execute_set_config(&e, &config);
+        // Large vault relative to positions
+        let (contract, _owner) = create_trading_with_vault(&e, 100_000_000 * SCALAR_7);
+
+        e.as_contract(&contract, || {
+            storage::set_status(&e, ContractStatus::Active as u32);
+
+            let market_config = default_market(&e);
+            super::execute_set_market(&e, BTC_FEED_ID, &market_config);
+
+            // Small positions, net PnL is tiny relative to vault
+            let mut data = default_market_data();
+            data.last_update = e.ledger().timestamp();
+            data.long_notional_size = 100 * SCALAR_7;
+            data.long_entry_weighted = 100 * SCALAR_7 * PRICE_SCALAR / (100_000 * PRICE_SCALAR);
+            storage::set_market_data(&e, BTC_FEED_ID, &data);
+
+            let feeds = vec![&e, PriceData {
+                feed_id: BTC_FEED_ID,
+                price: BTC_PRICE,
+                exponent: -8,
+                publish_time: e.ledger().timestamp(),
+            }];
+            super::execute_update_status(&e, &feeds);
         });
     }
-
-    #[test]
-    #[should_panic(expected = "Error(Contract, #735)")]
-    fn test_market_negative_base_hourly_rate() {
-        let e = setup_env();
-        let (address, owner) = create_trading(&e);
-        let (oracle, _) = create_oracle(&e);
-        let (token, _) = create_token(&e, &owner);
-        let vault = create_vault(&e, &token, 1_000_000 * SCALAR_7);
-
-        e.as_contract(&address, || {
-            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &oracle, &default_config());
-            let mut market = default_market(&e);
-            market.base_hourly_rate = -1;
-            execute_set_market(&e, &market);
-        });
-    }
-
-    #[test]
-    #[should_panic(expected = "Error(Contract, #735)")]
-    fn test_market_zero_price_impact_scalar() {
-        let e = setup_env();
-        let (address, owner) = create_trading(&e);
-        let (oracle, _) = create_oracle(&e);
-        let (token, _) = create_token(&e, &owner);
-        let vault = create_vault(&e, &token, 1_000_000 * SCALAR_7);
-
-        e.as_contract(&address, || {
-            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &oracle, &default_config());
-            let mut market = default_market(&e);
-            market.price_impact_scalar = 0;
-            execute_set_market(&e, &market);
-        });
-    }
-
-    #[test]
-    #[should_panic(expected = "Error(Contract, #735)")]
-    fn test_market_negative_price_impact_scalar() {
-        let e = setup_env();
-        let (address, owner) = create_trading(&e);
-        let (oracle, _) = create_oracle(&e);
-        let (token, _) = create_token(&e, &owner);
-        let vault = create_vault(&e, &token, 1_000_000 * SCALAR_7);
-
-        e.as_contract(&address, || {
-            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &oracle, &default_config());
-            let mut market = default_market(&e);
-            market.price_impact_scalar = -1;
-            execute_set_market(&e, &market);
-        });
-    }
-
-    #[test]
-    #[should_panic(expected = "Error(Contract, #702)")]
-    fn test_config_min_collateral_below_scalar() {
-        let e = setup_env();
-        let (address, owner) = create_trading(&e);
-        let (oracle, _) = create_oracle(&e);
-        let (token, _) = create_token(&e, &owner);
-        let vault = create_vault(&e, &token, 1_000_000 * SCALAR_7);
-
-        e.as_contract(&address, || {
-            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &oracle, &default_config());
-            let mut config = default_config();
-            config.min_collateral = SCALAR_7 - 1;
-            execute_set_config(&e, &config);
-        });
-    }
-
-    #[test]
-    #[should_panic(expected = "Error(Contract, #702)")]
-    fn test_config_max_collateral_below_min() {
-        let e = setup_env();
-        let (address, owner) = create_trading(&e);
-        let (oracle, _) = create_oracle(&e);
-        let (token, _) = create_token(&e, &owner);
-        let vault = create_vault(&e, &token, 1_000_000 * SCALAR_7);
-
-        e.as_contract(&address, || {
-            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &oracle, &default_config());
-            let mut config = default_config();
-            config.min_collateral = 100 * SCALAR_7;
-            config.max_collateral = 50 * SCALAR_7;
-            execute_set_config(&e, &config);
-        });
-    }
-
-    #[test]
-    #[should_panic(expected = "Error(Contract, #702)")]
-    fn test_config_max_collateral_equals_min() {
-        let e = setup_env();
-        let (address, owner) = create_trading(&e);
-        let (oracle, _) = create_oracle(&e);
-        let (token, _) = create_token(&e, &owner);
-        let vault = create_vault(&e, &token, 1_000_000 * SCALAR_7);
-
-        e.as_contract(&address, || {
-            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &oracle, &default_config());
-            let mut config = default_config();
-            config.min_collateral = 100 * SCALAR_7;
-            config.max_collateral = 100 * SCALAR_7;
-            execute_set_config(&e, &config);
-        });
-    }
-
-    #[test]
-    #[should_panic(expected = "Error(Contract, #702)")]
-    fn test_market_init_margin_below_maintenance() {
-        let e = setup_env();
-        let (address, owner) = create_trading(&e);
-        let (oracle, _) = create_oracle(&e);
-        let (token, _) = create_token(&e, &owner);
-        let vault = create_vault(&e, &token, 1_000_000 * SCALAR_7);
-
-        e.as_contract(&address, || {
-            execute_initialize(&e, &String::from_str(&e, "Test"), &vault, &oracle, &default_config());
-            let mut market = default_market(&e);
-            // maintenance_margin = SCALAR_7 / 200 = 0_0050000 (0.5%)
-            // init_margin = 0.4% < 0.5% → should panic
-            market.init_margin = 0_0040000;
-            execute_set_market(&e, &market);
-        });
-    }
-
 }
-
