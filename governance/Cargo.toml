@@ -1,5 +1,5 @@
 [package]
-name = "trading-admin"
+name = "governance"
 version = "0.0.0"
 edition = "2021"
 publish = false
@@ -24,4 +24,4 @@ trading = { path = "../trading", features = ["library"] }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
-trading = { path = "../trading", features = ["testutils"] }
+trading = { path = "../trading", features = ["testutils", "library"] }

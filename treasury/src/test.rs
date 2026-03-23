@@ -29,7 +29,7 @@ fn test_withdraw() {
     let (e, client, owner) = setup();
     let token_admin = Address::generate(&e);
     let token_id = e.register_stellar_asset_contract_v2(token_admin.clone());
-    let token_client = sep_41_token::StellarAssetClient::new(&e, &token_id.address());
+    let token_client = soroban_sdk::token::StellarAssetClient::new(&e, &token_id.address());
 
     // Mint tokens to the treasury contract
     token_client.mint(&client.address, &1_000);

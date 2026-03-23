@@ -52,10 +52,10 @@ const LEDGER_BUMP_TEMP: u32 = LEDGER_THRESHOLD_TEMP + 20 * ONE_DAY_LEDGERS;
 
 #[derive(Upgradeable)]
 #[contract]
-pub struct TradingAdminContract;
+pub struct GovernanceContract;
 
-#[contractclient(name = "TradingAdminClient")]
-pub trait TradingAdmin {
+#[contractclient(name = "GovernanceClient")]
+pub trait Governance {
     /// (Owner only) Queue a config update for the trading contract
     fn queue_set_config(e: Env, config: TradingConfig);
 
@@ -91,7 +91,7 @@ pub trait TradingAdmin {
 }
 
 #[contractimpl]
-impl TradingAdminContract {
+impl GovernanceContract {
     pub fn __constructor(e: Env, owner: Address, trading: Address, delay: u64) {
         ownable::set_owner(&e, &owner);
         e.storage().instance().set(&AdminStorageKey::Trading, &trading);
@@ -100,7 +100,7 @@ impl TradingAdminContract {
 }
 
 #[contractimpl]
-impl TradingAdmin for TradingAdminContract {
+impl Governance for GovernanceContract {
     #[only_owner]
     fn queue_set_config(e: Env, config: TradingConfig) {
         let delay: u64 = e.storage().instance().get(&AdminStorageKey::Delay).unwrap();
@@ -210,9 +210,9 @@ fn next_market_nonce(e: &Env) -> u32 {
 }
 
 #[contractimpl(contracttrait)]
-impl Ownable for TradingAdminContract {}
+impl Ownable for GovernanceContract {}
 
-impl UpgradeableInternal for TradingAdminContract {
+impl UpgradeableInternal for GovernanceContract {
     fn _require_auth(e: &Env, operator: &Address) {
         operator.require_auth();
         let owner = ownable::get_owner(e).expect("owner not set");

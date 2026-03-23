@@ -18,7 +18,7 @@ pub enum FactoryDataKey {
 
 #[derive(Clone)]
 #[contracttype]
-pub struct ZenexInitMeta {
+pub struct FactoryInitMeta {
     pub trading_hash: BytesN<32>,
     pub vault_hash: BytesN<32>,
     pub treasury: Address,
@@ -31,17 +31,17 @@ pub fn extend_instance(e: &Env) {
         .extend_ttl(LEDGER_THRESHOLD_INSTANCE, LEDGER_BUMP_INSTANCE);
 }
 
-pub fn get_init_meta(e: &Env) -> ZenexInitMeta {
+pub fn get_init_meta(e: &Env) -> FactoryInitMeta {
     e.storage()
         .instance()
-        .get::<Symbol, ZenexInitMeta>(&Symbol::new(e, "InitMeta"))
+        .get::<Symbol, FactoryInitMeta>(&Symbol::new(e, "InitMeta"))
         .unwrap_optimized()
 }
 
-pub fn set_init_meta(e: &Env, meta: &ZenexInitMeta) {
+pub fn set_init_meta(e: &Env, meta: &FactoryInitMeta) {
     e.storage()
         .instance()
-        .set::<Symbol, ZenexInitMeta>(&Symbol::new(e, "InitMeta"), meta);
+        .set::<Symbol, FactoryInitMeta>(&Symbol::new(e, "InitMeta"), meta);
 }
 
 pub fn is_deployed(e: &Env, pool_id: &Address) -> bool {

@@ -13,10 +13,9 @@ testutils = ["soroban-sdk/testutils"]
 
 [dependencies]
 soroban-sdk = { workspace = true }
+soroban-fixed-point-math = { workspace = true }
 stellar-access = { workspace = true }
 stellar-macros = { workspace = true }
-stellar-contract-utils = { workspace = true }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
-sep-41-token = { workspace = true, features = ["testutils"] }

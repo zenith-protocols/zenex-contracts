@@ -11,17 +11,17 @@ use soroban_sdk::{
 
 const ONE_DAY_LEDGERS: u32 = 17280; // assumes 5s a ledger
 
-// Instance storage: core contract state
+// Instance storage: core contract state (bumped every tx)
 const LEDGER_THRESHOLD_INSTANCE: u32 = ONE_DAY_LEDGERS * 30;      // ~30 days
 const LEDGER_BUMP_INSTANCE: u32 = LEDGER_THRESHOLD_INSTANCE + ONE_DAY_LEDGERS; // ~31 days
 
-// Shared storage (market config/data): accessed frequently
-const LEDGER_THRESHOLD_SHARED: u32 = ONE_DAY_LEDGERS * 45;        // ~45 days
-const LEDGER_BUMP_SHARED: u32 = LEDGER_THRESHOLD_SHARED + ONE_DAY_LEDGERS; // ~46 days
+// Market persistent storage (config, data — touched frequently)
+const LEDGER_THRESHOLD_MARKET: u32 = ONE_DAY_LEDGERS * 45;        // ~45 days
+const LEDGER_BUMP_MARKET: u32 = LEDGER_THRESHOLD_MARKET + 7 * ONE_DAY_LEDGERS; // ~52 days
 
-// User storage (positions): may be inactive for longer periods
-const LEDGER_THRESHOLD_USER: u32 = ONE_DAY_LEDGERS * 100;         // ~100 days
-const LEDGER_BUMP_USER: u32 = LEDGER_THRESHOLD_USER + 20 * ONE_DAY_LEDGERS; // ~120 days
+// Position persistent storage (short-lived perps positions)
+const LEDGER_THRESHOLD_POSITION: u32 = ONE_DAY_LEDGERS * 14;      // ~14 days
+const LEDGER_BUMP_POSITION: u32 = LEDGER_THRESHOLD_POSITION + 7 * ONE_DAY_LEDGERS; // ~21 days
 
 /********** Storage Keys **********/
 
@@ -34,11 +34,12 @@ pub enum TradingStorageKey {
     Token,
     PriceVerifier,
     Config,
-    Markets,
-    PositionCounter,
-    LastFundingUpdate,
     Treasury,
-    // Persistent storage
+    PositionCounter,
+    TotalNotional,
+    LastFundingUpdate,
+    // Persistent storage (per-entity)
+    Markets,
     MarketConfig(u32),
     MarketData(u32),
     UserPositions(Address),
@@ -72,7 +73,7 @@ fn get_persistent_default<K: IntoVal<Env, Val>, V: TryFromVal<Env, Val>, F: FnOn
     }
 }
 
-/********** Config **********/
+/********** Instance — Core Contract State **********/
 
 pub fn get_config(e: &Env) -> TradingConfig {
     e.storage()
@@ -85,19 +86,6 @@ pub fn set_config(e: &Env, config: &TradingConfig) {
     e.storage()
         .instance()
         .set(&TradingStorageKey::Config, config);
-}
-
-pub fn get_last_funding_update(e: &Env) -> u64 {
-    e.storage()
-        .instance()
-        .get(&TradingStorageKey::LastFundingUpdate)
-        .unwrap_or(0)
-}
-
-pub fn set_last_funding_update(e: &Env, timestamp: u64) {
-    e.storage()
-        .instance()
-        .set(&TradingStorageKey::LastFundingUpdate, &timestamp);
 }
 
 pub fn get_vault(e: &Env) -> Address {
@@ -165,19 +153,62 @@ pub fn set_status(e: &Env, status: u32) {
         .set(&TradingStorageKey::Status, &status);
 }
 
-/********** Market **********/
+pub fn next_position_id(e: &Env) -> u32 {
+    let key = TradingStorageKey::PositionCounter;
+    let current: u32 = e.storage().instance().get(&key).unwrap_or(0);
+    e.storage().instance().set(&key, &(current + 1));
+    current
+}
 
-pub fn get_markets(e: &Env) -> Vec<u32> {
+pub fn get_total_notional(e: &Env) -> i128 {
     e.storage()
         .instance()
-        .get(&TradingStorageKey::Markets)
-        .unwrap_or(Vec::new(e))
+        .get(&TradingStorageKey::TotalNotional)
+        .unwrap_or(0)
+}
+
+pub fn set_total_notional(e: &Env, total: i128) {
+    e.storage()
+        .instance()
+        .set(&TradingStorageKey::TotalNotional, &total);
+}
+
+pub fn get_last_funding_update(e: &Env) -> u64 {
+    e.storage()
+        .instance()
+        .get(&TradingStorageKey::LastFundingUpdate)
+        .unwrap_or(0)
+}
+
+pub fn set_last_funding_update(e: &Env, timestamp: u64) {
+    e.storage()
+        .instance()
+        .set(&TradingStorageKey::LastFundingUpdate, &timestamp);
+}
+
+/********** Persistent — Market **********/
+
+pub fn get_markets(e: &Env) -> Vec<u32> {
+    let key = TradingStorageKey::Markets;
+    let result = e
+        .storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or(Vec::new(e));
+    if !result.is_empty() {
+        e.storage()
+            .persistent()
+            .extend_ttl(&key, LEDGER_THRESHOLD_MARKET, LEDGER_BUMP_MARKET);
+    }
+    result
 }
 
 pub fn set_markets(e: &Env, markets: &Vec<u32>) {
+    let key = TradingStorageKey::Markets;
+    e.storage().persistent().set(&key, markets);
     e.storage()
-        .instance()
-        .set(&TradingStorageKey::Markets, markets);
+        .persistent()
+        .extend_ttl(&key, LEDGER_THRESHOLD_MARKET, LEDGER_BUMP_MARKET);
 }
 
 pub fn get_market_config(e: &Env, feed_id: u32) -> MarketConfig {
@@ -189,7 +220,7 @@ pub fn get_market_config(e: &Env, feed_id: u32) -> MarketConfig {
         .unwrap_or_else(|| panic_with_error!(e, TradingError::MarketNotFound));
     e.storage()
         .persistent()
-        .extend_ttl(&key, LEDGER_THRESHOLD_SHARED, LEDGER_BUMP_SHARED);
+        .extend_ttl(&key, LEDGER_THRESHOLD_MARKET, LEDGER_BUMP_MARKET);
     config
 }
 
@@ -198,7 +229,7 @@ pub fn set_market_config(e: &Env, feed_id: u32, config: &MarketConfig) {
     e.storage().persistent().set(&key, config);
     e.storage()
         .persistent()
-        .extend_ttl(&key, LEDGER_THRESHOLD_SHARED, LEDGER_BUMP_SHARED);
+        .extend_ttl(&key, LEDGER_THRESHOLD_MARKET, LEDGER_BUMP_MARKET);
 }
 
 pub fn get_market_data(e: &Env, feed_id: u32) -> MarketData {
@@ -210,7 +241,7 @@ pub fn get_market_data(e: &Env, feed_id: u32) -> MarketData {
         .unwrap_or_else(|| panic_with_error!(e, TradingError::MarketNotFound));
     e.storage()
         .persistent()
-        .extend_ttl(&key, LEDGER_THRESHOLD_SHARED, LEDGER_BUMP_SHARED);
+        .extend_ttl(&key, LEDGER_THRESHOLD_MARKET, LEDGER_BUMP_MARKET);
     result
 }
 
@@ -219,17 +250,10 @@ pub fn set_market_data(e: &Env, feed_id: u32, data: &MarketData) {
     e.storage().persistent().set(&key, data);
     e.storage()
         .persistent()
-        .extend_ttl(&key, LEDGER_THRESHOLD_SHARED, LEDGER_BUMP_SHARED);
+        .extend_ttl(&key, LEDGER_THRESHOLD_MARKET, LEDGER_BUMP_MARKET);
 }
 
-/********** Position **********/
-
-pub fn next_position_id(e: &Env) -> u32 {
-    let key = TradingStorageKey::PositionCounter;
-    let current: u32 = e.storage().instance().get(&key).unwrap_or(0);
-    e.storage().instance().set(&key, &(current + 1));
-    current
-}
+/********** Persistent — Position **********/
 
 pub fn get_position(e: &Env, position_id: u32) -> Position {
     let key = TradingStorageKey::Position(position_id);
@@ -240,7 +264,7 @@ pub fn get_position(e: &Env, position_id: u32) -> Position {
         .unwrap_or_else(|| panic_with_error!(e, TradingError::PositionNotFound));
     e.storage()
         .persistent()
-        .extend_ttl(&key, LEDGER_THRESHOLD_SHARED, LEDGER_BUMP_SHARED);
+        .extend_ttl(&key, LEDGER_THRESHOLD_POSITION, LEDGER_BUMP_POSITION);
     result
 }
 
@@ -249,7 +273,7 @@ pub fn set_position(e: &Env, position_id: u32, position: &Position) {
     e.storage().persistent().set(&key, position);
     e.storage()
         .persistent()
-        .extend_ttl(&key, LEDGER_THRESHOLD_SHARED, LEDGER_BUMP_SHARED);
+        .extend_ttl(&key, LEDGER_THRESHOLD_POSITION, LEDGER_BUMP_POSITION);
 }
 
 pub fn remove_position(e: &Env, position_id: u32) {
@@ -263,8 +287,8 @@ pub fn get_user_positions(e: &Env, user: &Address) -> Vec<u32> {
         e,
         &key,
         || Vec::new(e),
-        LEDGER_THRESHOLD_USER,
-        LEDGER_BUMP_USER,
+        LEDGER_THRESHOLD_POSITION,
+        LEDGER_BUMP_POSITION,
     )
 }
 
@@ -273,11 +297,14 @@ pub fn set_user_positions(e: &Env, user: &Address, positions: &Vec<u32>) {
     e.storage().persistent().set(&key, positions);
     e.storage()
         .persistent()
-        .extend_ttl(&key, LEDGER_THRESHOLD_USER, LEDGER_BUMP_USER);
+        .extend_ttl(&key, LEDGER_THRESHOLD_POSITION, LEDGER_BUMP_POSITION);
 }
 
 pub fn add_user_position(e: &Env, user: &Address, position_id: u32) {
     let mut positions = get_user_positions(e, user);
+    if positions.len() >= crate::constants::MAX_ENTRIES {
+        panic_with_error!(e, TradingError::MaxPositionsReached);
+    }
     positions.push_back(position_id);
     set_user_positions(e, user, &positions);
 }

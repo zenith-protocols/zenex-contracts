@@ -1,53 +1,32 @@
 [workspace]
 resolver = "2"
 members = [
-  "account",
-  "ed25519-verifier",
   "price-verifier",
   "strategy-vault",
   "test-suites",
   "trading",
-  "trading-admin",
+  "governance",
   "treasury",
-  "webauthn-verifier",
-  "zenex-factory",
+  "factory",
 ]
 
 [workspace.dependencies.soroban-sdk]
-version = "25.0.2"
+version = "25.3.0"
 
 [workspace.dependencies.soroban-fixed-point-math]
 version = "1.5.0"
 
-[workspace.dependencies.sep-40-oracle]
-version = "1.4.0"
-
-[workspace.dependencies.sep-41-token]
-version = "1.4.0"
-
 [workspace.dependencies.stellar-access]
-git = "https://github.com/OpenZeppelin/stellar-contracts"
-
-[workspace.dependencies.stellar-macros]
-git = "https://github.com/OpenZeppelin/stellar-contracts"
-
-[workspace.dependencies.stellar-accounts]
 git = "https://github.com/OpenZeppelin/stellar-contracts"
 
 [workspace.dependencies.stellar-contract-utils]
 git = "https://github.com/OpenZeppelin/stellar-contracts"
 
-[workspace.dependencies.stellar-tokens]
+[workspace.dependencies.stellar-macros]
 git = "https://github.com/OpenZeppelin/stellar-contracts"
 
-[workspace.dependencies.p256]
-version = "0.13.2"
-
-[workspace.dependencies.hex-literal]
-version = "1.1.0"
-
-[workspace.dependencies.ed25519-dalek]
-version = "2.1.1"
+[workspace.dependencies.stellar-tokens]
+git = "https://github.com/OpenZeppelin/stellar-contracts"
 
 [profile.release]
 opt-level = "z"

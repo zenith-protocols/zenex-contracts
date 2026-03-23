@@ -4,6 +4,7 @@ use soroban_sdk::{contracttype, BytesN, Env};
 pub enum DataKey {
     Signer,
     MaxConfidenceBps,
+    MaxStaleness,
 }
 
 pub fn get_signer(e: &Env) -> BytesN<32> {
@@ -20,4 +21,12 @@ pub fn get_max_confidence_bps(e: &Env) -> u32 {
 
 pub fn set_max_confidence_bps(e: &Env, bps: u32) {
     e.storage().instance().set(&DataKey::MaxConfidenceBps, &bps);
+}
+
+pub fn get_max_staleness(e: &Env) -> u64 {
+    e.storage().instance().get(&DataKey::MaxStaleness).expect("not initialized")
+}
+
+pub fn set_max_staleness(e: &Env, seconds: u64) {
+    e.storage().instance().set(&DataKey::MaxStaleness, &seconds);
 }

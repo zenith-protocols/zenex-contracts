@@ -8,26 +8,21 @@ pub enum TradingError {
     Unauthorized = 1,
 
     // Configuration
-    NotInitialized = 701,
     InvalidConfig = 702,
     // Market
     MarketNotFound = 710,
     MarketDisabled = 712,
 
     // Price
-    PriceNotFound = 720,
-    PriceStale = 721,
+    InvalidPrice = 720,
 
     // Position
     PositionNotFound = 730,
-    PositionAlreadyClosed = 731,
-    PositionNotOpen = 732,
     PositionNotPending = 733,
     MaxPositionsReached = 734,
     NegativeValueNotAllowed = 735,
-    CollateralBelowMinimum = 736,
-    CollateralAboveMaximum = 737,
-    LeverageBelowMinimum = 738,
+    NotionalBelowMinimum = 736,
+    NotionalAboveMaximum = 737,
     LeverageAboveMaximum = 739,
     CollateralUnchanged = 740,
     WithdrawalBreaksMargin = 741,
@@ -50,13 +45,15 @@ pub enum TradingError {
 
     // Market limits
     MaxMarketsReached = 770,
+    MarketHasOpenPositions = 771,
 
     // Funding
     FundingTooEarly = 790,
 
+    // Utilization
+    UtilizationExceeded = 791,
+
+
     // ADL / Circuit breaker
-    NoDeficit = 780,
-    NotOnIce = 781,
-    ThresholdNotMet = 782,
-    ThresholdStillMet = 783,
+    ThresholdNotMet = 780,
 }

@@ -1,5 +1,5 @@
 [package]
-name = "webauthn-verifier"
+name = "factory"
 version = "0.0.0"
 edition = "2021"
 publish = false
@@ -8,11 +8,16 @@ publish = false
 crate-type = ["lib", "cdylib"]
 doctest = false
 
+[features]
+testutils = [
+    "soroban-sdk/testutils",
+    "trading/testutils",
+]
+
 [dependencies]
 soroban-sdk = { workspace = true }
-stellar-accounts = { workspace = true }
+trading = { path = "../trading", features = ["library"] }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
-p256 = { workspace = true, features = ["ecdsa"] }
-hex-literal = { workspace = true }
+trading = { path = "../trading", features = ["testutils", "library"] }

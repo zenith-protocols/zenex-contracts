@@ -4,9 +4,9 @@ use crate::constants::{SCALAR_7, SCALAR_18};
 use crate::contract::TradingContract;
 use crate::storage;
 use crate::types::{MarketConfig, MarketData, TradingConfig};
-use sep_41_token::testutils::{MockTokenClient, MockTokenWASM};
 use soroban_sdk::testutils::{Address as _, Ledger as _};
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Bytes, Env, IntoVal, Map, Vec};
+use soroban_sdk::token::StellarAssetClient;
+use soroban_sdk::{contract, contractimpl, contracttype, Address, Bytes, Env, Map, Vec};
 
 //************************************************
 //           Test Constants
@@ -129,6 +129,16 @@ impl MockTreasury {
     pub fn get_rate(_e: Env) -> i128 {
         0_0500000 // 5% protocol fee
     }
+
+    pub fn get_fee(e: Env, total_fee: i128) -> i128 {
+        use soroban_fixed_point_math::SorobanFixedPoint;
+        let rate = 0_0500000_i128;
+        if total_fee > 0 {
+            total_fee.fixed_mul_floor(&e, &rate, &SCALAR_7)
+        } else {
+            0
+        }
+    }
 }
 
 //************************************************
@@ -173,18 +183,16 @@ pub fn create_price_verifier(e: &Env) -> (Address, MockPriceVerifierClient<'_>) 
     (address, client)
 }
 
-pub fn create_token<'a>(e: &Env, admin: &Address) -> (Address, MockTokenClient<'a>) {
-    let address = Address::generate(e);
-    e.register_at(&address, MockTokenWASM, ());
-    let client = MockTokenClient::new(e, &address);
-    client.initialize(admin, &7, &"Test".into_val(e), &"TST".into_val(e));
+pub fn create_token<'a>(e: &Env, admin: &Address) -> (Address, StellarAssetClient<'a>) {
+    let address = e.register_stellar_asset_contract_v2(admin.clone()).address();
+    let client = StellarAssetClient::new(e, &address);
     (address, client)
 }
 
 pub fn create_vault(e: &Env, token: &Address, initial_assets: i128) -> Address {
     let address = e.register(MockVault, (token.clone(),));
     if initial_assets > 0 {
-        MockTokenClient::new(e, token).mint(&address, &initial_assets);
+        StellarAssetClient::new(e, token).mint(&address, &initial_assets);
     }
     address
 }
@@ -195,23 +203,26 @@ pub fn create_vault(e: &Env, token: &Address, initial_assets: i128) -> Address {
 
 pub fn default_config() -> TradingConfig {
     TradingConfig {
-        caller_take_rate: 0_1000000, // 10%
-        min_open_time: 0,
-        vault_skim: 0_2000000,       // 20%
-        min_collateral: SCALAR_7,
-        max_collateral: 1_000_000 * SCALAR_7,
-        max_payout: 10 * SCALAR_7,   // 1000% max payout
-        base_fee_dominant: 0_0005000,     // 0.05%
-        base_fee_non_dominant: 0_0001000, // 0.01%
+        caller_rate: 0_1000000,                   // 10%
+        min_notional: 10 * SCALAR_7,              // 10 tokens minimum notional
+        max_notional: 10_000_000 * SCALAR_7,      // 10M tokens maximum notional
+        fee_dom: 0_0005000,                        // 0.05%
+        fee_non_dom: 0_0001000,                    // 0.01%
+        max_util: 10 * SCALAR_7,                          // 10x vault
+        r_funding: 10_000_000_000_000,             // 0.001% per hour in SCALAR_18
+        r_base: 10_000_000_000_000,                // 0.001% per hour in SCALAR_18
+        r_var: SCALAR_7,                           // 1× multiplier: at full util, rate doubles
     }
 }
 
 pub fn default_market(_e: &Env) -> MarketConfig {
     MarketConfig {
         enabled: true,
-        init_margin: 0_0100000,        // 1%
-        base_hourly_rate: 10_000_000_000_000, // 0.001% per hour in SCALAR_18
-        price_impact_scalar: 8_000_000_000 * SCALAR_7,
+        max_util: 5 * SCALAR_7,                           // 5x vault per market
+        r_borrow: SCALAR_7,                        // 1× (no adjustment)
+        margin: 0_0100000,                    // 1%
+        liq_fee: 0_0050000,                        // 0.5%
+        impact: 8_000_000_000 * SCALAR_7,
     }
 }
 
@@ -249,7 +260,7 @@ pub fn dummy_price(e: &Env) -> Bytes {
 }
 
 /// Fully initialize a trading contract with price-verifier, vault, token, and BTC market.
-pub fn setup_contract(e: &Env) -> (Address, MockTokenClient<'_>) {
+pub fn setup_contract(e: &Env) -> (Address, StellarAssetClient<'_>) {
     let owner = Address::generate(e);
     let (price_verifier, _) = create_price_verifier(e);
     let (token, token_client) = create_token(e, &owner);
@@ -265,21 +276,22 @@ pub fn setup_contract(e: &Env) -> (Address, MockTokenClient<'_>) {
         default_config(),
     ));
 
+    let config = default_config();
+
     e.as_contract(&contract, || {
         storage::set_market_config(e, BTC_FEED_ID, &default_market(e));
         let mut market_data = default_market_data();
         market_data.last_update = e.ledger().timestamp();
-        market_data.long_funding_index = SCALAR_18;
-        market_data.short_funding_index = SCALAR_18;
+        market_data.l_fund_idx = SCALAR_18;
+        market_data.s_fund_idx = SCALAR_18;
         storage::set_market_data(e, BTC_FEED_ID, &market_data);
         let mut markets = storage::get_markets(e);
         markets.push_back(BTC_FEED_ID);
         storage::set_markets(e, &markets);
 
         storage::set_last_funding_update(e, e.ledger().timestamp());
-        let market_config = storage::get_market_config(e, BTC_FEED_ID);
         let mut data = storage::get_market_data(e, BTC_FEED_ID);
-        data.update_funding_rate(e, market_config.base_hourly_rate);
+        data.update_funding_rate(e, config.r_funding);
         storage::set_market_data(e, BTC_FEED_ID, &data);
     });
 
@@ -298,5 +310,5 @@ pub fn calc_funding_rate_for_test(
     short_notional: i128,
     base_rate: i128,
 ) -> i128 {
-    crate::trading::funding::calc_funding_rate(e, long_notional, short_notional, base_rate)
+    crate::trading::rates::calc_funding_rate(e, long_notional, short_notional, base_rate)
 }

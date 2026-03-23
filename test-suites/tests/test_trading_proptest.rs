@@ -48,8 +48,9 @@ proptest! {
             )
         }));
 
-        if let Ok((position_id, _)) = result {
-            // Close immediately — no time, no price change
+        if let Ok(position_id) = result {
+            // Close — jump past MIN_OPEN_TIME first
+            fixture.jump(31);
             let _ = fixture.trading.close_position(&position_id, &fixture.dummy_price());
 
             let total_after = fixture.token.balance(&user)
@@ -86,11 +87,12 @@ proptest! {
                     0,
                 )
             }));
-            if let Ok((id, _)) = result {
+            if let Ok(id) = result {
                 position_ids.push(id);
             }
         }
 
+        fixture.jump(31); // past MIN_OPEN_TIME
         for id in &position_ids {
             let _ = fixture.trading.close_position(id, &fixture.dummy_price());
         }
@@ -127,8 +129,8 @@ proptest! {
             )
         }));
 
-        if let Ok((position_id, _)) = result {
-            // Hold for a week — interest accrues
+        if let Ok(position_id) = result {
+            // Hold for a week — interest accrues (also past MIN_OPEN_TIME)
             fixture.jump(SECONDS_PER_WEEK);
 
             let _ = fixture.trading.close_position(&position_id, &fixture.dummy_price());
@@ -143,6 +145,7 @@ proptest! {
     }
 
     /// PnL sign matches direction: long profits when price up, short profits when price down.
+    /// We verify this via user balance change (includes fees, but directional PnL dominates).
     #[test]
     fn prop_pnl_sign_matches_direction(
         price_change_pct in -30i32..30,
@@ -156,7 +159,9 @@ proptest! {
         let user = Address::generate(&fixture.env);
         fixture.token.mint(&user, &(1_000_000 * SCALAR_7));
 
-        let (position_id, _) = fixture.open_and_fill(
+        let balance_before = fixture.token.balance(&user);
+
+        let position_id = fixture.open_and_fill(
             &user,
             AssetIndex::BTC as u32,
             10_000 * SCALAR_7,
@@ -171,19 +176,25 @@ proptest! {
         let new_price = 100_000 * PRICE_SCALAR + (price_change_pct as i128) * 1_000 * PRICE_SCALAR;
         fixture.set_price(BTC_FEED_ID, new_price);
 
-        let (pnl, _) = fixture.trading.close_position(&position_id, &fixture.dummy_price());
+        fixture.jump(31); // past MIN_OPEN_TIME
+        let _ = fixture.trading.close_position(&position_id, &fixture.dummy_price());
 
+        let balance_after = fixture.token.balance(&user);
+        let net_change = balance_after - balance_before;
+
+        // With 2x leverage, PnL = price_change% * notional = price_change% * 20k
+        // Fees are small (~20 tokens) relative to PnL for |price_change| >= 1%
         if is_long {
             if price_change_pct > 0 {
-                prop_assert!(pnl > 0, "Long should profit when price up, got pnl={}", pnl);
+                prop_assert!(net_change > 0, "Long should profit when price up, got net_change={}", net_change);
             } else {
-                prop_assert!(pnl < 0, "Long should lose when price down, got pnl={}", pnl);
+                prop_assert!(net_change < 0, "Long should lose when price down, got net_change={}", net_change);
             }
         } else {
             if price_change_pct > 0 {
-                prop_assert!(pnl < 0, "Short should lose when price up, got pnl={}", pnl);
+                prop_assert!(net_change < 0, "Short should lose when price up, got net_change={}", net_change);
             } else {
-                prop_assert!(pnl > 0, "Short should profit when price down, got pnl={}", pnl);
+                prop_assert!(net_change > 0, "Short should profit when price down, got net_change={}", net_change);
             }
         }
     }

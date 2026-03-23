@@ -2,9 +2,8 @@ mod actions;
 mod adl;
 mod config;
 mod execute;
-pub(crate) mod funding;
+pub(crate) mod rates;
 mod market;
-pub(crate) mod price_verifier;
 mod position;
 
 pub use actions::{
@@ -13,5 +12,6 @@ pub use actions::{
     execute_set_triggers,
 };
 pub use crate::types::{ExecuteRequest, ExecuteRequestType};
-pub use config::{execute_set_config, execute_set_market, execute_set_status, execute_update_status};
+pub use adl::execute_update_status;
+pub use config::{execute_del_market, execute_set_config, execute_set_market, execute_set_status};
 pub use execute::execute_trigger;

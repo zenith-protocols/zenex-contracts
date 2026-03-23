@@ -1,15 +1,15 @@
 use crate::dependencies::trading::trading_contract_wasm::WASM as TRADING_WASM;
 use crate::dependencies::vault::{VaultClient, VAULT_WASM};
 use crate::token::create_stellar_token;
-use sep_41_token::testutils::MockTokenClient;
 use soroban_sdk::testutils::{Address as _, BytesN as _, Ledger, LedgerInfo};
+use soroban_sdk::token::StellarAssetClient;
 use soroban_sdk::{Address, Bytes, BytesN, Env, String};
 use trading::testutils::{
     MockPriceVerifier, MockPriceVerifierClient, MockTreasury,
     BTC_FEED_ID, BTC_PRICE, PRICE_SCALAR, default_config,
 };
 use trading::{MarketConfig, TradingClient};
-use zenex_factory::{ZenexFactoryClient, ZenexFactoryContract, ZenexInitMeta};
+use factory::{FactoryClient, FactoryContract, FactoryInitMeta};
 
 /// Feed IDs matching Pyth Lazer conventions
 pub const ETH_FEED_ID: u32 = 2;
@@ -34,8 +34,8 @@ pub struct TestFixture<'a> {
     pub vault: VaultClient<'a>,
     pub trading: TradingClient<'a>,
     pub price_verifier: MockPriceVerifierClient<'a>,
-    pub token: MockTokenClient<'a>,
-    pub factory: ZenexFactoryClient<'a>,
+    pub token: StellarAssetClient<'a>,
+    pub factory: FactoryClient<'a>,
     pub treasury: Address,
 }
 
@@ -62,18 +62,18 @@ impl TestFixture<'_> {
         let trading_hash = e.deployer().upload_contract_wasm(TRADING_WASM);
         let vault_hash = e.deployer().upload_contract_wasm(VAULT_WASM);
 
-        let init_meta = ZenexInitMeta {
+        let init_meta = FactoryInitMeta {
             trading_hash,
             vault_hash,
             treasury: treasury_id.clone(),
         };
-        let factory_id = e.register(ZenexFactoryContract {}, (init_meta,));
-        let factory_client = ZenexFactoryClient::new(&e, &factory_id);
+        let factory_id = e.register(FactoryContract {}, (init_meta,));
+        let factory_client = FactoryClient::new(&e, &factory_id);
 
         // Deploy trading + vault atomically via factory
         let config = default_config();
         let salt = BytesN::<32>::random(&e);
-        let (trading_id, vault_id) = factory_client.deploy(
+        let trading_id = factory_client.deploy(
             &owner,
             &salt,
             &token_id,
@@ -86,6 +86,7 @@ impl TestFixture<'_> {
         );
 
         let trading_client = TradingClient::new(&e, &trading_id);
+        let vault_id = trading_client.get_vault();
         let vault_client = VaultClient::new(&e, &vault_id);
 
         TestFixture {
@@ -124,7 +125,7 @@ impl TestFixture<'_> {
 
     /// Open a market order that fills immediately at the current mock price.
     /// Sets the mock price verifier to `entry_price` for the given feed before opening.
-    /// Returns (position_id, fee).
+    /// Returns position_id.
     pub fn open_and_fill(
         &self,
         user: &Address,
@@ -135,7 +136,7 @@ impl TestFixture<'_> {
         entry_price: i128,
         take_profit: i128,
         stop_loss: i128,
-    ) -> (u32, i128) {
+    ) -> u32 {
         self.price_verifier.set_price(&feed_id, &entry_price);
         self.trading.open_market(
             user,

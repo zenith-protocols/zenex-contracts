@@ -1,5 +1,4 @@
-use crate::constants::{ONE_HOUR_SECONDS, SCALAR_18};
-use crate::types::MarketData;
+use crate::constants::{SCALAR_7, SCALAR_18};
 use soroban_fixed_point_math::SorobanFixedPoint;
 use soroban_sdk::Env;
 
@@ -44,54 +43,42 @@ pub fn calc_funding_rate(
     }
 }
 
-/// Accrues funding using the stored signed rate.
-/// Payers pay full delta per unit. Receivers get: pay_delta × (dominant/minority) per unit.
-/// Total received equals total paid (self-balancing). Vault skim is applied at close time.
-pub fn accrue_funding(e: &Env, data: &mut MarketData) {
-    let current_time = e.ledger().timestamp();
-    let seconds_elapsed = current_time.saturating_sub(data.last_update) as i128;
-
-    if seconds_elapsed <= 0 {
-        return;
+/// Calculate the per-market borrowing rate using a multiplicative utilization curve.
+///
+/// Formula: base_rate × (1 + r_var × util^5) × r_borrow
+/// - r_var is SCALAR_7 (e.g. SCALAR_7 = at full util rate doubles)
+/// - r_borrow is the per-market weight (SCALAR_7, e.g. 1e7 = 1x, 2e7 = 2x)
+/// - Utilization is SCALAR_7 precision (0..SCALAR_7)
+/// Only the dominant side pays, so this rate applies to the heavier side only.
+pub fn calc_borrowing_rate(
+    e: &Env,
+    r_base: i128,
+    r_var: i128,      // SCALAR_7 multiplier
+    r_borrow: i128,   // SCALAR_7 per-market weight
+    util: i128,        // SCALAR_7 precision, 0..SCALAR_7
+) -> i128 {
+    if util <= 0 || r_var <= 0 {
+        return r_base.fixed_mul_ceil(e, &r_borrow, &SCALAR_7);
     }
 
-    let hour = ONE_HOUR_SECONDS as i128;
-    let hours_scaled = seconds_elapsed.fixed_mul_floor(e, &SCALAR_18, &hour);
+    // util^5 in SCALAR_7 precision
+    let u2 = util.fixed_mul_ceil(e, &util, &SCALAR_7);
+    let u4 = u2.fixed_mul_ceil(e, &u2, &SCALAR_7);
+    let u5 = u4.fixed_mul_ceil(e, &util, &SCALAR_7);
 
-    let pay_delta = data
-        .funding_rate
-        .abs()
-        .fixed_mul_ceil(e, &hours_scaled, &SCALAR_18);
+    // multiplier = 1 + r_var × util^5 (in SCALAR_7)
+    let util_factor = r_var.fixed_mul_ceil(e, &u5, &SCALAR_7);
+    let multiplier = SCALAR_7 + util_factor;
 
-    if data.funding_rate > 0 {
-        // Longs pay
-        data.long_funding_index += pay_delta;
-        // Shorts receive (scaled by L/S ratio)
-        if data.short_notional_size > 0 {
-            let ratio = data.long_notional_size
-                .fixed_div_floor(e, &data.short_notional_size, &SCALAR_18);
-            let receive_delta = pay_delta
-                .fixed_mul_floor(e, &ratio, &SCALAR_18);
-            data.short_funding_index -= receive_delta;
-        }
-    } else if data.funding_rate < 0 {
-        // Shorts pay
-        data.short_funding_index += pay_delta;
-        // Longs receive (scaled by S/L ratio)
-        if data.long_notional_size > 0 {
-            let ratio = data.short_notional_size
-                .fixed_div_floor(e, &data.long_notional_size, &SCALAR_18);
-            let receive_delta = pay_delta
-                .fixed_mul_floor(e, &ratio, &SCALAR_18);
-            data.long_funding_index -= receive_delta;
-        }
-    }
-    data.last_update = current_time;
+    // rate = base × multiplier × r_borrow (SCALAR_18 result)
+    let global_rate = r_base.fixed_mul_ceil(e, &multiplier, &SCALAR_7);
+    global_rate.fixed_mul_ceil(e, &r_borrow, &SCALAR_7)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::constants::SCALAR_7;
     use soroban_sdk::Env;
 
     // Base rate: 0.001% per hour = 10^13 in SCALAR_18
@@ -208,48 +195,55 @@ mod tests {
         assert!(rate > BASE_RATE * 999 / 1000); // within 0.1% of base_rate
     }
 
+    // ==========================================
+    // Borrowing Rate Tests
+    // ==========================================
+
     #[test]
-    fn test_accrue_funding_longs_pay() {
-        use crate::testutils::{create_trading, default_market_data, jump};
-
+    fn test_borrowing_rate_zero_utilization() {
         let e = Env::default();
-        jump(&e, 0);
-
-        let (address, _) = create_trading(&e);
-
-        e.as_contract(&address, || {
-            let mut data = default_market_data();
-            data.long_notional_size = 2000 * SCALAR_18;
-            data.short_notional_size = 1000 * SCALAR_18;
-            data.funding_rate = 10_000_000_000_000; // positive = longs pay
-            data.last_update = 0;
-
-            // Advance time by 1 hour
-            jump(&e, 3600);
-
-            accrue_funding(&e, &mut data);
-
-            // Funding should have accrued — longs pay, index increases
-            assert!(data.long_funding_index > 0);
-            assert_eq!(data.last_update, 3600);
-        });
+        let rate = calc_borrowing_rate(&e, BASE_RATE, SCALAR_7, SCALAR_7, 0);
+        assert_eq!(rate, BASE_RATE);
     }
 
     #[test]
-    fn test_update_funding_rate() {
-        use crate::testutils::default_market_data;
-
+    fn test_borrowing_rate_full_utilization() {
         let e = Env::default();
-
-        let mut data = default_market_data();
-        data.long_notional_size = 2000 * SCALAR_18;
-        data.short_notional_size = 1000 * SCALAR_18;
-
-        let base_hourly_rate = 10_000_000_000_000i128;
-        data.update_funding_rate(&e, base_hourly_rate);
-
-        // Longs dominant → positive rate
-        assert!(data.funding_rate > 0);
+        // util=100% → util^5=1 → rate = base × (1 + 1) × 1x = 2 × base
+        let rate = calc_borrowing_rate(&e, BASE_RATE, SCALAR_7, SCALAR_7, SCALAR_7);
+        assert_eq!(rate, 2 * BASE_RATE);
     }
 
+    #[test]
+    fn test_borrowing_rate_half_utilization() {
+        let e = Env::default();
+        let half = SCALAR_7 / 2;
+        // util=50% → util^5 ≈ 0.03125 → rate ≈ 1.03× base
+        let rate = calc_borrowing_rate(&e, BASE_RATE, SCALAR_7, SCALAR_7, half);
+        assert!(rate > BASE_RATE);
+        assert!(rate < BASE_RATE + BASE_RATE / 10); // less than 1.1× base
+    }
+
+    #[test]
+    fn test_borrowing_rate_no_variable() {
+        let e = Env::default();
+        let rate = calc_borrowing_rate(&e, BASE_RATE, 0, SCALAR_7, SCALAR_7);
+        assert_eq!(rate, BASE_RATE);
+    }
+
+    #[test]
+    fn test_borrowing_rate_high_multiplier() {
+        let e = Env::default();
+        // variable = 10× → at full util: rate = base × (1 + 10) × 1x = 11 × base
+        let rate = calc_borrowing_rate(&e, BASE_RATE, 10 * SCALAR_7, SCALAR_7, SCALAR_7);
+        assert_eq!(rate, 11 * BASE_RATE);
+    }
+
+    #[test]
+    fn test_borrowing_rate_market_weight() {
+        let e = Env::default();
+        // r_borrow = 2x weight, zero util → rate = base × 2
+        let rate = calc_borrowing_rate(&e, BASE_RATE, SCALAR_7, 2 * SCALAR_7, 0);
+        assert_eq!(rate, 2 * BASE_RATE);
+    }
 }

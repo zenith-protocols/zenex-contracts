@@ -28,7 +28,7 @@ fn test_long_position_liquidation_after_week() {
     fixture.set_price(BTC_FEED_ID, 100_000 * PRICE_SCALAR);
 
     // Open long position: 10k collateral, 100k notional (10x leverage) and fill
-    let (position_id, _) = fixture.open_and_fill(
+    let position_id = fixture.open_and_fill(
         &user,
         AssetIndex::BTC as u32,
         10_000 * SCALAR_7,  // 10k collateral
@@ -88,7 +88,7 @@ fn test_long_position_not_liquidatable_at_threshold() {
     fixture.set_price(BTC_FEED_ID, 100_000 * PRICE_SCALAR);
 
     // Open long position: 10k collateral, 100k notional (10x leverage) and fill
-    let (position_id, _) = fixture.open_and_fill(
+    let position_id = fixture.open_and_fill(
         &user,
         AssetIndex::BTC as u32,
         10_000 * SCALAR_7,  // 10k collateral
@@ -106,8 +106,8 @@ fn test_long_position_not_liquidatable_at_threshold() {
     // A week passes
     fixture.jump(SECONDS_IN_WEEK);
 
-    // Price drops to just above liquidation threshold
-    let current_price = 90_730 * PRICE_SCALAR;
+    // Price drops to just above liquidation threshold (accounting for funding + borrowing fees)
+    let current_price = 91_000 * PRICE_SCALAR;
     fixture.set_price(BTC_FEED_ID, current_price);
 
     // Attempt liquidation — should panic with PositionNotLiquidatable

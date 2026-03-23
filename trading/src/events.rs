@@ -30,13 +30,24 @@ pub struct PlaceLimit {
     pub user: Address,
     #[topic]
     pub position_id: u32,
+}
+
+#[contractevent]
+#[derive(Clone)]
+pub struct OpenMarket {
+    #[topic]
+    pub feed_id: u32,
+    #[topic]
+    pub user: Address,
+    #[topic]
+    pub position_id: u32,
     pub base_fee: i128,
     pub impact_fee: i128,
 }
 
 #[contractevent]
 #[derive(Clone)]
-pub struct OpenMarket {
+pub struct FillLimit {
     #[topic]
     pub feed_id: u32,
     #[topic]
@@ -61,19 +72,7 @@ pub struct ClosePosition {
     pub base_fee: i128,
     pub impact_fee: i128,
     pub funding: i128,
-}
-
-#[contractevent]
-#[derive(Clone)]
-pub struct FillLimit {
-    #[topic]
-    pub feed_id: u32,
-    #[topic]
-    pub user: Address,
-    #[topic]
-    pub position_id: u32,
-    pub base_fee: i128,
-    pub impact_fee: i128,
+    pub borrowing_fee: i128,
 }
 
 #[contractevent]
@@ -86,10 +85,11 @@ pub struct Liquidation {
     #[topic]
     pub position_id: u32,
     pub price: i128,
-    pub pnl: i128,
     pub base_fee: i128,
     pub impact_fee: i128,
     pub funding: i128,
+    pub borrowing_fee: i128,
+    pub liq_fee: i128,
 }
 
 #[contractevent]
@@ -106,6 +106,7 @@ pub struct TakeProfit {
     pub base_fee: i128,
     pub impact_fee: i128,
     pub funding: i128,
+    pub borrowing_fee: i128,
 }
 
 #[contractevent]
@@ -122,6 +123,7 @@ pub struct StopLoss {
     pub base_fee: i128,
     pub impact_fee: i128,
     pub funding: i128,
+    pub borrowing_fee: i128,
 }
 
 #[contractevent]
@@ -133,8 +135,6 @@ pub struct CancelLimit {
     pub user: Address,
     #[topic]
     pub position_id: u32,
-    pub base_fee: i128,
-    pub impact_fee: i128,
 }
 
 #[contractevent]
@@ -164,7 +164,23 @@ pub struct SetTriggers {
 
 #[contractevent]
 #[derive(Clone)]
+pub struct DelMarket {
+    #[topic]
+    pub feed_id: u32,
+}
+
+#[contractevent]
+#[derive(Clone)]
 pub struct ApplyFunding {}
+
+#[contractevent]
+#[derive(Clone)]
+pub struct ADLMarket {
+    #[topic]
+    pub feed_id: u32,
+    pub factor: i128,            // Reduction factor applied (SCALAR_18, e.g. 0.7e18 = 30% cut)
+    pub long: bool,              // Which side was reduced
+}
 
 #[contractevent]
 #[derive(Clone)]

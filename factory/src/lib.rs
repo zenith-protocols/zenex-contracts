@@ -8,7 +8,7 @@ mod storage;
 mod test;
 
 use events::Deploy;
-pub use storage::ZenexInitMeta;
+pub use storage::FactoryInitMeta;
 
 use soroban_sdk::{
     contract, contractclient, contractimpl,
@@ -17,10 +17,10 @@ use soroban_sdk::{
 use trading::TradingConfig;
 
 #[contract]
-pub struct ZenexFactoryContract;
+pub struct FactoryContract;
 
-#[contractclient(name = "ZenexFactoryClient")]
-pub trait ZenexFactory {
+#[contractclient(name = "FactoryClient")]
+pub trait Factory {
     /// Deploy a new trading pool (trading contract + strategy vault)
     fn deploy(
         e: Env,
@@ -33,21 +33,21 @@ pub trait ZenexFactory {
         vault_symbol: String,
         vault_decimals_offset: u32,
         vault_lock_time: u64,
-    ) -> (Address, Address);
+    ) -> Address;
 
     /// Check if a trading contract was deployed by this factory
-    fn is_pool(e: Env, pool_id: Address) -> bool;
+    fn is_deployed(e: Env, trading: Address) -> bool;
 }
 
 #[contractimpl]
-impl ZenexFactoryContract {
-    pub fn __constructor(e: Env, init_meta: ZenexInitMeta) {
+impl FactoryContract {
+    pub fn __constructor(e: Env, init_meta: FactoryInitMeta) {
         storage::set_init_meta(&e, &init_meta);
     }
 }
 
 #[contractimpl]
-impl ZenexFactory for ZenexFactoryContract {
+impl Factory for FactoryContract {
     fn deploy(
         e: Env,
         admin: Address,
@@ -59,7 +59,7 @@ impl ZenexFactory for ZenexFactoryContract {
         vault_symbol: String,
         vault_decimals_offset: u32,
         vault_lock_time: u64,
-    ) -> (Address, Address) {
+    ) -> Address {
         admin.require_auth();
         storage::extend_instance(&e);
         let init_meta = storage::get_init_meta(&e);
@@ -92,12 +92,12 @@ impl ZenexFactory for ZenexFactoryContract {
             trading: trading_address.clone(),
             vault: vault_address.clone(),
         }.publish(&e);
-        (trading_address, vault_address)
+        trading_address
     }
 
-    fn is_pool(e: Env, pool_id: Address) -> bool {
+    fn is_deployed(e: Env, trading: Address) -> bool {
         storage::extend_instance(&e);
-        storage::is_deployed(&e, &pool_id)
+        storage::is_deployed(&e, &trading)
     }
 }
 

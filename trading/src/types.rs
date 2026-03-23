@@ -1,78 +1,71 @@
-use crate::constants::SCALAR_18;
 use crate::errors::TradingError;
 use soroban_sdk::{contracttype, panic_with_error, Address, Env};
 
+/// Global trading parameters set by the admin.
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct TradingConfig {
-    pub caller_take_rate: i128,      // Percentage of fee given to caller (SCALAR_7)
-    pub min_open_time: u64,          // Minimum seconds a position must be open before closing (0 = disabled)
-    pub vault_skim: i128,            // Vault's cut of funding spread (SCALAR_7). 0_2000000 = 20%
-    pub min_collateral: i128,        // Minimum collateral required (token_decimals)
-    pub max_collateral: i128,        // Maximum collateral allowed (token_decimals)
-    pub max_payout: i128,            // Maximum payout as ratio of collateral (SCALAR_7)
-    pub base_fee_dominant: i128,     // Fee rate for dominant side (SCALAR_7)
-    pub base_fee_non_dominant: i128, // Fee rate for non-dominant side (SCALAR_7)
+    pub caller_rate: i128,  // keeper's share of fees (SCALAR_7)
+    pub min_notional: i128, // minimum notional per position (token_decimals)
+    pub max_notional: i128, // maximum notional per position (token_decimals)
+    pub fee_dom: i128,      // fee rate for dominant side (SCALAR_7)
+    pub fee_non_dom: i128,  // fee rate for non-dominant side (SCALAR_7)
+    pub max_util: i128,     // global notional / vault cap (SCALAR_7)
+    pub r_funding: i128,    // base hourly funding rate (SCALAR_18)
+    pub r_base: i128,       // base hourly borrowing rate (SCALAR_18)
+    pub r_var: i128,        // borrowing multiplier at full util (SCALAR_7)
 }
 
+/// Per-market parameters set by the admin via `set_market`.
 #[contracttype]
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct MarketConfig {
-    pub enabled: bool,             // Whether trading is enabled for this asset
-    pub init_margin: i128,         // Initial margin requirement, determines max leverage (1/init_margin) (SCALAR_7)
-    pub base_hourly_rate: i128,    // Base hourly interest rate (SCALAR_18)
-    pub price_impact_scalar: i128, // Divisor for price impact calculation (SCALAR_7)
+    pub enabled: bool,   // whether market accepts new positions
+    pub max_util: i128,  // per-market notional / vault cap (SCALAR_7)
+    pub r_borrow: i128,  // per-market borrowing weight (SCALAR_7, 1e7 = 1x)
+    pub margin: i128,    // initial margin; max leverage = 1/margin (SCALAR_7)
+    pub liq_fee: i128,   // liquidation fee + threshold (SCALAR_7)
+    pub impact: i128,    // price impact divisor (SCALAR_7)
 }
 
+/// Per-market mutable state, updated on every position action.
 #[contracttype]
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct MarketData {
-    pub long_notional_size: i128,  // Total notional size of long positions (token_decimals)
-    pub short_notional_size: i128, // Total notional size of short positions (token_decimals)
-    pub long_funding_index: i128,  // Cumulative funding index for longs (SCALAR_18)
-    pub short_funding_index: i128, // Cumulative funding index for shorts (SCALAR_18)
-    pub long_entry_weighted: i128,  // Σ(notional_i / entry_price_i) for longs (token_decimals)
-    pub short_entry_weighted: i128, // Σ(notional_i / entry_price_i) for shorts (token_decimals)
-    pub funding_rate: i128,        // Current signed funding rate (SCALAR_18), positive=longs pay, negative=shorts pay
-    pub last_update: u64,          // Last update timestamp
-    pub long_adl_index: i128,      // Cumulative long-side ADL reduction index (SCALAR_18)
-    pub short_adl_index: i128,     // Cumulative short-side ADL reduction index (SCALAR_18)
+    pub l_notional: i128, // total long notional (token_decimals)
+    pub s_notional: i128, // total short notional (token_decimals)
+    pub l_fund_idx: i128, // cumulative long funding index (SCALAR_18)
+    pub s_fund_idx: i128, // cumulative short funding index (SCALAR_18)
+    pub l_borr_idx: i128, // cumulative long borrowing index (SCALAR_18)
+    pub s_borr_idx: i128, // cumulative short borrowing index (SCALAR_18)
+    pub l_entry_wt: i128, // Σ(notional/entry_price) for longs
+    pub s_entry_wt: i128, // Σ(notional/entry_price) for shorts
+    pub fund_rate: i128,  // current funding rate, +longs pay/-shorts pay (SCALAR_18)
+    pub last_update: u64, // last accrual timestamp
+    pub l_adl_idx: i128,  // long ADL reduction index (SCALAR_18)
+    pub s_adl_idx: i128,  // short ADL reduction index (SCALAR_18)
 }
 
-impl Default for MarketData {
-    fn default() -> Self {
-        Self {
-            long_notional_size: 0,
-            short_notional_size: 0,
-            long_funding_index: 0,
-            short_funding_index: 0,
-            long_entry_weighted: 0,
-            short_entry_weighted: 0,
-            funding_rate: 0,
-            last_update: 0,
-            long_adl_index: SCALAR_18,
-            short_adl_index: SCALAR_18,
-        }
-    }
-}
-
+/// A leveraged perpetual position (pending limit order or filled).
 #[contracttype]
 #[derive(Clone)]
 pub struct Position {
-    pub user: Address,        // Owner address
-    pub filled: bool,         // Whether filled (false = pending limit order)
-    pub feed_id: u32,         // Pyth feed ID (e.g. 1=BTC, 2=ETH)
-    pub is_long: bool,        // Long (true) or short (false)
-    pub stop_loss: i128,      // Stop loss price, 0 if not set (price_decimals)
-    pub take_profit: i128,    // Take profit price, 0 if not set (price_decimals)
-    pub entry_price: i128,    // Entry price (price_decimals)
-    pub collateral: i128,     // Collateral amount (token_decimals)
-    pub notional_size: i128,  // Notional size (token_decimals)
-    pub entry_funding_index: i128, // Funding index at creation (SCALAR_18)
-    pub entry_adl_index: i128, // Market's side ADL index at position entry (SCALAR_18)
-    pub created_at: u64,      // Creation timestamp
+    pub user: Address,     // position owner
+    pub filled: bool,      // false = pending limit order
+    pub feed: u32,         // market feed ID
+    pub long: bool,        // long or short
+    pub sl: i128,          // stop loss price, 0 = not set
+    pub tp: i128,          // take profit price, 0 = not set
+    pub entry_price: i128, // entry price
+    pub col: i128,         // collateral (token_decimals)
+    pub notional: i128,    // notional size (token_decimals)
+    pub fund_idx: i128,    // funding index snapshot at fill (SCALAR_18)
+    pub borr_idx: i128,    // borrowing index snapshot at fill (SCALAR_18)
+    pub adl_idx: i128,     // ADL index snapshot at fill (SCALAR_18)
+    pub created_at: u64,   // creation timestamp
 }
 
+/// Batch execution request for keeper triggers.
 #[contracttype]
 #[derive(Clone)]
 pub struct ExecuteRequest {
