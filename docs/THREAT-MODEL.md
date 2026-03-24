@@ -997,7 +997,7 @@ Repudiation threats involve an actor denying having performed an action.
 
 **Affected Components:** All contracts -- all state-changing functions
 
-**Severity:** N/A
+**Severity:** Low (non-issue: blockchain provides inherent non-repudiation)
 
 **Mitigation Status:** Non-issue
 
@@ -1595,7 +1595,7 @@ All identified threats sorted by severity (Critical first, then High, Medium, Lo
 | T-ELEV-02 | Elevation of Privilege | Keeper execution order manipulation | Low | Accepted |
 | T-ELEV-09 | Elevation of Privilege | renounce_ownership exposed and irreversible | Low | Accepted |
 | T-ELEV-12 | Elevation of Privilege | Governance front-run (cancel vs execute) | Low | Accepted |
-| T-REPUD-01 | Repudiation | Blockchain inherent non-repudiation | N/A | Non-issue |
+| T-REPUD-01 | Repudiation | Blockchain inherent non-repudiation | Low | Non-issue |
 | T-REPUD-02 | Repudiation | Event coverage gaps for monitoring | Low | Accepted |
 | T-INFO-01 | Information Disclosure | Public blockchain data transparency | Low | Accepted |
 | T-INFO-02 | Information Disclosure | Governance queue visibility | Low | Accepted |
@@ -1603,15 +1603,14 @@ All identified threats sorted by severity (Critical first, then High, Medium, Lo
 **Summary by severity:**
 - **Critical:** 8 threats (4 Mitigated, 4 Accepted)
 - **High:** 13 threats (2 Fixed, 3 Open, 2 Mitigated, 6 Accepted)
-- **Medium:** 22 threats (5 Fixed, 4 Open, 1 Non-issue, 1 Partially Mitigated, 2 Mitigated, 9 Accepted)
-- **Low:** 8 threats (1 Mitigated, 7 Accepted)
-- **N/A:** 2 threats (1 Non-issue, 1 Accepted)
+- **Medium:** 21 threats (5 Fixed, 5 Open, 1 Non-issue, 1 Partially Mitigated, 2 Mitigated, 7 Accepted)
+- **Low:** 11 threats (2 Mitigated, 1 Non-issue, 8 Accepted)
 
 **Summary by status:**
-- **Fixed:** 11 threats
 - **Mitigated:** 10 threats
-- **Accepted:** 26 threats
-- **Open:** 7 threats (require verification in Phase 2)
+- **Fixed:** 7 threats
+- **Accepted:** 25 threats
+- **Open:** 8 threats (require verification in Phase 2)
 - **Non-issue:** 2 threats
 - **Partially Mitigated:** 1 threat
 
