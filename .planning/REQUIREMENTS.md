@@ -23,8 +23,8 @@ Requirements for audit-ready submission. Each maps to roadmap phases.
 - [ ] **QUAL-05**: Clippy passes with no warnings on all in-scope contracts
 - [ ] **QUAL-06**: cargo-audit and cargo-deny report no known vulnerabilities in dependencies
 - [ ] **QUAL-07**: All dependency versions pinned in Cargo.toml files
-- [ ] **QUAL-08**: Replace governance contract with generic timelock contract (queue/execute/cancel pattern using env.call(), instant set_status bypass, removes trading-specific coupling)
-- [ ] **QUAL-09**: Governance/timelock contract included in audit scope with tests
+- [x] **QUAL-08**: Replace governance contract with generic timelock contract (queue/execute/cancel pattern using env.call(), instant set_status bypass, removes trading-specific coupling)
+- [x] **QUAL-09**: Governance/timelock contract included in audit scope with tests
 
 ### Testing
 
@@ -98,8 +98,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | QUAL-05 | Phase 2 | Pending |
 | QUAL-06 | Phase 2 | Pending |
 | QUAL-07 | Phase 2 | Pending |
-| QUAL-08 | Phase 2 | Pending |
-| QUAL-09 | Phase 2 | Pending |
+| QUAL-08 | Phase 2 | Complete |
+| QUAL-09 | Phase 2 | Complete |
 | TEST-01 | Phase 3 | Pending |
 | TEST-02 | Phase 3 | Pending |
 | TEST-03 | Phase 3 | Pending |
