@@ -977,6 +977,25 @@ Tampering threats involve modification of data, state, or calculations (by bugs,
 
 ---
 
+#### T-TAMP-15: Same-Block Open+Close Price Arbitrage
+
+**Description:** A user obtains two valid Pyth prices within the staleness window (e.g., 10 seconds). They open a position with price 1 (favorable entry) and immediately close with price 2 (favorable exit) in the same block or consecutive blocks. Since both prices pass the staleness check, the protocol accepts both, enabling guaranteed profit extraction from the vault.
+
+**Affected Components:** Trading contract -- open_market, close_position; Price Verifier -- staleness window
+
+**Severity:** Medium (bounded by MIN_OPEN_TIME mitigation; theoretical if staleness window is tight)
+
+**Mitigation Status:** Mitigated
+
+**Mitigations:**
+- `MIN_OPEN_TIME` (30 seconds) enforced in `require_closable()` prevents same-block or rapid open+close for regular closes, SL, and TP. The position must wait at least 30 seconds before any close operation.
+- For liquidations, `MIN_OPEN_TIME` is not enforced (to allow timely liquidation of underwater positions), but the `require_liquidatable()` guard ensures the price used for liquidation has `publish_time >= position.created_at`, preventing use of stale prices predating the position. Uses distinct `StalePrice` (749) error code.
+- The staleness window (`max_staleness`) should be set shorter than `MIN_OPEN_TIME` to minimize the arbitrage window.
+
+**Test Traceability:** _[To be filled in Phase 3]_
+
+---
+
 #### Analyzed and Dismissed
 
 - **Tamper.1 (security-v2):** ADL threshold uses stale market data -- Dismissed: The ADL PnL calculation uses gross price movement only (`price * entry_wt - notional`), not funding/borrowing indices. Accruing before the calculation would not change the threshold decision.
@@ -1575,6 +1594,7 @@ All identified threats sorted by severity (Critical first, then High, Medium, Lo
 | T-TAMP-12 | Tampering | Utilization gaming via vault deposits | Medium | Open |
 | T-TAMP-13 | Tampering | Position collateral modification race | Medium | Non-issue |
 | T-TAMP-14 | Tampering | Borrowing rate spike from LP withdrawals | Medium | Open |
+| T-TAMP-15 | Tampering | Same-block open+close price arbitrage | Medium | Mitigated |
 | T-SPOOF-08 | Spoofing | Factory deployment spoofing | Medium | Partially Mitigated |
 | T-DOS-02 | Denial of Service | Permissionless OnIce trigger via large OI | Medium | Accepted |
 | T-DOS-08 | Denial of Service | Keeper liveness for liquidations | Medium | Accepted |
@@ -1843,6 +1863,20 @@ No remediation needed. Soroban executes transactions single-threaded within the 
 No specific mitigation implemented. Identified in research phase; requires code verification in Phase 2. The lock period prevents rapid withdrawal cycling, and utilization caps bound the maximum borrowing rate, but the cascade effect of large withdrawals on borrowing rates (via `util^5` scaling) and subsequent position health needs quantitative analysis. Phase 2 should verify whether a large LP withdrawal could cause cascading liquidations.
 
 **Status:** Open -- Phase 2 verification required
+
+---
+
+**T-TAMP-15 -- Same-Block Open+Close Price Arbitrage**
+
+Two mitigations prevent same-block price arbitrage:
+
+1. **`require_closable()` with `MIN_OPEN_TIME`** (30 seconds): Enforced for regular close, stop-loss, and take-profit paths. After opening, a position cannot be closed for at least 30 seconds. This prevents using two valid prices within the staleness window to extract guaranteed profit.
+
+2. **`require_liquidatable()` with publish_time guard**: For the liquidation path, `MIN_OPEN_TIME` is intentionally not enforced (liquidations must be timely for protocol safety). Instead, `require_liquidatable()` checks that the price's `publish_time >= position.created_at`, preventing use of stale/replayed prices that predate the position. Uses distinct `StalePrice` (749) error code.
+
+**Recommendation:** Set `max_staleness` shorter than `MIN_OPEN_TIME` to ensure no single price can be valid for both open and close.
+
+**Status:** Mitigated
 
 ---
 

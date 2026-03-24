@@ -33,6 +33,7 @@ pub enum TradingError {
     PositionNotLiquidatable = 746,
     LimitOrderNotFillable = 747,
     PositionTooNew = 748,
+    StalePrice = 749,
 
     // Action/Request
     ActionNotAllowedForStatus = 750,

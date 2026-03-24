@@ -108,6 +108,22 @@ impl Position {
         }
     }
 
+    /// Guard for liquidation path: position must be filled, and price must be
+    /// at least as recent as the position open time. This prevents stale-price
+    /// liquidation attacks without blocking timely liquidations with MIN_OPEN_TIME.
+    pub fn require_liquidatable(&self, e: &Env, price_publish_time: u64) {
+        if !self.filled {
+            panic_with_error!(e, TradingError::ActionNotAllowedForStatus);
+        }
+        // Guard: price must be at least as recent as position open.
+        // Prevents manipulation with stale prices predating the position.
+        // Uses StalePrice (749) not PositionTooNew (748) -- semantically distinct:
+        // PositionTooNew = "opened too recently to close", StalePrice = "price data is too old"
+        if price_publish_time < self.created_at {
+            panic_with_error!(e, TradingError::StalePrice);
+        }
+    }
+
     pub fn validate_triggers(&self, e: &Env) {
         if self.tp < 0 || self.sl < 0 {
             panic_with_error!(e, TradingError::NegativeValueNotAllowed);
@@ -249,6 +265,7 @@ mod tests {
             token: Address::generate(&e),
             treasury: Address::generate(&e),
             total_notional: 0,
+            publish_time: 0,
         }
     }
 
@@ -266,6 +283,7 @@ mod tests {
             token: Address::generate(&e),
             treasury: Address::generate(&e),
             total_notional: 0,
+            publish_time: 0,
         }
     }
 
@@ -596,5 +614,52 @@ mod tests {
             assert_eq!(user_positions.len(), 1);
             assert_eq!(user_positions.get(0), Some(id));
         });
+    }
+
+    // ==========================================
+    // require_liquidatable Tests
+    // ==========================================
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #749)")]
+    fn test_require_liquidatable_stale_price_fails() {
+        let e = Env::default();
+        let mut position = create_test_position(&e);
+        position.created_at = 1000;
+        position.filled = true;
+        // price publish_time before position open -> StalePrice
+        position.require_liquidatable(&e, 999);
+    }
+
+    #[test]
+    fn test_require_liquidatable_valid_price_succeeds() {
+        let e = Env::default();
+        let mut position = create_test_position(&e);
+        position.created_at = 1000;
+        position.filled = true;
+        // Exact match: price at same time as position open
+        position.require_liquidatable(&e, 1000);
+        // Newer price: should also succeed
+        position.require_liquidatable(&e, 1001);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #750)")]
+    fn test_require_liquidatable_unfilled_fails() {
+        let e = Env::default();
+        let mut position = create_test_position(&e);
+        position.filled = false;
+        // Even with a valid publish_time, unfilled position should fail
+        position.require_liquidatable(&e, 2000);
+    }
+
+    #[test]
+    fn test_require_liquidatable_immediate_ok() {
+        let e = Env::default();
+        let mut position = create_test_position(&e);
+        position.created_at = 500;
+        position.filled = true;
+        // Same timestamp as position: immediately liquidatable
+        position.require_liquidatable(&e, 500);
     }
 }

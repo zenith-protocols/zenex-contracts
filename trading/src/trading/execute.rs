@@ -237,9 +237,7 @@ fn apply_liquidation(
     position: &mut Position,
     position_id: u32,
 ) {
-    if !position.filled {
-        panic_with_error!(e, TradingError::ActionNotAllowedForStatus);
-    }
+    position.require_liquidatable(e, market.publish_time);
 
     let col = position.col;
     let s = market.close(e, position, position_id);

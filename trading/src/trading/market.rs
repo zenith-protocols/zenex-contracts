@@ -24,6 +24,7 @@ pub struct Market {
     pub token: Address,
     pub treasury: Address,
     pub total_notional: i128,
+    pub publish_time: u64, // from PriceData, used for liquidation stale-price guard
 }
 
 impl Market {
@@ -51,6 +52,7 @@ impl Market {
             token,
             treasury,
             total_notional,
+            publish_time: price_data.publish_time,
         }
     }
 
