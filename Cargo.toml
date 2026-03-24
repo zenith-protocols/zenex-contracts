@@ -5,7 +5,7 @@ members = [
   "strategy-vault",
   "test-suites",
   "trading",
-  "governance",
+  "timelock",
   "treasury",
   "factory",
 ]
