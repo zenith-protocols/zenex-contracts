@@ -1617,8 +1617,605 @@ All identified threats sorted by severity (Critical first, then High, Medium, Lo
 
 ## 3. What Are We Going to Do About It?
 
-_[Section 3 content to be added -- mitigations and remediations for each identified threat]_
+This section documents the treatment for every threat identified in Section 2. Each threat has one or more remediation entries using the Stellar template format: `T-CATEGORY-XX.R.N` where N is the remediation number. For threats with status "Accepted" or "Non-issue," the entry documents the reasoning rather than a code-level remediation.
+
+### 3.1 Mitigations by Category
+
+#### 3.1.1 Spoofing Mitigations
+
+**T-SPOOF-01 -- Impersonating a Trader**
+
+**T-SPOOF-01.R.1:** All position functions call `user.require_auth()` or `position.user.require_auth()` via Soroban's native Ed25519/WebAuthn signature verification. Six functions protected: place_limit, open_market, cancel_limit, close_position, modify_collateral, set_triggers.
+
+**T-SPOOF-01.R.2:** For subsequent operations (close, modify, cancel, triggers), the position owner is loaded from storage and re-authenticated -- the caller cannot substitute a different address.
+
+**Status:** Mitigated
+
+---
+
+**T-SPOOF-02 -- Impersonating the Owner/Admin**
+
+**T-SPOOF-02.R.1:** All admin functions use OpenZeppelin's `#[only_owner]` macro, which calls `require_auth()` on the stored owner address. Protected across all contracts: trading (set_config, set_market, set_status, upgrade), price-verifier (update_trusted_signer, update_max_confidence_bps, update_max_staleness), treasury (set_rate, withdraw), governance (queue/cancel config, set_status, upgrade).
+
+**T-SPOOF-02.R.2:** Two-step ownership transfer pattern (propose + accept) prevents accidental or malicious single-step transfers.
+
+**Status:** Mitigated
+
+---
+
+**T-SPOOF-03 -- Impersonating the Pyth Oracle**
+
+**T-SPOOF-03.R.1:** Ed25519 public key extracted from the update blob is compared against the stored `trusted_signer`. Mismatch panics with `InvalidSigner`.
+
+**T-SPOOF-03.R.2:** `env.crypto().ed25519_verify()` validates the cryptographic signature over the payload using Soroban's native Ed25519 implementation.
+
+**T-SPOOF-03.R.3:** Staleness check rejects prices older than `max_staleness` seconds (`publish_time >= ledger_timestamp - max_staleness`).
+
+**T-SPOOF-03.R.4:** Confidence check rejects prices with confidence interval exceeding `max_confidence_bps` (`confidence * 10000 <= price * max_confidence_bps`).
+
+**Status:** Mitigated
+
+---
+
+**T-SPOOF-04 -- Keeper Fee Recipient Spoofing**
+
+No code-level remediation applied. The `caller` parameter in `execute()` is a fee destination, not an identity claim. Impact is limited to routing one's own rewards to a different address -- fees flow TO the caller, not FROM it. No funds can be stolen from other keepers.
+
+**Status:** Accepted
+
+---
+
+**T-SPOOF-05 -- Impersonating the Vault Strategy**
+
+**T-SPOOF-05.R.1:** `strategy.require_auth()` verifies the caller authorized the transaction.
+
+**T-SPOOF-05.R.2:** `get_strategy(env) == strategy` verifies the caller matches the immutable strategy address set at vault construction. No setter function exists for the strategy address -- it is permanent after deployment.
+
+**Status:** Mitigated
+
+---
+
+**T-SPOOF-06 -- Spoofing Permissionless Functions**
+
+**T-SPOOF-06.R.1:** `apply_funding`, `update_status`, and governance `set_config`/`set_market` (post-timelock) are intentionally permissionless. The computation is deterministic from stored state and timestamps. Caller identity does not affect the outcome.
+
+**T-SPOOF-06.R.2:** `apply_funding` is hourly time-gated (panics if elapsed < ONE_HOUR_SECONDS). `update_status` requires threshold conditions to be met. Governance execution requires timelock expiry.
+
+**Status:** Mitigated (by design)
+
+---
+
+**T-SPOOF-07 -- Cross-Contract Address Spoofing**
+
+**T-SPOOF-07.R.1:** All dependency addresses (price_verifier, vault, treasury) are set at construction via `__constructor` and stored in instance storage. No setter functions exist in the public interface.
+
+**T-SPOOF-07.R.2:** Vault provides mutual authentication -- vault checks `strategy == trading` at withdrawal, ensuring both sides agree on the pairing.
+
+**T-SPOOF-07.R.3:** Instance storage persists across upgrades in Soroban, so constructor values survive contract upgrades.
+
+**Status:** Mitigated
+
+---
+
+**T-SPOOF-08 -- Factory Deployment Spoofing**
+
+**T-SPOOF-08.R.1:** `admin.require_auth()` ensures the specified admin consented to the deployment.
+
+**T-SPOOF-08.R.2:** `compute_salts()` mixes the admin address into the salt derivation. Different admins produce different addresses, preventing front-running by other deployers.
+
+**Residual:** No ACL on `deploy()` -- any address can deploy pools. `is_deployed()` treats all factory-deployed pools as legitimate. Frontend/UI layers must maintain a curated verified pool list. Factory is not upgradeable (no Ownable trait) -- WASM hashes and treasury address are permanent.
+
+**Status:** Partially Mitigated
+
+---
+
+**T-SPOOF-09 -- Governance Impersonating the Trading Owner**
+
+**T-SPOOF-09.R.1:** Trading's `#[only_owner]` checks `caller == stored_owner`. Governance only works if trading ownership was explicitly transferred to the governance contract address via the two-step transfer pattern.
+
+**T-SPOOF-09.R.2:** Governance does not validate at construction that it owns the trading contract. Misconfiguration causes all governance calls to panic at the trading level -- fail-safe behavior (no unauthorized changes applied).
+
+**Status:** Mitigated
+
+---
+
+#### 3.1.2 Tampering Mitigations
+
+**T-TAMP-01 -- modify_collateral State Drift**
+
+**T-TAMP-01.R.1:** Added `market.store(e)` call after evaluation in the modify_collateral path to persist accrued market data. This ensures indices stored on-chain remain synchronized with the latest accrual, preventing drift across multiple modify_collateral calls.
+
+**Status:** Fixed
+
+---
+
+**T-TAMP-02 -- Liquidation Threshold Pre/Post-ADL Mismatch**
+
+**T-TAMP-02.R.1:** Moved liquidation threshold computation after `market.close()` so `position.notional` reflects ADL-adjusted values. The threshold calculation is now consistent with the equity calculation, both using post-ADL state.
+
+**Status:** Fixed
+
+---
+
+**T-TAMP-03 -- Treasury Earns Zero on Profitable Closes**
+
+**T-TAMP-03.R.1:** Removed the `.min(available)` clamp on treasury fee. Treasury and caller always receive their fee cuts regardless of whether the close is profitable. The vault transfer absorbs the difference naturally: `vault_transfer = col - user_payout - treasury_fee - caller_fee`.
+
+**Status:** Fixed
+
+---
+
+**T-TAMP-04 -- Balanced Market Zero Borrowing**
+
+**T-TAMP-04.R.1:** Borrowing now accrues on both sides when the market is balanced (`l_notional == s_notional`). Both `l_borr_idx` and `s_borr_idx` receive the borrow delta. Rate scales with utilization via `util^5`, ensuring the vault always earns borrowing revenue proportional to its capital at risk.
+
+**Status:** Fixed
+
+---
+
+**T-TAMP-05 -- Funding Rounding Leakage**
+
+No code change applied. Standard DeFi fixed-point rounding practice: `fixed_mul_ceil` for charges (never undercharge), `fixed_mul_floor` for payouts (never overpay). At SCALAR_18 precision, rounding error is at most ~2 * 10^-18 per unit of notional per accrual cycle. The leaked dust implicitly benefits the vault. Used by Aave, Compound, and Blend. Exact matching would require tracking a running remainder, adding complexity for negligible economic impact.
+
+**Status:** Accepted
+
+---
+
+**T-TAMP-06 -- Treasury and Caller Rate Overlap**
+
+**T-TAMP-06.R.1:** Treasury `set_rate` validation rejects `rate > SCALAR_7 / 2` (50% cap).
+
+**T-TAMP-06.R.2:** Trading `caller_rate` validation rejects values exceeding `MAX_CALLER_RATE` (50% cap). Worst case combined extraction: ~75% of trading fees; vault retains at least 25% of trading fees plus full funding and borrowing revenue.
+
+**Status:** Fixed
+
+---
+
+**T-TAMP-07 -- Config Validation Lacks Upper Bounds**
+
+**T-TAMP-07.R.1:** Added upper bound constants in `constants.rs` enforced in `validation.rs`. All admin-configurable parameters now have both lower and upper bounds:
+
+| Parameter | Cap | Effect |
+|-----------|-----|--------|
+| `fee_dom`, `fee_non_dom` | 1% of notional | Prevents excessive trading fees |
+| `caller_rate` | 50% | Combined with treasury cap, limits total extraction |
+| `r_base`, `r_funding` | 0.01%/hr (~88% annually) | Prevents runaway borrowing/funding |
+| `r_var` | 10x multiplier | At full utilization, rate goes max 11x base |
+| `max_util` (global + per-market) | 100% | Notional cannot exceed vault |
+| `impact` | >= 10 * SCALAR_7 | Caps impact fee at 10% of notional |
+| `margin` | 50% | Minimum 2x leverage |
+| `liq_fee` | 25% | Liquidation threshold ceiling |
+| `r_borrow` | 10x weight | Per-market borrowing weight cap |
+
+**Status:** Fixed
+
+---
+
+**T-TAMP-08 -- Fixed-Point Rounding Manipulation**
+
+No specific mitigation implemented. Identified in research phase; requires code verification in Phase 2. The protocol uses conservative rounding (ceil for charges, floor for payouts), but systematic analysis of all rounding paths across fee calculations, PnL settlement, and utilization checks has not been completed. Phase 2 code inspection should confirm that no cumulative rounding advantage exists for small-position attackers.
+
+**Status:** Open -- Phase 2 verification required
+
+---
+
+**T-TAMP-09 -- Funding Index Manipulation via OI Skew Attack**
+
+No specific mitigation implemented. Identified in research phase; requires code verification in Phase 2. Utilization caps limit maximum open interest, and the funding formula scales linearly with the imbalance ratio (`|L - S| / (L + S)`), but the economic viability of this attack path (cost of capital vs extracted funding) needs quantitative analysis. Phase 2 should verify that funding rate bounds and utilization caps make this uneconomic.
+
+**Status:** Open -- Phase 2 verification required
+
+---
+
+**T-TAMP-10 -- ADL Index Manipulation**
+
+No specific mitigation implemented. Identified in research phase; requires code verification in Phase 2. ADL applies proportionally to all winning-side positions based on notional weight, but the interaction between ADL timing (permissionless `update_status` calls) and position manipulation needs analysis. Phase 2 should confirm that ADL proportionality prevents targeted exploitation.
+
+**Status:** Open -- Phase 2 verification required
+
+---
+
+**T-TAMP-11 -- Entry Weight Desynchronization**
+
+No specific mitigation implemented. Identified in research phase; requires code verification in Phase 2. Entry weights (`l_entry_wt`, `s_entry_wt`) are updated on every open and close operation via weighted average math, but accumulation of rounding errors over many operations could lead to ADL threshold calculation inaccuracies. Phase 2 should verify rounding error bounds for entry weight tracking.
+
+**Status:** Open -- Phase 2 verification required
+
+---
+
+**T-TAMP-12 -- Utilization Gaming via Vault Deposits**
+
+No specific mitigation implemented. Identified in research phase; requires code verification in Phase 2. The deposit lock period prevents rapid deposit/withdraw cycling, and utilization is checked on each position operation, but the interaction between lock period duration, vault state changes, and trading utilization calculations needs analysis. Phase 2 should verify that the lock period is sufficient to prevent economic manipulation.
+
+**Status:** Open -- Phase 2 verification required
+
+---
+
+**T-TAMP-13 -- Position Collateral Modification Race**
+
+No remediation needed. Soroban executes transactions single-threaded within the same ledger. No concurrent state access is possible. Each transaction sees the complete result of all preceding transactions. Race conditions are architecturally impossible on Soroban.
+
+**Status:** Non-issue
+
+---
+
+**T-TAMP-14 -- Borrowing Rate Spike from LP Withdrawals**
+
+No specific mitigation implemented. Identified in research phase; requires code verification in Phase 2. The lock period prevents rapid withdrawal cycling, and utilization caps bound the maximum borrowing rate, but the cascade effect of large withdrawals on borrowing rates (via `util^5` scaling) and subsequent position health needs quantitative analysis. Phase 2 should verify whether a large LP withdrawal could cause cascading liquidations.
+
+**Status:** Open -- Phase 2 verification required
+
+---
+
+#### 3.1.3 Repudiation Mitigations
+
+**T-REPUD-01 -- Blockchain Inherent Non-Repudiation**
+
+No remediation needed. All contract invocations are signed by the submitter's private key and recorded immutably on the Stellar ledger. Soroban's `require_auth()` framework creates on-chain proof of consent at the function-call level. All state changes are deterministically replayable from ledger history.
+
+**Status:** Non-issue
+
+---
+
+**T-REPUD-02 -- Event Coverage Gaps for Operational Monitoring**
+
+No code-level remediation applied. Events are a convenience layer for off-chain indexing, not a security mechanism. The Stellar ledger is the source of truth for all state changes. Missing events (governance admin actions, ADL status transitions, detailed fee breakdowns) affect operational monitoring convenience but do not create repudiation risk. Event coverage improvements are a quality-of-life enhancement for off-chain tooling, not a security fix.
+
+**Status:** Accepted
+
+---
+
+#### 3.1.4 Information Disclosure Mitigations
+
+**T-INFO-01 -- Public Blockchain Data Transparency**
+
+No remediation needed or possible. All contract storage is publicly readable on the Stellar ledger by design. Every on-chain perpetual protocol (GMX, Gains, dYdX on-chain) operates with full position transparency. No private keys, PII, or off-chain secrets are stored in contract state. Position visibility (including SL/TP trigger prices) is an inherent property of on-chain trading.
+
+**Status:** Accepted
+
+---
+
+**T-INFO-02 -- Governance Queue Visibility Enables Front-Running**
+
+No remediation applied. Governance visibility IS the security feature. The timelock delay exists specifically so users can see and react to pending changes before they take effect. The visibility is the security guarantee, not a leak. Hiding queued changes would undermine the purpose of the timelock and reduce user protection.
+
+**Status:** Accepted
+
+---
+
+#### 3.1.5 Denial of Service Mitigations
+
+**T-DOS-01 -- Admin Freezes Contract**
+
+No code-level remediation applied. Emergency freeze is an intentional admin power required for incident response (contract bugs, oracle exploits, market manipulation). `set_status` is `#[only_owner]` authenticated. Two-step ownership transfer prevents accidental owner changes. Removing this capability would eliminate a critical safety mechanism. Operational mitigations: multi-sig governance, key management procedures, monitoring for unauthorized status changes.
+
+**Status:** Accepted
+
+---
+
+**T-DOS-02 -- Permissionless OnIce Trigger via Large OI**
+
+No code-level remediation applied. OnIce is working as designed -- it protects the vault from insolvency. Triggering it requires real capital at risk (the attacker's positions are subject to ADL). Utilization caps limit maximum OI per actor. ADL reduces winning positions proportionally, including the attacker's. The cost of triggering OnIce is proportional to the systemic risk it mitigates. OnIce restores to Active when net PnL drops below 90% (UTIL_ACTIVE).
+
+**Status:** Accepted
+
+---
+
+**T-DOS-03 -- Oracle Unavailability Blocks All Price-Dependent Operations**
+
+No code-level remediation applied. Single oracle dependency is an architectural decision standard for on-chain perpetual protocols (GMX, Gains). The `update_trusted_signer` function allows emergency key rotation if the Pyth signer changes. `place_limit` and `cancel_limit` work without prices, providing partial functionality during outages. No fallback price mechanism or close-only mode exists. Adding a secondary oracle would introduce complexity (price reconciliation, oracle disagreement) with limited benefit given Pyth Lazer's track record.
+
+**Status:** Accepted
+
+---
+
+**T-DOS-04 -- Vault Depletion Blocks Profitable Closes**
+
+No code-level remediation applied. ADL circuit breaker fires at 95% net PnL / vault balance, reducing winning positions before vault depletion. Vault depletion only occurs if ADL cannot fire (due to oracle dependency -- see T-DOS-03 and T-DOS-07). No secondary balance check before calling `strategy_withdraw`. The protocol relies on ADL as the primary defense against vault insolvency.
+
+**Status:** Accepted
+
+---
+
+**T-DOS-05 -- Frozen Status Traps All Positions**
+
+No code-level remediation applied. Emergency freeze is an intentional admin power. Only the owner can set Frozen. No timeout, no emergency withdrawal, no automatic unfreezing mechanism exists. The rationale is that Frozen is a last-resort measure and any automatic recovery could be exploited by attackers. Operational mitigations: multi-sig governance, key backup procedures, documented incident response plan.
+
+**Status:** Accepted
+
+---
+
+**T-DOS-06 -- Single Oracle Dependency for All Safety Functions**
+
+No code-level remediation applied. Single oracle provider is the standard model for on-chain perpetual protocols. Every safety function (execute, update_status, close_position, modify_collateral) depends on Pyth Lazer price verification. `update_trusted_signer` enables emergency key rotation. No fallback oracle, no degraded mode, no manual override for safety functions. This is a known architectural trade-off documented for auditor awareness.
+
+**Status:** Accepted
+
+---
+
+**T-DOS-07 -- One Stale Feed Blocks Circuit Breaker**
+
+No code-level remediation applied. All-or-nothing price requirement for `update_status` is correct for ADL accuracy -- partial market data would produce an inaccurate net PnL calculation across all markets. If one feed is stale, the issue is with the oracle provider (Pyth Lazer), not the contract logic. Relaxing this check would risk triggering ADL based on incomplete data, which could be worse than the temporary block.
+
+**Status:** Accepted
+
+---
+
+**T-DOS-08 -- Keeper Liveness Dependency for Liquidations**
+
+No code-level remediation applied. Economic incentive via `caller_rate` percentage of trading fees motivates keepers to liquidate promptly. Permissionless access means anyone can run a keeper. Running an in-house keeper as a backstop is an operational concern documented in deployment procedures. ADL serves as the ultimate backstop if liquidations are delayed.
+
+**Status:** Accepted
+
+---
+
+**T-DOS-09 -- Batch Execute Exceeds Soroban Resource Limits**
+
+No specific mitigation implemented. Identified in research phase; requires empirical testing in Phase 2. Soroban has per-transaction instruction limits, CPU limits, and memory limits. The maximum viable batch size under these resource constraints needs to be documented and tested. Individual batches failing is recoverable (keeper splits into smaller batches), but the operational limit should be known. Phase 2 should determine the maximum safe batch size.
+
+**Status:** Open -- Phase 2 testing required
+
+---
+
+**T-DOS-10 -- apply_funding Iterates All Markets**
+
+**T-DOS-10.R.1:** `set_market` enforces `MAX_ENTRIES = 50` -- panics with `MaxMarketsReached` if the limit is hit. 50 markets fits within Soroban instruction limits for iteration, ensuring `apply_funding` and `update_status` always complete within resource bounds.
+
+**Status:** Mitigated
+
+---
+
+**T-DOS-11 -- MAX_ENTRIES Position Cap Griefing**
+
+**T-DOS-11.R.1:** Position cap is per-address. Users can create new Stellar addresses at no cost. Attackers cannot fill another user's slots -- each user's position list is isolated by address. The cap prevents unbounded storage growth per address, not cross-user interference.
+
+**Status:** Mitigated
+
+---
+
+**T-DOS-12 -- Storage TTL Expiration Orphans Positions**
+
+No specific mitigation implemented. Identified in research phase; requires documentation in Phase 2. Position storage has 14-day threshold / 21-day bump TTL. Every interaction (open, close, modify, execute) extends the TTL. Positions that are not interacted with for 14+ days could expire, orphaning the collateral. The edge case (user opens position, does not interact for 14+ days, position expires) and recovery procedure needs documentation. Phase 2 should document TTL behavior for users and keepers.
+
+**Status:** Open -- Phase 2 documentation required
+
+---
+
+#### 3.1.6 Elevation of Privilege Mitigations
+
+**T-ELEV-01 -- Keeper Selective Liquidation**
+
+No code-level remediation applied. Economic incentive (caller fee) motivates keepers to liquidate all eligible positions. Permissionless access means a second keeper can liquidate positions the first one skipped -- keeper collusion requires ALL keepers to cooperate. Running an in-house keeper as a backstop is an operational mitigation documented in deployment procedures.
+
+**Status:** Accepted
+
+---
+
+**T-ELEV-02 -- Keeper Execution Order Manipulation**
+
+No code-level remediation applied. Standard sequential batch processing used by all keeper-based protocols. Each request is validated against its own trigger conditions. Market data is loaded once and mutated through the batch. Fill + liquidate in the same block was verified as non-exploitable (margin > liq_fee ensures freshly filled positions are above liquidation threshold at the same price).
+
+**Status:** Accepted
+
+---
+
+**T-ELEV-03 -- Trader-Triggered ADL on Other Users**
+
+No code-level remediation applied. ADL reduces ALL winning-side positions proportionally, including the attacker's. Utilization caps limit position sizes. The 95% threshold means the vault is genuinely at risk when ADL fires -- the mechanism protects vault solvency, which benefits all users. The cost to trigger ADL is proportional to the systemic risk, making it economically self-regulating.
+
+**Status:** Accepted
+
+---
+
+**T-ELEV-04 -- Governance Bypass (Owner Not Enforced as Governance)**
+
+No code-level enforcement that the trading owner must be a governance contract. This cannot be enforced on-chain because the ownership system is generic (any address can be owner). This is a deployment/operational requirement: trading ownership must be transferred to the governance contract address after deployment. The two-step ownership transfer pattern exists for this purpose. Documented as a mandatory deployment checklist item.
+
+**Operational mitigations:** Deployment procedure requires governance transfer before going live. Frontend/UI can verify governance ownership. Community monitoring of owner address.
+
+**Status:** Accepted
+
+---
+
+**T-ELEV-05 -- Owner Upgrade is Total Control**
+
+No code-level remediation applied. `upgrade()` requires `#[only_owner]` and `require_auth()`. When governance is the owner, upgrades require governance auth. No timelock exists on upgrades -- adding a timelocked `upgrade` passthrough to governance is a future hardening item. A malicious upgrade can bypass all other protections (change addresses, drain funds, modify logic).
+
+**Operational mitigations:** Multi-sig on owner key. Code review and community verification of all upgrade proposals. Governance as owner with visible upgrade queuing (future enhancement). Auditors should verify that no backdoor upgrade path exists.
+
+**Status:** Accepted
+
+---
+
+**T-ELEV-06 -- Price Verifier Owner Swaps Oracle Signer**
+
+No code-level remediation applied. `update_trusted_signer` is protected by `#[only_owner]` with `require_auth()`. Fast signer rotation is intentional for emergency response -- Pyth may need to rotate their signing key, and a timelock would delay this critical operation. The trade-off is accepted: operational speed for key rotation outweighs the risk of a compromised price verifier owner.
+
+**Operational mitigations:** Use governance contract as price verifier owner. Multi-sig on governance key. Monitoring for signer changes with automated alerts. Incident response plan for compromised signer.
+
+**Status:** Accepted
+
+---
+
+**T-ELEV-07 -- Treasury Owner Drains All Fees**
+
+No code-level remediation applied. `withdraw(token, to, amount)` is protected by `#[only_owner]`. No withdrawal cap, no timelock, no multi-sig requirement at the contract level. Impact is bounded to accumulated protocol fees -- user collateral is in the vault, not the treasury.
+
+**Operational mitigations:** Use governance as treasury owner. Regular fee sweeps to reduce accumulated balance. Monitoring for large withdrawals.
+
+**Status:** Accepted
+
+---
+
+**T-ELEV-08 -- Governance Freeze-Queue-Apply Attack**
+
+No code-level remediation applied. This attack requires a compromised governance owner, which is already a total-loss scenario (see T-ELEV-05 -- owner can upgrade to arbitrary code). Auto-canceling queued updates when freeze is activated is a potential future hardening measure. The attack chain (freeze -> queue -> wait for timelock -> unfreeze -> apply) requires sustained access over the timelock period.
+
+**Operational mitigations:** Multi-sig on governance owner key. Monitoring for freeze events combined with queued updates. Community alerting for governance actions.
+
+**Status:** Accepted
+
+---
+
+**T-ELEV-09 -- renounce_ownership Exposed and Irreversible**
+
+No code-level remediation applied. `renounce_ownership()` requires owner authorization. If the owner key is compromised, renounce is the least severe action the attacker could take (compared to upgrade, drain, and reconfigure capabilities). Renouncing may be intentionally useful for making a contract immutable after final configuration. Consider overriding `renounce_ownership()` to panic on critical contracts if permanent owner removal is never desired (future hardening).
+
+**Status:** Accepted
+
+---
+
+**T-ELEV-10 -- Factory Deployer Gets Unvetted Admin Powers**
+
+No code-level remediation applied. Permissionless deployment is by design -- `admin.require_auth()` verifies deployer consent, and the deployer becomes the trading contract owner. Fresh pools require ownership transfer to governance before going live (deployment procedure). Frontend/UI curates which pools are displayed to users. `is_deployed()` only confirms factory origin, not safety.
+
+**Status:** Accepted
+
+---
+
+**T-ELEV-11 -- ERC-4626 Vault Inflation Attack**
+
+No code change applied. Vault constructor accepts `decimals_offset` parameter which mitigates inflation attacks by adding virtual shares/assets when set appropriately (non-zero value). This is a deployment checklist item -- `decimals_offset` must be set to a non-zero value (recommended: matching token decimals) at vault construction. The OpenZeppelin `stellar-tokens` ERC-4626 implementation handles the virtual offset math.
+
+**Status:** Accepted (deployment parameter)
+
+---
+
+**T-ELEV-12 -- Governance Front-Run (Cancel vs Execute Race)**
+
+No code-level remediation applied. Standard timelock governance behavior -- the cancel and execute are separate transactions, and whichever is included in the ledger first wins. The owner can avoid this by canceling well before the unlock time or by setting longer delays. This is a fundamental property of permissionless timelock governance, not specific to Zenex.
+
+**Status:** Accepted
+
+---
+
+**T-ELEV-13 -- Treasury Rate Set to Maximum Diverts Fees**
+
+**T-ELEV-13.R.1:** Treasury `set_rate` validation caps rate at `SCALAR_7 / 2` (50%). Combined with caller rate cap (T-TAMP-06.R.2), the vault retains at least 25% of trading fees plus full funding and borrowing revenue. The cap is enforced at the contract level and cannot be bypassed by the treasury owner.
+
+**Status:** Fixed
+
+---
+
+**T-ELEV-14 -- Keeper caller_rate Extraction**
+
+**T-ELEV-14.R.1:** Trading `caller_rate` validation rejects values exceeding `MAX_CALLER_RATE` (50%). This cap is enforced in `require_valid_config` and applies to all config updates (direct owner calls and governance-timelocked changes). Combined with treasury rate cap, limits total fee extraction from the vault.
+
+**Status:** Mitigated
+
+---
+
+### 3.2 Mitigation Summary
+
+| Category | Total | Mitigated | Fixed | Accepted | Non-issue | Open | Partially Mitigated |
+|----------|-------|-----------|-------|----------|-----------|------|---------------------|
+| Spoofing | 9 | 7 | 0 | 1 | 0 | 0 | 1 |
+| Tampering | 14 | 0 | 6 | 1 | 1 | 6 | 0 |
+| Repudiation | 2 | 0 | 0 | 1 | 1 | 0 | 0 |
+| Information Disclosure | 2 | 0 | 0 | 2 | 0 | 0 | 0 |
+| Denial of Service | 12 | 2 | 0 | 8 | 0 | 2 | 0 |
+| Elevation of Privilege | 14 | 1 | 1 | 12 | 0 | 0 | 0 |
+| **Total** | **53** | **10** | **7** | **25** | **2** | **8** | **1** |
+
+**Status definitions:**
+- **Mitigated (10):** Protection exists in the current code (was always there)
+- **Fixed (7):** Code was changed specifically to address this threat
+- **Accepted (25):** Known risk with documented reasoning for not mitigating
+- **Non-issue (2):** Analyzed and concluded this is not actually a threat
+- **Open (8):** Identified but not yet verified or addressed (Phase 2 backlog)
+- **Partially Mitigated (1):** Some protection exists but residual risk remains
+
+**Key observations:**
+- All 8 Critical-severity threats are either Mitigated (4) or Accepted with operational controls (4)
+- All 7 Fixed threats are tampering-category (fee model, settlement, and config validation bugs)
+- All 8 Open threats require Phase 2 code verification or testing, not new feature development
+- The 25 Accepted threats are predominantly design trade-offs (owner trust, oracle dependency, permissionless functions) with documented operational mitigations
 
 ## 4. Did We Do a Good Job?
 
-_[Section 4 content to be added -- retrospective evaluation of threat model completeness]_
+### 4.1 Retrospective Checklist
+
+**Was the DFD referenced after creation?**
+
+Yes. Section 2 threats consistently reference components, data flows, and trust boundaries shown in the Section 1 DFDs. For example: T-SPOOF-07 (cross-contract address spoofing) maps directly to the system-level DFD arrows between Trading, Vault, Price Verifier, and Treasury. T-DOS-06 (single oracle dependency) traces through the Trading Contract DFD showing all price-dependent entry points. The DFDs served as the visual inventory of attack surface during threat identification.
+
+**Did STRIDE analysis uncover concerns not previously known?**
+
+Yes. The consolidation process identified 7 new threats not present in the security-v2/ prior analysis: T-TAMP-08 through T-TAMP-12, T-TAMP-14 (from research/ARCHITECTURE.md analysis), and T-DOS-12 (storage TTL expiration). These were identified by applying STRIDE systematically to the full data flow rather than reviewing code changes reactively. The prior security-v2/ work was code-fix-focused; the STRIDE consolidation revealed system-level threats that emerge from component interactions.
+
+**Does each identified issue have a treatment?**
+
+Yes. All 53 threats in Section 2 have corresponding entries in Section 3 with explicit treatment descriptions. Treatments range from code-level remediations (17 Mitigated/Fixed) to documented acceptance rationale (25 Accepted) to Non-issue classification (2) to Phase 2 backlog items (8 Open) with specific verification criteria. The 1 Partially Mitigated threat (T-SPOOF-08) documents both existing protections and residual risk.
+
+**Are treatments adequate for the threat severity?**
+
+Mostly yes, with documented exceptions. All Critical-severity threats (8 total) have either code-level mitigations (T-SPOOF-01, T-SPOOF-02, T-SPOOF-03, T-SPOOF-05) or documented operational controls with explicit justification for acceptance (T-DOS-03, T-DOS-06, T-ELEV-05, T-ELEV-06). The 4 Accepted Critical threats share a common theme: they require owner key or oracle key compromise, which is an inherent trust boundary of any smart contract system. The 3 High-severity Open threats (T-TAMP-08, T-TAMP-09, T-TAMP-10) are the primary concern -- they require Phase 2 code verification to confirm that existing mechanisms (rounding direction, utilization caps, ADL proportionality) are sufficient.
+
+**Were any new implementation issues found during this review?**
+
+No new implementation bugs were found during the threat model consolidation. The 7 Fixed threats (T-TAMP-01 through T-TAMP-07 equivalents) were all identified and addressed during the security-v2/ analysis phase prior to this threat model. The consolidation process faithfully documented the existing state without discovering additional code-level defects. However, the 8 Open threats represent areas where systematic code verification has not been completed.
+
+---
+
+### 4.2 STRIDE Coverage Assessment
+
+| Category | Threats Found | Coverage | Notes |
+|----------|--------------|----------|-------|
+| Spoofing | 9 | Complete | All 6 actor types analyzed for impersonation. All authentication boundaries documented. |
+| Tampering | 14 | Complete | Settlement bugs, timing manipulation, fee model, config validation, and 7 research-phase threats pending Phase 2 verification. |
+| Repudiation | 2 | Complete | Non-issue for public blockchain. Event coverage gaps are operational, not security-critical. |
+| Information Disclosure | 2 | Complete | Non-issue for public blockchain. Governance transparency is the security feature. |
+| Denial of Service | 12 | Complete | Oracle dependency, admin powers, keeper liveness, and resource limits all documented. 2 threats need Phase 2 verification. |
+| Elevation of Privilege | 14 | Complete | Owner trust is the primary residual risk. All privilege escalation paths documented with operational mitigations. |
+
+**Coverage notes:**
+- All 7 trust boundaries (TB1-TB7) have threats mapped in at least 2 STRIDE categories
+- The trading contract has the highest threat density (37 of 53 threats directly reference it), consistent with it being the primary attack surface with 5 of 7 trust boundaries
+- Owner/admin trust is the dominant theme across Accepted threats in DoS and EoP categories (18 of 25 Accepted threats involve owner trust assumptions)
+
+---
+
+### 4.3 Open Items for Phase 2/3
+
+**Phase 2 -- Code Verification (8 Open threats):**
+
+| ID | Threat | What Phase 2 Should Verify |
+|----|--------|---------------------------|
+| T-TAMP-08 | Fixed-point rounding manipulation | Systematic analysis of all rounding paths; confirm no cumulative advantage for small positions |
+| T-TAMP-09 | Funding index manipulation (OI skew) | Economic viability analysis: cost of capital vs extracted funding with utilization caps |
+| T-TAMP-10 | ADL index manipulation | Confirm ADL proportionality prevents targeted exploitation via timing |
+| T-TAMP-11 | Entry weight desynchronization | Verify rounding error bounds for entry weight tracking over many operations |
+| T-TAMP-12 | Utilization gaming via vault deposits | Verify lock period prevents economic manipulation of utilization ratio |
+| T-TAMP-14 | Borrowing rate spike from LP withdrawals | Quantitative analysis of cascading liquidation risk from large LP exits |
+| T-DOS-09 | Batch execute exceeds resource limits | Empirical testing: determine maximum safe batch size under Soroban limits |
+| T-DOS-12 | Storage TTL expiration orphans positions | Document TTL behavior, edge cases, and recovery procedures for users and keepers |
+
+**Phase 3 -- Test Traceability:**
+
+All 53 threats have a `_[To be filled in Phase 3]_` test traceability placeholder. Per requirement TEST-10 (threat-to-test traceability matrix), each threat ID should map to one or more integration test IDs demonstrating that the protection mechanism works as documented.
+
+**Additional items from CONCERNS.md:**
+- Unsafe `.unwrap()` calls in `verify_price()` and ADL loop (contract panics if price feed data missing) -- should be addressed in Phase 2 code quality
+- test-suites integration tests are completely out of sync with current trading API (old oracle pattern) -- Phase 3 requires full rebuild
+
+---
+
+### 4.4 Methodology Notes
+
+**Sources:**
+- `security-v2/` -- 9 files of prior STRIDE analysis covering all 6 categories, asset/actor inventories, and error-to-STRIDE mapping
+- `.planning/research/ARCHITECTURE.md` -- 39 pre-identified STRIDE threats with severity ratings and 7 trust boundary models
+- Codebase analysis of trading, strategy-vault, factory, price-verifier, treasury, and governance contracts
+- `.planning/codebase/CONCERNS.md` -- Known issues and unsafe code patterns
+
+**Framework:** Stellar STRIDE four-section framework as documented at `https://developers.stellar.org/docs/build/security-docs/threat-modeling`
+
+**Threat ID scheme:** `T-CATEGORY-XX` (e.g., T-SPOOF-01) with remediation IDs `T-CATEGORY-XX.R.N` (e.g., T-SPOOF-01.R.1), compatible with Stellar's convention but using a prefixed format for clarity.
+
+**Consolidation date:** 2026-03-24
+
+**Code state:** Contracts are code-frozen per project constraints. This threat model reflects the frozen state -- no code changes were made during this analysis. All "Fixed" statuses refer to changes made during the security-v2/ analysis phase prior to the code freeze.
+
+**Severity methodology:** Ratings reflect impact if the mitigation were bypassed or absent (standard audit practice). This tells auditors what they are protecting against, not just that protection exists. A "Mitigated" Critical threat indicates the protection exists but the consequences of failure warrant auditor scrutiny.
+
+**Completeness claim:** This document covers all contract-level attack surfaces for the 4 in-scope contracts (trading, strategy-vault, factory, price-verifier) across all 6 STRIDE categories. Off-chain services (keeper, relayer, backend, frontend) are modeled only at their trust boundaries with contracts. Treasury and governance are modeled as external trust boundaries with detailed interaction models.
