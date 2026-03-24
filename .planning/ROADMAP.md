@@ -49,7 +49,7 @@ Plans:
 Plans:
 - [x] 02-01-PLAN.md — Generic timelock contract replacing governance (QUAL-08, QUAL-09)
 - [x] 02-02-PLAN.md — Unwrap fixes, liquidation guard, threat model update (QUAL-01, QUAL-02, QUAL-03)
-- [ ] 02-03-PLAN.md — Static analysis, dependency pinning, clippy (QUAL-04, QUAL-05, QUAL-06, QUAL-07)
+- [x] 02-03-PLAN.md — Static analysis, dependency pinning, clippy (QUAL-04, QUAL-05, QUAL-06, QUAL-07)
 
 ### Phase 3: Integration Tests and Documentation
 **Goal**: Auditors can run a complete integration test suite -- derived from the Phase 1 threat catalog -- that exercises every critical contract path, proves authorization enforcement, and demonstrates 80%+ line coverage; alongside a complete protocol spec and architecture documentation

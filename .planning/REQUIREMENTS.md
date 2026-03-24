@@ -19,10 +19,10 @@ Requirements for audit-ready submission. Each maps to roadmap phases.
 - [x] **QUAL-01**: ~~Fix collateral negativity bug~~ — NOT A BUG: `position.validate()` on the next line checks `col <= 0` and reverts. Margin check also catches this. Already mitigated.
 - [x] **QUAL-02**: Replace all unsafe `.unwrap()` calls in production code with proper error handling (6 identified)
 - [x] **QUAL-03**: ~~Enforce token decimal assumption~~ — NOT NEEDED: all math is decimal-agnostic (rates are SCALAR_7 ratios, notional/col are same denomination). Deployer sets config values appropriate for the token's decimals.
-- [ ] **QUAL-04**: Scout Soroban static analysis passes with no critical/high findings
-- [ ] **QUAL-05**: Clippy passes with no warnings on all in-scope contracts
-- [ ] **QUAL-06**: cargo-audit and cargo-deny report no known vulnerabilities in dependencies
-- [ ] **QUAL-07**: All dependency versions pinned in Cargo.toml files
+- [x] **QUAL-04**: Scout Soroban static analysis passes with no critical/high findings
+- [x] **QUAL-05**: Clippy passes with no warnings on all in-scope contracts
+- [x] **QUAL-06**: cargo-audit and cargo-deny report no known vulnerabilities in dependencies
+- [x] **QUAL-07**: All dependency versions pinned in Cargo.toml files
 - [x] **QUAL-08**: Replace governance contract with generic timelock contract (queue/execute/cancel pattern using env.call(), instant set_status bypass, removes trading-specific coupling)
 - [x] **QUAL-09**: Governance/timelock contract included in audit scope with tests
 
@@ -94,10 +94,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | QUAL-01 | Phase 2 | Complete |
 | QUAL-02 | Phase 2 | Complete |
 | QUAL-03 | Phase 2 | Complete |
-| QUAL-04 | Phase 2 | Pending |
-| QUAL-05 | Phase 2 | Pending |
-| QUAL-06 | Phase 2 | Pending |
-| QUAL-07 | Phase 2 | Pending |
+| QUAL-04 | Phase 2 | Complete |
+| QUAL-05 | Phase 2 | Complete |
+| QUAL-06 | Phase 2 | Complete |
+| QUAL-07 | Phase 2 | Complete |
 | QUAL-08 | Phase 2 | Complete |
 | QUAL-09 | Phase 2 | Complete |
 | TEST-01 | Phase 3 | Pending |
