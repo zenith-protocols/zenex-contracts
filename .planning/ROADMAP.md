@@ -36,18 +36,20 @@ Plans:
 ### Phase 2: Code Quality and Static Analysis
 **Goal**: The codebase has zero known bugs, zero unsafe unwrap calls, zero static analysis findings, and all dependencies are pinned -- auditors will not find mechanical issues
 **Depends on**: Phase 1 (threat model may surface additional code issues to fix)
-**Requirements**: QUAL-01, QUAL-02, QUAL-03, QUAL-04, QUAL-05, QUAL-06, QUAL-07
+**Requirements**: QUAL-01, QUAL-02, QUAL-03, QUAL-04, QUAL-05, QUAL-06, QUAL-07, QUAL-08, QUAL-09
 **Success Criteria** (what must be TRUE):
   1. Collateral can never go negative after fee deduction in any position operation (QUAL-01 fix verified by existing unit tests passing)
   2. Zero `.unwrap()` calls remain in production code paths across all in-scope contracts (QUAL-02)
-  3. Trading contract constructor rejects collateral tokens that do not have 7 decimals (QUAL-03)
-  4. `cargo scout-audit` reports zero critical and zero high findings across trading, strategy-vault, factory, and price-verifier (QUAL-04)
+  3. ~~Token decimal validation~~ DROPPED: math is decimal-agnostic, deployer sets appropriate config values (QUAL-03 resolved)
+  4. `cargo scout-audit` reports zero critical and zero high findings across trading, strategy-vault, factory, price-verifier, and timelock (QUAL-04)
   5. `cargo clippy -- -D warnings` passes clean on all in-scope contracts, `cargo-audit` and `cargo-deny` report no known vulnerabilities, and all dependency versions are pinned to exact commits or versions (QUAL-05, QUAL-06, QUAL-07)
-**Plans**: TBD
+  6. A generic timelock contract replaces governance — supports queue/execute/cancel for any target contract call, with instant bypass for set_status (emergency halt). Trading-specific types removed. (QUAL-08, QUAL-09)
+**Plans**: 3 plans
 
 Plans:
-- [ ] 02-01: TBD
-- [ ] 02-02: TBD
+- [ ] 02-01-PLAN.md — Generic timelock contract replacing governance (QUAL-08, QUAL-09)
+- [ ] 02-02-PLAN.md — Unwrap fixes, liquidation guard, threat model update (QUAL-01, QUAL-02, QUAL-03)
+- [ ] 02-03-PLAN.md — Static analysis, dependency pinning, clippy (QUAL-04, QUAL-05, QUAL-06, QUAL-07)
 
 ### Phase 3: Integration Tests and Documentation
 **Goal**: Auditors can run a complete integration test suite -- derived from the Phase 1 threat catalog -- that exercises every critical contract path, proves authorization enforcement, and demonstrates 80%+ line coverage; alongside a complete protocol spec and architecture documentation
@@ -78,5 +80,5 @@ Phases execute in numeric order: 1 -> 2 -> 3
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Threat Model | 0/2 | Not started | - |
-| 2. Code Quality and Static Analysis | 0/2 | Not started | - |
+| 2. Code Quality and Static Analysis | 0/3 | Not started | - |
 | 3. Integration Tests and Documentation | 0/4 | Not started | - |
