@@ -33,7 +33,7 @@ pub fn execute_create_limit(
     storage::set_position(e, id, &position);
 
     let token_client = TokenClient::new(e, &storage::get_token(e));
-    token_client.transfer(user, &e.current_contract_address(), &collateral);
+    token_client.transfer(user, e.current_contract_address(), &collateral);
 
     PlaceLimit {
         feed_id,
@@ -95,7 +95,7 @@ pub fn execute_create_market(
     let vault_fee = total_fee - treasury_fee;
 
     let token_client = TokenClient::new(e, &market.token);
-    token_client.transfer(user, &e.current_contract_address(), &collateral);
+    token_client.transfer(user, e.current_contract_address(), &collateral);
     if vault_fee > 0 {
         token_client.transfer(&e.current_contract_address(), &market.vault, &vault_fee);
     }
@@ -187,7 +187,7 @@ pub fn execute_modify_collateral(e: &Env, position_id: u32, new_collateral: i128
 
     if collateral_diff > 0 {
         let token_client = TokenClient::new(e, &storage::get_token(e));
-        token_client.transfer(&position.user, &e.current_contract_address(), &collateral_diff);
+        token_client.transfer(&position.user, e.current_contract_address(), &collateral_diff);
     } else {
         let market = Market::load(e, price_data);
         let token_client = TokenClient::new(e, &market.token);
@@ -272,7 +272,7 @@ mod tests {
     /// Helper: create a pending long limit order
     fn place_limit_long(e: &soroban_sdk::Env, contract: &Address, user: &Address, collateral: i128, notional: i128) -> u32 {
         e.as_contract(contract, || {
-            let id = super::execute_create_limit(
+            super::execute_create_limit(
                 e,
                 user,
                 BTC_FEED_ID,
@@ -281,14 +281,13 @@ mod tests {
                 true,
                 BTC_PRICE,
                 0, 0,
-            );
-            id
+            )
         })
     }
 
     fn place_limit_short(e: &soroban_sdk::Env, contract: &Address, user: &Address, collateral: i128, notional: i128) -> u32 {
         e.as_contract(contract, || {
-            let id = super::execute_create_limit(
+            super::execute_create_limit(
                 e,
                 user,
                 BTC_FEED_ID,
@@ -297,8 +296,7 @@ mod tests {
                 false,
                 BTC_PRICE,
                 0, 0,
-            );
-            id
+            )
         })
     }
 
@@ -361,10 +359,9 @@ mod tests {
         };
 
         let id = e.as_contract(&contract, || {
-            let id = super::execute_create_market(
+            super::execute_create_market(
                 &e, &user, collateral, notional, true, 0, 0, &price_data,
-            );
-            id
+            )
         });
 
         e.as_contract(&contract, || {

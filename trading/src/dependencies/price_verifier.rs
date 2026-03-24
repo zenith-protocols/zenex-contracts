@@ -10,7 +10,8 @@ pub struct PriceData {
     pub publish_time: u64,
 }
 
-/// Price-verifier contract interface.
+/// Price-verifier contract interface (used in tests; trading calls via factory-injected address).
+#[allow(dead_code)]
 #[contractclient(name = "PriceVerifierClient")]
 pub trait PriceVerifier {
     fn verify_prices(env: Env, price: Bytes) -> Vec<PriceData>;

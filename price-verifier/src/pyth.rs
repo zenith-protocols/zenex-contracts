@@ -29,11 +29,7 @@ fn read_u64(buf: &[u8], off: usize) -> u64 {
 /// Panics on any verification failure.
 pub fn check_staleness(env: &Env, price: &PriceData, max_staleness: u64) {
     let now = env.ledger().timestamp();
-    let age = if now >= price.publish_time {
-        now - price.publish_time
-    } else {
-        price.publish_time - now
-    };
+    let age = now.abs_diff(price.publish_time);
     if age > max_staleness {
         panic_with_error!(env, PriceVerifierError::PriceStale);
     }
@@ -48,8 +44,11 @@ pub fn verify_and_extract(
     let len = update_data.len() as usize;
     if len > MAX_BUF { panic_with_error!(env, PriceVerifierError::InvalidData); }
     let mut buf = [0u8; MAX_BUF];
+    #[allow(clippy::needless_range_loop)]
     for i in 0..len {
         // SAFETY: i < len where len = update_data.len(); index always valid
+        // Note: Soroban Vec::get() requires u32 index; iter_mut().enumerate() would
+        // lose the direct buf[i] = val assignment pattern needed here.
         buf[i] = update_data.get(i as u32).unwrap_optimized();
     }
 

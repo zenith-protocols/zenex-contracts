@@ -64,7 +64,7 @@ impl Treasury for TreasuryContract {
 
     #[only_owner]
     fn set_rate(e: Env, rate: i128) {
-        if rate < 0 || rate > SCALAR_7 / 2 {
+        if !(0..=SCALAR_7 / 2).contains(&rate) {
             panic_with_error!(&e, TreasuryError::InvalidRate);
         }
         storage::extend_instance(&e);

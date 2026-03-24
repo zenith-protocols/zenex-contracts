@@ -51,10 +51,8 @@ pub fn execute_trigger(
 
     // STEP 2: Handle all other transfers
     for (address, amount) in transfers.map.iter() {
-        if address != market.vault {
-            if amount > 0 {
-                token_client.transfer(&e.current_contract_address(), &address, &amount);
-            }
+        if address != market.vault && amount > 0 {
+            token_client.transfer(&e.current_contract_address(), &address, &amount);
         }
     }
 
@@ -304,10 +302,9 @@ mod tests {
         entry_price: i128,
     ) -> u32 {
         e.as_contract(contract, || {
-            let id = crate::trading::execute_create_limit(
+            crate::trading::execute_create_limit(
                 e, user, BTC_FEED_ID, collateral, notional, true, entry_price, 0, 0,
-            );
-            id
+            )
         })
     }
 
@@ -320,10 +317,9 @@ mod tests {
         entry_price: i128,
     ) -> u32 {
         e.as_contract(contract, || {
-            let id = crate::trading::execute_create_limit(
+            crate::trading::execute_create_limit(
                 e, user, BTC_FEED_ID, collateral, notional, false, entry_price, 0, 0,
-            );
-            id
+            )
         })
     }
 
@@ -483,7 +479,7 @@ mod tests {
         token_client.mint(&user, &(100_000 * SCALAR_7));
 
         let id = e.as_contract(&contract, || {
-            let id = crate::trading::execute_create_limit(
+            crate::trading::execute_create_limit(
                 &e, &user, BTC_FEED_ID,
                 1_000 * SCALAR_7,
                 10_000 * SCALAR_7,
@@ -491,8 +487,7 @@ mod tests {
                 BTC_PRICE,
                 0,
                 95_000 * PRICE_SCALAR,
-            );
-            id
+            )
         });
 
         let pd = btc_price_data(&e, BTC_PRICE);
@@ -530,7 +525,7 @@ mod tests {
         token_client.mint(&user, &(100_000 * SCALAR_7));
 
         let id = e.as_contract(&contract, || {
-            let id = crate::trading::execute_create_limit(
+            crate::trading::execute_create_limit(
                 &e, &user, BTC_FEED_ID,
                 1_000 * SCALAR_7,
                 10_000 * SCALAR_7,
@@ -538,8 +533,7 @@ mod tests {
                 BTC_PRICE,
                 110_000 * PRICE_SCALAR,
                 0,
-            );
-            id
+            )
         });
 
         let pd = btc_price_data(&e, BTC_PRICE);

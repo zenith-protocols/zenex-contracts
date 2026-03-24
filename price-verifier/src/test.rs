@@ -1,4 +1,3 @@
-#![cfg(test)]
 
 use soroban_sdk::{Bytes, BytesN, Env};
 use soroban_sdk::testutils::{Address as _, Ledger};

@@ -49,7 +49,7 @@ pub fn calc_funding_rate(
 /// - r_var is SCALAR_7 (e.g. SCALAR_7 = at full util rate doubles)
 /// - r_borrow is the per-market weight (SCALAR_7, e.g. 1e7 = 1x, 2e7 = 2x)
 /// - Utilization is SCALAR_7 precision (0..SCALAR_7)
-/// Only the dominant side pays, so this rate applies to the heavier side only.
+///   Only the dominant side pays, so this rate applies to the heavier side only.
 pub fn calc_borrowing_rate(
     e: &Env,
     r_base: i128,

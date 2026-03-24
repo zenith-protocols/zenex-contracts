@@ -3,7 +3,6 @@ use crate::{FactoryClient, FactoryContract};
 
 use soroban_sdk::{
     testutils::{Address as _, BytesN as _},
-    token::StellarAssetClient,
     Address, BytesN, Env, String,
 };
 use trading::testutils::default_config;

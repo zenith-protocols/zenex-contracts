@@ -16,7 +16,7 @@ pub fn execute_set_market(e: &Env, feed_id: u32, config: &MarketConfig) {
     require_valid_market_config(e, config);
 
     let mut markets = storage::get_markets(e);
-    let is_new = !markets.contains(&feed_id);
+    let is_new = !markets.contains(feed_id);
 
     if is_new {
         if markets.len() >= MAX_ENTRIES {
@@ -25,8 +25,10 @@ pub fn execute_set_market(e: &Env, feed_id: u32, config: &MarketConfig) {
         markets.push_back(feed_id);
         storage::set_markets(e, &markets);
 
-        let mut initial_data = MarketData::default();
-        initial_data.last_update = e.ledger().timestamp();
+        let initial_data = MarketData {
+            last_update: e.ledger().timestamp(),
+            ..Default::default()
+        };
         storage::set_market_data(e, feed_id, &initial_data);
 
         if markets.len() == 1 {
@@ -61,9 +63,8 @@ pub fn execute_set_status(e: &Env, status: u32) {
     let new_status = ContractStatus::from_u32(e, status);
 
     // Only admin-level statuses or restoring from admin states
-    match new_status {
-        ContractStatus::OnIce => panic_with_error!(e, TradingError::InvalidStatus),
-        _ => {}
+    if new_status == ContractStatus::OnIce {
+        panic_with_error!(e, TradingError::InvalidStatus);
     }
 
     storage::set_status(e, status);
@@ -107,11 +108,11 @@ mod tests {
 
         e.as_contract(&contract, || {
             let mut new_config = crate::testutils::default_config();
-            new_config.caller_rate = 0_0500000;
+            new_config.caller_rate = 500_000;
             super::execute_set_config(&e, &new_config);
 
             let stored = storage::get_config(&e);
-            assert_eq!(stored.caller_rate, 0_0500000);
+            assert_eq!(stored.caller_rate, 500_000);
         });
     }
 
@@ -173,7 +174,7 @@ mod tests {
             super::execute_set_market(&e, BTC_FEED_ID, &market_config);
 
             let mut data = storage::get_market_data(&e, BTC_FEED_ID);
-            data.l_notional = 1_000_0000000;
+            data.l_notional = 10_000_000_000;
             storage::set_market_data(&e, BTC_FEED_ID, &data);
 
             super::execute_del_market(&e, BTC_FEED_ID);

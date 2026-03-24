@@ -127,12 +127,12 @@ pub struct MockTreasury;
 #[contractimpl]
 impl MockTreasury {
     pub fn get_rate(_e: Env) -> i128 {
-        0_0500000 // 5% protocol fee
+        500_000 // 5% protocol fee
     }
 
     pub fn get_fee(e: Env, total_fee: i128) -> i128 {
         use soroban_fixed_point_math::SorobanFixedPoint;
-        let rate = 0_0500000_i128;
+        let rate = 500_000_i128;
         if total_fee > 0 {
             total_fee.fixed_mul_floor(&e, &rate, &SCALAR_7)
         } else {
@@ -203,11 +203,11 @@ pub fn create_vault(e: &Env, token: &Address, initial_assets: i128) -> Address {
 
 pub fn default_config() -> TradingConfig {
     TradingConfig {
-        caller_rate: 0_1000000,                   // 10%
+        caller_rate: 1_000_000,                    // 10%
         min_notional: 10 * SCALAR_7,              // 10 tokens minimum notional
         max_notional: 10_000_000 * SCALAR_7,      // 10M tokens maximum notional
-        fee_dom: 0_0005000,                        // 0.05%
-        fee_non_dom: 0_0001000,                    // 0.01%
+        fee_dom: 5_000,                            // 0.05%
+        fee_non_dom: 1_000,                        // 0.01%
         max_util: 10 * SCALAR_7,                          // 10x vault
         r_funding: 10_000_000_000_000,             // 0.001% per hour in SCALAR_18
         r_base: 10_000_000_000_000,                // 0.001% per hour in SCALAR_18
@@ -220,8 +220,8 @@ pub fn default_market(_e: &Env) -> MarketConfig {
         enabled: true,
         max_util: 5 * SCALAR_7,                           // 5x vault per market
         r_borrow: SCALAR_7,                        // 1× (no adjustment)
-        margin: 0_0100000,                    // 1%
-        liq_fee: 0_0050000,                        // 0.5%
+        margin: 100_000,                           // 1%
+        liq_fee: 50_000,                           // 0.5%
         impact: 8_000_000_000 * SCALAR_7,
     }
 }

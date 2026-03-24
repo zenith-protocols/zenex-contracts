@@ -391,7 +391,7 @@ mod tests {
             // Long closing from dominant side → rebalances → non-dom fee
             let mut long_pos = create_test_position(&e);
             let s = long_pos.settle(&e, &m);
-            assert_eq!(s.base_fee, 1 * SCALAR_7);
+            assert_eq!(s.base_fee, SCALAR_7);
 
             // Short closing from non-dominant side → worsens imbalance → dom fee
             let mut short_pos = create_test_position(&e);
@@ -420,7 +420,7 @@ mod tests {
             let mut short_pos = create_test_position(&e);
             short_pos.long = false;
             let s = short_pos.settle(&e, &m);
-            assert_eq!(s.base_fee, 1 * SCALAR_7);
+            assert_eq!(s.base_fee, SCALAR_7);
         });
     }
 
@@ -569,7 +569,7 @@ mod tests {
         let position = create_test_position(&e);
 
         // SL = 0 means not set
-        assert!(!position.check_stop_loss(1 * SCALAR_7));
+        assert!(!position.check_stop_loss(SCALAR_7));
     }
 
     #[test]
