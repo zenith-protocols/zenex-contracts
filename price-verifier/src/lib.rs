@@ -5,6 +5,7 @@ mod pyth;
 mod storage;
 
 use soroban_sdk::{contract, contractimpl, contracttype, Address, Bytes, BytesN, Env, Vec};
+use soroban_sdk::unwrap::UnwrapOptimized;
 use stellar_access::ownable::{self as ownable, Ownable};
 use stellar_macros::only_owner;
 
@@ -39,7 +40,9 @@ impl PriceVerifier {
     pub fn verify_price(env: Env, update_data: Bytes) -> PriceData {
         let max_staleness = storage::get_max_staleness(&env);
         let prices = pyth::verify_and_extract(&env, update_data);
-        let price = prices.get(0).unwrap();
+        // SAFETY: verify_and_extract guarantees non-empty Vec on success;
+        // empty input panics with InvalidData before reaching here
+        let price = prices.get(0).unwrap_optimized();
         pyth::check_staleness(&env, &price, max_staleness);
         price
     }

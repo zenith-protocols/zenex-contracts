@@ -1,4 +1,5 @@
 use soroban_sdk::{contracttype, BytesN, Env};
+use soroban_sdk::unwrap::UnwrapOptimized;
 
 #[contracttype]
 pub enum DataKey {
@@ -8,7 +9,8 @@ pub enum DataKey {
 }
 
 pub fn get_signer(e: &Env) -> BytesN<32> {
-    e.storage().instance().get(&DataKey::Signer).expect("not initialized")
+    // SAFETY: set in __constructor; always present for initialized contract
+    e.storage().instance().get(&DataKey::Signer).unwrap_optimized()
 }
 
 pub fn set_signer(e: &Env, signer: &BytesN<32>) {
@@ -16,7 +18,8 @@ pub fn set_signer(e: &Env, signer: &BytesN<32>) {
 }
 
 pub fn get_max_confidence_bps(e: &Env) -> u32 {
-    e.storage().instance().get(&DataKey::MaxConfidenceBps).expect("not initialized")
+    // SAFETY: set in __constructor; always present for initialized contract
+    e.storage().instance().get(&DataKey::MaxConfidenceBps).unwrap_optimized()
 }
 
 pub fn set_max_confidence_bps(e: &Env, bps: u32) {
@@ -24,7 +27,8 @@ pub fn set_max_confidence_bps(e: &Env, bps: u32) {
 }
 
 pub fn get_max_staleness(e: &Env) -> u64 {
-    e.storage().instance().get(&DataKey::MaxStaleness).expect("not initialized")
+    // SAFETY: set in __constructor; always present for initialized contract
+    e.storage().instance().get(&DataKey::MaxStaleness).unwrap_optimized()
 }
 
 pub fn set_max_staleness(e: &Env, seconds: u64) {

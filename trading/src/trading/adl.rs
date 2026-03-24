@@ -7,6 +7,7 @@ use crate::dependencies::{scalar_from_exponent, PriceData};
 use crate::types::{ContractStatus, MarketData};
 use soroban_fixed_point_math::SorobanFixedPoint;
 use soroban_sdk::{panic_with_error, Env, Vec};
+use soroban_sdk::unwrap::UnwrapOptimized;
 
 /// Permissionless status update based on price data.
 /// - Active: if threshold met -> ADL (sets OnIce)
@@ -28,7 +29,7 @@ pub fn execute_update_status(e: &Env, feeds: &Vec<PriceData>) {
             .iter()
             .find(|f| f.feed_id == feed_id)
             .map(|f| (f.price, scalar_from_exponent(f.exponent)))
-            .unwrap();
+            .unwrap_or_else(|| panic_with_error!(e, TradingError::InvalidPrice));
 
         let long_pnl = price.fixed_mul_floor(e, &data.l_entry_wt, &ps) - data.l_notional;
         let short_pnl = data.s_notional - price.fixed_mul_floor(e, &data.s_entry_wt, &ps);
@@ -83,7 +84,8 @@ fn do_adl(
 
     let mut new_total: i128 = 0;
     for i in 0..cached.len() {
-        let (feed_id, mut data, long_pnl, short_pnl) = cached.get(i).unwrap();
+        // SAFETY: i < cached.len() guaranteed by loop bound; cached is not modified during iteration
+        let (feed_id, mut data, long_pnl, short_pnl) = cached.get(i).unwrap_optimized();
 
         // Accrue indices against pre-ADL notionals before reducing them
         let config = storage::get_market_config(e, feed_id);

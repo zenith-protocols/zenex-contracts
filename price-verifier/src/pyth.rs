@@ -1,4 +1,5 @@
 use soroban_sdk::{panic_with_error, BytesN, Bytes, Env, Vec};
+use soroban_sdk::unwrap::UnwrapOptimized;
 
 use crate::error::PriceVerifierError;
 use crate::PriceData;
@@ -48,7 +49,8 @@ pub fn verify_and_extract(
     if len > MAX_BUF { panic_with_error!(env, PriceVerifierError::InvalidData); }
     let mut buf = [0u8; MAX_BUF];
     for i in 0..len {
-        buf[i] = update_data.get(i as u32).unwrap();
+        // SAFETY: i < len where len = update_data.len(); index always valid
+        buf[i] = update_data.get(i as u32).unwrap_optimized();
     }
 
     if len < 102 { panic_with_error!(env, PriceVerifierError::InvalidData); }

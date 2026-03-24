@@ -8,6 +8,7 @@ use crate::types::{MarketConfig, MarketData, Position, TradingConfig};
 use crate::{storage, trading, ContractStatus};
 use crate::validation::require_valid_config;
 use soroban_sdk::{contract, contractimpl, panic_with_error, Address, Bytes, Env, Vec};
+use soroban_sdk::unwrap::UnwrapOptimized;
 use stellar_access::ownable::{self as ownable, Ownable};
 use stellar_contract_utils::upgradeable::UpgradeableInternal;
 use stellar_macros::{only_owner, Upgradeable};
@@ -22,7 +23,7 @@ fn verify_price(e: &Env, price: &Bytes) -> PriceData {
     PriceVerifierClient::new(e, &storage::get_price_verifier(e))
         .verify_prices(price)
         .get(0)
-        .unwrap()
+        .unwrap_or_else(|| panic_with_error!(e, TradingError::InvalidPrice))
 }
 
 fn verify_prices(e: &Env, price: &Bytes) -> Vec<PriceData> {
@@ -203,7 +204,8 @@ impl Ownable for TradingContract {}
 impl UpgradeableInternal for TradingContract {
     fn _require_auth(e: &Env, operator: &Address) {
         operator.require_auth();
-        let owner = ownable::get_owner(e).expect("owner not set");
+        // SAFETY: owner is always set in __constructor; cannot reach this without initialization
+        let owner = ownable::get_owner(e).unwrap_optimized();
         if *operator != owner {
             panic_with_error!(e, TradingError::Unauthorized)
         }
