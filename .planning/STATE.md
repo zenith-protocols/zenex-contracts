@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: Phase complete — ready for verification
-stopped_at: Completed 01-02-PLAN.md
-last_updated: "2026-03-24T18:40:04.240Z"
+status: Ready to execute
+stopped_at: Completed 02-02-PLAN.md
+last_updated: "2026-03-24T21:14:16.667Z"
 progress:
   total_phases: 3
   completed_phases: 1
-  total_plans: 2
-  completed_plans: 2
+  total_plans: 5
+  completed_plans: 3
 ---
 
 # Project State
@@ -19,12 +19,12 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-24)
 
 **Core value:** Every attack surface is identified, tested, and documented -- auditors can verify the protocol's safety without guessing intent.
-**Current focus:** Phase 01 — threat-model
+**Current focus:** Phase 02 — code-quality-and-static-analysis
 
 ## Current Position
 
-Phase: 01 (threat-model) — EXECUTING
-Plan: 2 of 2
+Phase: 02 (code-quality-and-static-analysis) — EXECUTING
+Plan: 2 of 3
 
 ## Performance Metrics
 
@@ -48,6 +48,7 @@ Plan: 2 of 2
 *Updated after each plan completion*
 | Phase 01 P01 | 9min | 2 tasks | 1 files |
 | Phase 01 P02 | 7min | 2 tasks | 1 files |
+| Phase 02 P02 | 5min | 2 tasks | 10 files |
 
 ## Accumulated Context
 
@@ -63,6 +64,8 @@ Recent decisions affecting current work:
 - [Phase 01]: Dismissed threats in per-category subsections without T-IDs; research threats documented as Open for Phase 2
 - [Phase 01]: T-REPUD-01 severity changed from N/A to Low for consistency -- all threats now use Critical/High/Medium/Low only
 - [Phase 01]: 8 Open threats documented as Phase 2 backlog with specific verification criteria (not just needs work)
+- [Phase 02]: unwrap_or_else for unsafe sites, unwrap_optimized with SAFETY comments for safe sites; StalePrice (749) as distinct error from PositionTooNew (748)
+- [Phase 02]: publish_time threaded through Market struct for liquidation stale-price guard, not via separate function parameter
 
 ### Pending Todos
 
@@ -77,6 +80,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-24T18:40:04.238Z
-Stopped at: Completed 01-02-PLAN.md
+Last session: 2026-03-24T21:14:16.666Z
+Stopped at: Completed 02-02-PLAN.md
 Resume file: None

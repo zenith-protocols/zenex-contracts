@@ -16,13 +16,15 @@ Requirements for audit-ready submission. Each maps to roadmap phases.
 
 ### Code Quality
 
-- [ ] **QUAL-01**: Fix collateral negativity bug (market.rs — collateral can go negative after fee deduction)
-- [ ] **QUAL-02**: Replace all unsafe `.unwrap()` calls in production code with proper error handling (6 identified)
-- [ ] **QUAL-03**: Enforce token decimal assumption in constructor (currently not validated)
+- [x] **QUAL-01**: ~~Fix collateral negativity bug~~ — NOT A BUG: `position.validate()` on the next line checks `col <= 0` and reverts. Margin check also catches this. Already mitigated.
+- [x] **QUAL-02**: Replace all unsafe `.unwrap()` calls in production code with proper error handling (6 identified)
+- [x] **QUAL-03**: ~~Enforce token decimal assumption~~ — NOT NEEDED: all math is decimal-agnostic (rates are SCALAR_7 ratios, notional/col are same denomination). Deployer sets config values appropriate for the token's decimals.
 - [ ] **QUAL-04**: Scout Soroban static analysis passes with no critical/high findings
 - [ ] **QUAL-05**: Clippy passes with no warnings on all in-scope contracts
 - [ ] **QUAL-06**: cargo-audit and cargo-deny report no known vulnerabilities in dependencies
 - [ ] **QUAL-07**: All dependency versions pinned in Cargo.toml files
+- [ ] **QUAL-08**: Replace governance contract with generic timelock contract (queue/execute/cancel pattern using env.call(), instant set_status bypass, removes trading-specific coupling)
+- [ ] **QUAL-09**: Governance/timelock contract included in audit scope with tests
 
 ### Testing
 
@@ -89,13 +91,15 @@ Which phases cover which requirements. Updated during roadmap creation.
 | THREAT-02 | Phase 1 | Complete |
 | THREAT-03 | Phase 1 | Complete |
 | THREAT-04 | Phase 1 | Complete |
-| QUAL-01 | Phase 2 | Pending |
-| QUAL-02 | Phase 2 | Pending |
-| QUAL-03 | Phase 2 | Pending |
+| QUAL-01 | Phase 2 | Complete |
+| QUAL-02 | Phase 2 | Complete |
+| QUAL-03 | Phase 2 | Complete |
 | QUAL-04 | Phase 2 | Pending |
 | QUAL-05 | Phase 2 | Pending |
 | QUAL-06 | Phase 2 | Pending |
 | QUAL-07 | Phase 2 | Pending |
+| QUAL-08 | Phase 2 | Pending |
+| QUAL-09 | Phase 2 | Pending |
 | TEST-01 | Phase 3 | Pending |
 | TEST-02 | Phase 3 | Pending |
 | TEST-03 | Phase 3 | Pending |
@@ -113,8 +117,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | DOC-05 | Phase 3 | Pending |
 
 **Coverage:**
-- v1 requirements: 26 total
-- Mapped to phases: 26
+- v1 requirements: 28 total
+- Mapped to phases: 28
 - Unmapped: 0
 
 ---
