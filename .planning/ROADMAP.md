@@ -31,7 +31,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 Plans:
 - [x] 01-01-PLAN.md — Scope, DFDs, trust boundaries, and threat catalog (Sections 1-2)
-- [ ] 01-02-PLAN.md — Mitigations and retrospective (Sections 3-4)
+- [x] 01-02-PLAN.md — Mitigations and retrospective (Sections 3-4)
 
 ### Phase 2: Code Quality and Static Analysis
 **Goal**: The codebase has zero known bugs, zero unsafe unwrap calls, zero static analysis findings, and all dependencies are pinned -- auditors will not find mechanical issues
