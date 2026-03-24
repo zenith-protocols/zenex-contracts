@@ -1,0 +1,74 @@
+# cargo-deny configuration for Zenex Contracts
+# Audit-readiness: ensures no license violations, known vulnerabilities, or untrusted sources.
+
+[graph]
+targets = []
+all-features = false
+no-default-features = false
+
+[output]
+feature-depth = 1
+
+# Advisory database checks
+[advisories]
+ignore = [
+    # RUSTSEC-2026-0009: time 0.3.41 DoS via stack exhaustion (medium).
+    # Transitive dep from soroban-sdk -> stellar-xdr -> serde_with -> time.
+    # Cannot upgrade without soroban-sdk releasing a new version.
+    # Not exploitable in WASM contract context (bounded stack in Soroban VM).
+    { id = "RUSTSEC-2026-0009", reason = "transitive via soroban-sdk; not exploitable in WASM" },
+    # RUSTSEC-2026-0012: keccak 0.1.5 unsound ARMv8 assembly backend.
+    # Transitive dep from soroban-sdk -> soroban-env-host -> sha3 -> keccak.
+    # Only affects opt-in ARMv8 backend. Soroban contracts compile to WASM, not ARM.
+    { id = "RUSTSEC-2026-0012", reason = "WASM target only; ARMv8 backend not used" },
+    # keccak 0.1.5 is yanked but pinned by soroban-sdk transitive deps.
+    { crate = "keccak@0.1.5", reason = "transitive via soroban-sdk; cannot upgrade independently" },
+    # RUSTSEC-2024-0388: derivative is unmaintained. Transitive dep from soroban-sdk -> ark-*.
+    { id = "RUSTSEC-2024-0388", reason = "transitive via soroban-sdk (ark-*); cannot replace independently" },
+    # RUSTSEC-2024-0436: paste is unmaintained. Transitive dep from soroban-sdk -> wasmi_core + ark-ff.
+    { id = "RUSTSEC-2024-0436", reason = "transitive via soroban-sdk; cannot replace independently" },
+]
+
+# License policy
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",       # Common in Rust deps (e.g., miniz_oxide)
+    "CC0-1.0",    # Public domain dedication (e.g., base16ct)
+    "Apache-2.0 WITH LLVM-exception",  # wasmparser (permissive, used by soroban-sdk)
+]
+confidence-threshold = 0.8
+exceptions = []
+
+[licenses.private]
+ignore = true  # Workspace crates are unpublished
+
+# Crate ban policy
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"  # Workspace path deps don't specify versions
+highlight = "all"
+workspace-default-features = "allow"
+external-default-features = "allow"
+allow = []
+deny = []
+skip = []
+skip-tree = []
+
+# Source policy
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = ["https://github.com/OpenZeppelin/stellar-contracts"]
+
+[sources.allow-org]
+github = []
+gitlab = []
+bitbucket = []
