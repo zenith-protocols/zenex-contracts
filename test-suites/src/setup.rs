@@ -6,7 +6,9 @@ pub fn create_fixture_with_data<'a>() -> TestFixture<'a> {
 
     fixture.token.mint(&fixture.owner, &100_000_000_0000000);
     // ERC-4626 deposit(assets, receiver, from, operator)
-    fixture.vault.deposit(&100_000_000_0000000, &fixture.owner, &fixture.owner, &fixture.owner);
+    fixture
+        .vault
+        .deposit(&100_000_000_0000000, &fixture.owner, &fixture.owner, &fixture.owner);
 
     let base_config = default_market(&fixture.env);
 
@@ -23,6 +25,7 @@ pub fn create_fixture_with_data<'a>() -> TestFixture<'a> {
 mod tests {
     use soroban_sdk::testutils::Address as _;
     use soroban_sdk::Address;
+
     use super::*;
 
     #[test]
