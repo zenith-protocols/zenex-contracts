@@ -1738,10 +1738,15 @@ name = "test-suites"
 version = "0.0.1"
 dependencies = [
  "factory",
+ "governance",
+ "price-verifier",
  "proptest",
  "soroban-fixed-point-math",
  "soroban-sdk",
+ "stellar-access",
+ "strategy-vault",
  "trading",
+ "treasury",
 ]
 
 [[package]]

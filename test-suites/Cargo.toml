@@ -12,6 +12,11 @@ soroban-sdk = { workspace = true, features = ["testutils"] }
 soroban-fixed-point-math = { workspace = true }
 trading = { path = "../trading", features = ["testutils"] }
 factory = { path = "../factory", features = ["testutils"] }
+governance = { path = "../governance", features = ["testutils"] }
+treasury = { path = "../treasury", features = ["testutils"] }
+price-verifier = { path = "../price-verifier" }
+strategy-vault = { path = "../strategy-vault", features = ["testutils"] }
+stellar-access = { workspace = true }
 
 [dev-dependencies]
 proptest = "1"
