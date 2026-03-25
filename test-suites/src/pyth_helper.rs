@@ -56,7 +56,7 @@ pub fn test_keypair() -> (SigningKey, [u8; 32]) {
 ///
 /// # Payload layout
 /// ```text
-/// [4B magic][8B publish_time_us][1B channel][4B reserved][1B num_feeds]
+/// [4B magic][8B publish_time_us][1B channel][1B num_feeds]
 /// Per feed: [4B feed_id][1B num_props]
 ///   Per prop: [1B type][value bytes]
 ///     PROP_PRICE: 8B LE u64
@@ -70,12 +70,13 @@ pub fn build_price_update(
     timestamp_secs: u64,
 ) -> Bytes {
     // 1. Build payload
+    // Layout: [4B magic][8B publish_time_us][1B channel][1B num_feeds][feeds...]
+    // Note: no reserved bytes between channel and num_feeds (matching pyth.rs parsing)
     let mut payload = std::vec::Vec::<u8>::new();
     payload.extend_from_slice(&PAYLOAD_FORMAT_MAGIC.to_le_bytes());
     // publish_time in microseconds
     payload.extend_from_slice(&(timestamp_secs * 1_000_000u64).to_le_bytes());
     payload.push(0u8); // channel
-    payload.extend_from_slice(&[0u8; 4]); // reserved
     payload.push(feeds.len() as u8); // num_feeds
 
     for feed in feeds {
