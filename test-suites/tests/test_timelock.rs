@@ -12,7 +12,7 @@
 
 use soroban_sdk::testutils::{Address as _, BytesN as _, Ledger, LedgerInfo};
 use soroban_sdk::token::StellarAssetClient;
-use soroban_sdk::{vec as svec, Address, BytesN, Env, IntoVal, String, Symbol};
+use soroban_sdk::{vec as svec, Address, BytesN, Env, IntoVal, String, Symbol, Val, Vec};
 use test_suites::SCALAR_7;
 use trading::testutils::{
     default_config, default_market, MockPriceVerifier, MockPriceVerifierClient, MockTreasury,
@@ -37,7 +37,7 @@ struct TimelockFixture<'a> {
     env: Env,
     owner: Address,
     trading: TradingClient<'a>,
-    gov: governance::GovernanceClient<'a>,
+    gov: governance::TimelockClient<'a>,
 }
 
 fn create_token<'a>(e: &Env, admin: &Address) -> (Address, StellarAssetClient<'a>) {
@@ -53,7 +53,7 @@ fn create_token<'a>(e: &Env, admin: &Address) -> (Address, StellarAssetClient<'a
 /// Steps:
 /// 1. Deploy mock price verifier + mock treasury
 /// 2. Deploy vault + trading via factory (owner = `admin`)
-/// 3. Deploy governance with `admin` as owner and the trading address as target
+/// 3. Deploy governance with `admin` as owner
 /// 4. Transfer trading ownership from `admin` to governance (2-step)
 fn setup<'a>() -> TimelockFixture<'a> {
     let e = Env::default();
@@ -126,12 +126,12 @@ fn setup<'a>() -> TimelockFixture<'a> {
     let market_config = default_market(&e);
     trading_client.set_market(&BTC_FEED_ID, &market_config);
 
-    // Deploy governance with admin as owner, targeting this trading contract
+    // Deploy governance with admin as owner (generic timelock, no trading address at construction)
     let gov_id = e.register(
-        governance::GovernanceContract,
-        (admin.clone(), trading_id.clone(), DELAY),
+        governance::TimelockContract,
+        (admin.clone(), DELAY),
     );
-    let gov_client = governance::GovernanceClient::new(&e, &gov_id);
+    let gov_client = governance::TimelockClient::new(&e, &gov_id);
 
     // Transfer trading ownership from admin to governance (2-step)
     // Step 1: admin initiates transfer
@@ -187,7 +187,8 @@ fn jump(e: &Env, secs: u64) {
 // Tests
 // ================================================================
 
-/// Queue a set_config, wait past delay, execute. Verify trading config changed.
+/// Queue a set_config via the generic timelock, wait past delay, execute.
+/// Verify trading config changed.
 #[test]
 fn test_timelock_queue_and_execute_set_config() {
     let f = setup();
@@ -196,18 +197,23 @@ fn test_timelock_queue_and_execute_set_config() {
     let mut new_config = default_config();
     new_config.r_base = 20_000_000_000_000; // doubled from default
 
-    // Queue the config change
-    f.gov.queue_set_config(&new_config);
+    // Queue the config change via generic queue(target, fn_name, args)
+    let args: Vec<Val> = Vec::from_array(&f.env, [new_config.clone().into_val(&f.env)]);
+    let nonce = f.gov.queue(
+        &f.trading.address,
+        &Symbol::new(&f.env, "set_config"),
+        &args,
+    );
 
     // Verify it's queued
-    let queued = f.gov.get_queued_config();
-    assert_eq!(queued.config.r_base, new_config.r_base, "queued config should have new r_base");
+    let queued = f.gov.get_queued(&nonce);
+    assert_eq!(queued.target, f.trading.address, "queued target should be trading");
 
     // Jump past the delay
     jump(&f.env, DELAY + 1);
 
     // Execute the queued config change (permissionless)
-    f.gov.set_config();
+    f.gov.execute(&nonce);
 
     // Verify the trading contract now has the new config
     let live_config = f.trading.get_config();
@@ -217,7 +223,8 @@ fn test_timelock_queue_and_execute_set_config() {
     );
 }
 
-/// Queue a set_market, wait past delay, execute. Verify market config changed.
+/// Queue a set_market via the generic timelock, wait past delay, execute.
+/// Verify market config changed.
 #[test]
 fn test_timelock_queue_and_execute_set_market() {
     let f = setup();
@@ -226,19 +233,27 @@ fn test_timelock_queue_and_execute_set_market() {
     let mut new_market = default_market(&f.env);
     new_market.max_util = 8 * SCALAR_7; // 8x (up from 5x default)
 
-    // Queue the market change
-    let nonce = f.gov.queue_set_market(&BTC_FEED_ID, &new_market);
+    // Queue the market change via generic queue
+    let feed_id: u32 = BTC_FEED_ID;
+    let args: Vec<Val> = Vec::from_array(
+        &f.env,
+        [feed_id.into_val(&f.env), new_market.clone().into_val(&f.env)],
+    );
+    let nonce = f.gov.queue(
+        &f.trading.address,
+        &Symbol::new(&f.env, "set_market"),
+        &args,
+    );
 
     // Verify it's queued
-    let queued = f.gov.get_queued_market(&nonce);
-    assert_eq!(queued.feed_id, BTC_FEED_ID);
-    assert_eq!(queued.config.max_util, new_market.max_util);
+    let queued = f.gov.get_queued(&nonce);
+    assert_eq!(queued.fn_name, Symbol::new(&f.env, "set_market"));
 
     // Jump past the delay
     jump(&f.env, DELAY + 1);
 
     // Execute
-    f.gov.set_market(&nonce);
+    f.gov.execute(&nonce);
 
     // Verify
     let live_market = f.trading.get_market_config(&BTC_FEED_ID);
@@ -248,7 +263,7 @@ fn test_timelock_queue_and_execute_set_market() {
     );
 }
 
-/// Execute BEFORE the delay passes should revert with UpdateNotUnlocked.
+/// Execute BEFORE the delay passes should revert with NotUnlocked.
 #[test]
 fn test_timelock_execute_before_delay_reverts() {
     let f = setup();
@@ -256,17 +271,22 @@ fn test_timelock_execute_before_delay_reverts() {
     let mut new_config = default_config();
     new_config.r_base = 20_000_000_000_000;
 
-    f.gov.queue_set_config(&new_config);
+    let args: Vec<Val> = Vec::from_array(&f.env, [new_config.clone().into_val(&f.env)]);
+    let nonce = f.gov.queue(
+        &f.trading.address,
+        &Symbol::new(&f.env, "set_config"),
+        &args,
+    );
 
     // Jump only half the delay
     jump(&f.env, DELAY / 2);
 
-    // Try to execute too early -- should fail with UpdateNotUnlocked
-    let result = f.gov.try_set_config();
-    assert!(result.is_err(), "set_config should revert before delay passes");
+    // Try to execute too early -- should fail with NotUnlocked
+    let result = f.gov.try_execute(&nonce);
+    assert!(result.is_err(), "execute should revert before delay passes");
 }
 
-/// Queue, cancel, then try execute after delay. Should revert with UpdateNotQueued.
+/// Queue, cancel, then try execute after delay. Should revert with NotQueued.
 #[test]
 fn test_timelock_cancel_prevents_execution() {
     let f = setup();
@@ -274,17 +294,22 @@ fn test_timelock_cancel_prevents_execution() {
     let mut new_config = default_config();
     new_config.r_base = 20_000_000_000_000;
 
-    f.gov.queue_set_config(&new_config);
+    let args: Vec<Val> = Vec::from_array(&f.env, [new_config.clone().into_val(&f.env)]);
+    let nonce = f.gov.queue(
+        &f.trading.address,
+        &Symbol::new(&f.env, "set_config"),
+        &args,
+    );
 
     // Cancel the queued update
-    f.gov.cancel_set_config();
+    f.gov.cancel(&nonce);
 
     // Jump past delay
     jump(&f.env, DELAY + 1);
 
-    // Try to execute -- should fail because it was cancelled (UpdateNotQueued)
-    let result = f.gov.try_set_config();
-    assert!(result.is_err(), "set_config should revert after cancellation");
+    // Try to execute -- should fail because it was cancelled (NotQueued)
+    let result = f.gov.try_execute(&nonce);
+    assert!(result.is_err(), "execute should revert after cancellation");
 }
 
 /// set_status bypasses the delay -- immediate execution.
@@ -298,7 +323,7 @@ fn test_timelock_set_status_immediate() {
 
     // Set status to AdminOnIce (2) immediately through governance
     // This does NOT queue -- it executes right away
-    f.gov.set_status(&2u32);
+    f.gov.set_status(&f.trading.address, &2u32);
 
     // Verify status changed immediately (no delay)
     let status_after = f.trading.get_status();
@@ -317,18 +342,28 @@ fn test_timelock_execute_after_cancel_reverts() {
     let mut new_market = default_market(&f.env);
     new_market.max_util = 8 * SCALAR_7;
 
+    let feed_id: u32 = BTC_FEED_ID;
+    let args: Vec<Val> = Vec::from_array(
+        &f.env,
+        [feed_id.into_val(&f.env), new_market.clone().into_val(&f.env)],
+    );
+
     // Queue
-    let nonce = f.gov.queue_set_market(&BTC_FEED_ID, &new_market);
+    let nonce = f.gov.queue(
+        &f.trading.address,
+        &Symbol::new(&f.env, "set_market"),
+        &args,
+    );
 
     // Cancel
-    f.gov.cancel_set_market(&nonce);
+    f.gov.cancel(&nonce);
 
     // Jump well past delay
     jump(&f.env, DELAY * 2);
 
     // Execute should fail
-    let result = f.gov.try_set_market(&nonce);
-    assert!(result.is_err(), "set_market should revert after cancellation");
+    let result = f.gov.try_execute(&nonce);
+    assert!(result.is_err(), "execute should revert after cancellation");
 
     // Verify the original market config is unchanged
     let live_market = f.trading.get_market_config(&BTC_FEED_ID);
@@ -339,7 +374,7 @@ fn test_timelock_execute_after_cancel_reverts() {
     );
 }
 
-/// Test that cancel_set_market for a specific nonce does not affect other queued updates.
+/// Test that cancelling one queued nonce does not affect other queued updates.
 #[test]
 fn test_timelock_cancel_one_does_not_affect_other() {
     let f = setup();
@@ -350,22 +385,41 @@ fn test_timelock_cancel_one_does_not_affect_other() {
     let mut market_b = default_market(&f.env);
     market_b.margin = 0_0200000; // 2% margin
 
+    let feed_id: u32 = BTC_FEED_ID;
+
     // Queue two market updates
-    let nonce_a = f.gov.queue_set_market(&BTC_FEED_ID, &market_a);
-    let nonce_b = f.gov.queue_set_market(&BTC_FEED_ID, &market_b);
+    let args_a: Vec<Val> = Vec::from_array(
+        &f.env,
+        [feed_id.into_val(&f.env), market_a.clone().into_val(&f.env)],
+    );
+    let nonce_a = f.gov.queue(
+        &f.trading.address,
+        &Symbol::new(&f.env, "set_market"),
+        &args_a,
+    );
+
+    let args_b: Vec<Val> = Vec::from_array(
+        &f.env,
+        [feed_id.into_val(&f.env), market_b.clone().into_val(&f.env)],
+    );
+    let nonce_b = f.gov.queue(
+        &f.trading.address,
+        &Symbol::new(&f.env, "set_market"),
+        &args_b,
+    );
 
     // Cancel only nonce_a
-    f.gov.cancel_set_market(&nonce_a);
+    f.gov.cancel(&nonce_a);
 
     // Jump past delay
     jump(&f.env, DELAY + 1);
 
     // nonce_a should fail
-    let result = f.gov.try_set_market(&nonce_a);
+    let result = f.gov.try_execute(&nonce_a);
     assert!(result.is_err(), "cancelled nonce should fail");
 
     // nonce_b should succeed
-    f.gov.set_market(&nonce_b);
+    f.gov.execute(&nonce_b);
     let live = f.trading.get_market_config(&BTC_FEED_ID);
     assert_eq!(live.margin, market_b.margin, "nonce_b should execute successfully");
 }

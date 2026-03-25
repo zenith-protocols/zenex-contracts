@@ -13,7 +13,7 @@
 //! No test in this file uses `mock_all_auths()`.
 
 use soroban_sdk::testutils::{Address as _, BytesN as _, MockAuth, MockAuthInvoke};
-use soroban_sdk::{Address, BytesN, Env, IntoVal, String};
+use soroban_sdk::{Address, BytesN, Env, IntoVal, String, Symbol, Val, Vec};
 use test_suites::setup::create_fixture_with_data;
 use test_suites::test_fixture::TestFixture;
 use test_suites::SCALAR_7;
@@ -167,7 +167,7 @@ fn test_open_market_rejects_wrong_user() {
                 true,
                 0i128,
                 0i128,
-                f.dummy_price(),
+                f.btc_price(BTC_PRICE as i64),
             )
                 .into_val(&f.env),
             sub_invokes: &[],
@@ -183,7 +183,7 @@ fn test_open_market_rejects_wrong_user() {
         &true,
         &0,
         &0,
-        &f.dummy_price(),
+        &f.btc_price(BTC_PRICE as i64),
     );
     assert!(
         result.is_err(),
@@ -196,7 +196,7 @@ fn test_close_position_rejects_non_position_owner() {
     let (f, user_a) = fixture_with_user();
 
     // User A opens a position
-    let position_id = f.open_and_fill(&user_a, BTC_FEED_ID, 1_000 * SCALAR_7, 10_000 * SCALAR_7, true, BTC_PRICE, 0, 0);
+    let position_id = f.open_and_fill(&user_a, BTC_FEED_ID, 1_000 * SCALAR_7, 10_000 * SCALAR_7, true, BTC_PRICE as i64, 0, 0);
 
     // Jump past MIN_OPEN_TIME so close is allowed
     f.jump(31);
@@ -209,12 +209,12 @@ fn test_close_position_rejects_non_position_owner() {
         invoke: &MockAuthInvoke {
             contract: &f.trading.address,
             fn_name: "close_position",
-            args: (position_id, f.dummy_price()).into_val(&f.env),
+            args: (position_id, f.btc_price(BTC_PRICE as i64)).into_val(&f.env),
             sub_invokes: &[],
         },
     }]);
 
-    let result = f.trading.try_close_position(&position_id, &f.dummy_price());
+    let result = f.trading.try_close_position(&position_id, &f.btc_price(BTC_PRICE as i64));
     assert!(
         result.is_err(),
         "close_position should reject non-position-owner"
@@ -261,7 +261,7 @@ fn test_cancel_limit_rejects_non_position_owner() {
 fn test_modify_collateral_rejects_non_position_owner() {
     let (f, user_a) = fixture_with_user();
 
-    let position_id = f.open_and_fill(&user_a, BTC_FEED_ID, 1_000 * SCALAR_7, 10_000 * SCALAR_7, true, BTC_PRICE, 0, 0);
+    let position_id = f.open_and_fill(&user_a, BTC_FEED_ID, 1_000 * SCALAR_7, 10_000 * SCALAR_7, true, BTC_PRICE as i64, 0, 0);
 
     let user_b = Address::generate(&f.env);
     let new_col = 2_000 * SCALAR_7;
@@ -271,14 +271,14 @@ fn test_modify_collateral_rejects_non_position_owner() {
         invoke: &MockAuthInvoke {
             contract: &f.trading.address,
             fn_name: "modify_collateral",
-            args: (position_id, new_col, f.dummy_price()).into_val(&f.env),
+            args: (position_id, new_col, f.btc_price(BTC_PRICE as i64)).into_val(&f.env),
             sub_invokes: &[],
         },
     }]);
 
     let result = f
         .trading
-        .try_modify_collateral(&position_id, &new_col, &f.dummy_price());
+        .try_modify_collateral(&position_id, &new_col, &f.btc_price(BTC_PRICE as i64));
     assert!(
         result.is_err(),
         "modify_collateral should reject non-position-owner"
@@ -289,7 +289,7 @@ fn test_modify_collateral_rejects_non_position_owner() {
 fn test_set_triggers_rejects_non_position_owner() {
     let (f, user_a) = fixture_with_user();
 
-    let position_id = f.open_and_fill(&user_a, BTC_FEED_ID, 1_000 * SCALAR_7, 10_000 * SCALAR_7, true, BTC_PRICE, 0, 0);
+    let position_id = f.open_and_fill(&user_a, BTC_FEED_ID, 1_000 * SCALAR_7, 10_000 * SCALAR_7, true, BTC_PRICE as i64, 0, 0);
 
     let user_b = Address::generate(&f.env);
 
@@ -421,7 +421,7 @@ fn test_update_max_staleness_rejects_non_owner() {
 
 // ================================================================
 // Governance/Timelock Admin — #[only_owner] (4 tests)
-// Direct deployment: register GovernanceContract with e.register()
+// Direct deployment: register TimelockContract with e.register()
 // ================================================================
 
 #[test]
@@ -431,31 +431,32 @@ fn test_timelock_queue_rejects_non_owner() {
 
     let owner = Address::generate(&e);
     let non_owner = Address::generate(&e);
-    let trading_addr = Address::generate(&e);
+    let target_addr = Address::generate(&e);
     let delay: u64 = 86400;
 
     let gov_id = e.register(
-        governance::GovernanceContract,
-        (owner.clone(), trading_addr, delay),
+        governance::TimelockContract,
+        (owner.clone(), delay),
     );
-    let gov_client = governance::GovernanceClient::new(&e, &gov_id);
+    let gov_client = governance::TimelockClient::new(&e, &gov_id);
 
-    let config = default_config();
+    let fn_name = Symbol::new(&e, "set_config");
+    let args = Vec::<Val>::new(&e);
 
     e.mock_auths(&[MockAuth {
         address: &non_owner,
         invoke: &MockAuthInvoke {
             contract: &gov_id,
-            fn_name: "queue_set_config",
-            args: (config.clone(),).into_val(&e),
+            fn_name: "queue",
+            args: (target_addr.clone(), fn_name.clone(), args.clone()).into_val(&e),
             sub_invokes: &[],
         },
     }]);
 
-    let result = gov_client.try_queue_set_config(&config);
+    let result = gov_client.try_queue(&target_addr, &fn_name, &args);
     assert!(
         result.is_err(),
-        "queue_set_config should reject non-owner"
+        "queue should reject non-owner"
     );
 }
 
@@ -467,34 +468,35 @@ fn test_timelock_cancel_rejects_non_owner() {
 
     let owner = Address::generate(&e);
     let non_owner = Address::generate(&e);
-    let trading_addr = Address::generate(&e);
+    let target_addr = Address::generate(&e);
     let delay: u64 = 86400;
 
     let gov_id = e.register(
-        governance::GovernanceContract,
-        (owner.clone(), trading_addr, delay),
+        governance::TimelockContract,
+        (owner.clone(), delay),
     );
-    let gov_client = governance::GovernanceClient::new(&e, &gov_id);
+    let gov_client = governance::TimelockClient::new(&e, &gov_id);
 
-    // First queue a config as owner (so there's something to cancel)
-    let config = default_config();
-    gov_client.queue_set_config(&config);
+    // First queue something as owner (so there's something to cancel)
+    let fn_name = Symbol::new(&e, "set_config");
+    let args = Vec::<Val>::new(&e);
+    let nonce = gov_client.queue(&target_addr, &fn_name, &args);
 
     // Now try to cancel as non_owner
     e.mock_auths(&[MockAuth {
         address: &non_owner,
         invoke: &MockAuthInvoke {
             contract: &gov_id,
-            fn_name: "cancel_set_config",
-            args: ().into_val(&e),
+            fn_name: "cancel",
+            args: (nonce,).into_val(&e),
             sub_invokes: &[],
         },
     }]);
 
-    let result = gov_client.try_cancel_set_config();
+    let result = gov_client.try_cancel(&nonce);
     assert!(
         result.is_err(),
-        "cancel_set_config should reject non-owner"
+        "cancel should reject non-owner"
     );
 }
 
@@ -505,28 +507,26 @@ fn test_timelock_set_status_rejects_non_owner() {
 
     let owner = Address::generate(&e);
     let non_owner = Address::generate(&e);
-    let trading_addr = Address::generate(&e);
+    let target_addr = Address::generate(&e);
     let delay: u64 = 86400;
 
     let gov_id = e.register(
-        governance::GovernanceContract,
-        (owner.clone(), trading_addr, delay),
+        governance::TimelockContract,
+        (owner.clone(), delay),
     );
-    let gov_client = governance::GovernanceClient::new(&e, &gov_id);
-
-    let status: u32 = 1; // OnIce
+    let gov_client = governance::TimelockClient::new(&e, &gov_id);
 
     e.mock_auths(&[MockAuth {
         address: &non_owner,
         invoke: &MockAuthInvoke {
             contract: &gov_id,
             fn_name: "set_status",
-            args: (status,).into_val(&e),
+            args: (target_addr.clone(), 1u32).into_val(&e),
             sub_invokes: &[],
         },
     }]);
 
-    let result = gov_client.try_set_status(&status);
+    let result = gov_client.try_set_status(&target_addr, &1u32);
     assert!(
         result.is_err(),
         "set_status (governance) should reject non-owner"
@@ -540,36 +540,30 @@ fn test_timelock_set_delay_rejects_non_owner() {
 
     let owner = Address::generate(&e);
     let non_owner = Address::generate(&e);
-    let trading_addr = Address::generate(&e);
     let delay: u64 = 86400;
 
     let gov_id = e.register(
-        governance::GovernanceContract,
-        (owner.clone(), trading_addr, delay),
+        governance::TimelockContract,
+        (owner.clone(), delay),
     );
-    let gov_client = governance::GovernanceClient::new(&e, &gov_id);
+    let gov_client = governance::TimelockClient::new(&e, &gov_id);
 
-    let market_config = default_market(&e);
+    let new_delay: u64 = 172800; // 2 days
 
-    // queue_set_market is also #[only_owner] - test it here since governance
-    // doesn't have a dedicated set_delay (delay is set at construction).
-    // Instead, we test cancel_set_market which IS #[only_owner].
-    // Actually, governance has queue_set_market and cancel_set_market.
-    // Let's test queue_set_market as the 4th governance auth test.
     e.mock_auths(&[MockAuth {
         address: &non_owner,
         invoke: &MockAuthInvoke {
             contract: &gov_id,
-            fn_name: "queue_set_market",
-            args: (BTC_FEED_ID, market_config.clone()).into_val(&e),
+            fn_name: "set_delay",
+            args: (new_delay,).into_val(&e),
             sub_invokes: &[],
         },
     }]);
 
-    let result = gov_client.try_queue_set_market(&BTC_FEED_ID, &market_config);
+    let result = gov_client.try_set_delay(&new_delay);
     assert!(
         result.is_err(),
-        "queue_set_market should reject non-owner"
+        "set_delay should reject non-owner"
     );
 }
 
