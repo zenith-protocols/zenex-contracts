@@ -19,6 +19,12 @@ use crate::dependencies::PriceData;
 #[contract]
 pub struct TradingContract;
 
+/// Verify a single price feed via the price-verifier contract.
+///
+/// Delegates to `verify_prices` and extracts the first result.
+///
+/// # Panics
+/// - `TradingError::InvalidPrice` (720) if the batch is empty or verification fails.
 fn verify_price(e: &Env, price: &Bytes) -> PriceData {
     PriceVerifierClient::new(e, &storage::get_price_verifier(e))
         .verify_prices(price)
@@ -26,12 +32,29 @@ fn verify_price(e: &Env, price: &Bytes) -> PriceData {
         .unwrap_or_else(|| panic_with_error!(e, TradingError::InvalidPrice))
 }
 
+/// Verify one or more price feeds via the price-verifier contract.
+///
+/// Returns a `Vec<PriceData>` with verified (feed_id, price, exponent, publish_time)
+/// for each feed in the binary payload.
 fn verify_prices(e: &Env, price: &Bytes) -> Vec<PriceData> {
     PriceVerifierClient::new(e, &storage::get_price_verifier(e)).verify_prices(price)
 }
 
 #[contractimpl]
 impl TradingContract {
+    /// Initialize the trading contract with all external dependencies and configuration.
+    ///
+    /// # Parameters
+    /// - `owner` - Admin address (receives `#[only_owner]` privileges)
+    /// - `token` - Collateral token address (e.g. USDC, 7 decimals)
+    /// - `vault` - Strategy-vault address (holds collateral, ERC-4626)
+    /// - `price_verifier` - Pyth Lazer price-verifier contract address
+    /// - `treasury` - Treasury contract for protocol fee collection
+    /// - `config` - Global trading parameters (see [`TradingConfig`])
+    ///
+    /// # Panics
+    /// - `TradingError::InvalidConfig` (702) if config fails validation bounds
+    /// - `TradingError::NegativeValueNotAllowed` (735) if any rate/fee is negative
     pub fn __constructor(
         e: Env,
         owner: Address,
@@ -54,6 +77,7 @@ impl TradingContract {
 
 #[contractimpl]
 impl Trading for TradingContract {
+    /// See [`Trading::set_config`]. Owner-only.
     #[only_owner]
     fn set_config(e: Env, config: TradingConfig) {
         storage::extend_instance(&e);

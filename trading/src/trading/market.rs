@@ -9,7 +9,15 @@ use crate::trading::rates;
 use soroban_fixed_point_math::SorobanFixedPoint;
 use soroban_sdk::{panic_with_error, Address, Env};
 
-/// Full context for any market operation: per-market + global state.
+/// Full context needed for any market operation.
+///
+/// Bundles per-market state (config, data, price) with global state (trading config,
+/// vault balance, token/vault/treasury addresses). Loaded once at the start of an
+/// operation via [`Market::load`], mutated in-place, then persisted via [`Market::store`].
+///
+/// WHY: auto-accrue on load -- every Market::load call accrues borrowing and funding
+/// indices to the current timestamp, so all subsequent operations see up-to-date
+/// cumulative rates without the caller needing to remember to accrue first.
 pub struct Market {
     // Per-market
     pub feed_id: u32,
@@ -28,7 +36,18 @@ pub struct Market {
 }
 
 impl Market {
-    /// Load full market context from storage and accrue to current timestamp.
+    /// Load full market context from storage and accrue indices to current timestamp.
+    ///
+    /// # Parameters
+    /// - `price_data` - Verified price data from the oracle (contains feed_id, price, exponent)
+    ///
+    /// # Side effects
+    /// - Calls `MarketData::accrue()` to advance borrowing and funding indices
+    /// - Computes `price_scalar = 10^(-exponent)` from Pyth exponent
+    ///
+    /// WHY: price_scalar is computed per-call rather than stored because the exponent
+    /// comes from the oracle and could theoretically change between feed updates.
+    /// Computing it fresh avoids stale scalar bugs.
     pub fn load(e: &Env, price_data: &PriceData) -> Self {
         let feed_id = price_data.feed_id;
         let trading_config = storage::get_config(e);
@@ -80,21 +99,44 @@ impl Market {
         }
     }
 
-    /// Open a position: compute fees, deduct from collateral, fill, register stats.
-    /// Returns (base_fee, impact_fee).
+    /// Open a position: compute fees, deduct from collateral, fill, and update market stats.
+    ///
+    /// # Parameters
+    /// - `position` - Mutable position to fill (collateral reduced by fees)
+    /// - `position_id` - Storage key for the position
+    ///
+    /// # Returns
+    /// `(base_fee, impact_fee)` -- both in token_decimals.
+    ///
+    /// # Fee logic
+    /// - `base_fee`: dominant-side openings pay `fee_dom`, non-dominant pay `fee_non_dom`
+    ///   (SCALAR_7 fraction of notional). WHY: opening on the dominant side worsens
+    ///   market imbalance, so the higher fee disincentivizes that.
+    /// - `impact_fee`: `notional / impact` (SCALAR_7), simulates price impact.
+    ///
+    /// # Panics
+    /// - `TradingError::UtilizationExceeded` (791) if position pushes utilization past caps
+    /// - All panics from `Position::validate()`
     pub fn open(&mut self, e: &Env, position: &mut Position, position_id: u32) -> (i128, i128) {
         let base_fee = if self.data.is_dominant(position.long, position.notional) {
+            // WHY: ceil rounding on fees -- protocol never under-charges
             position.notional.fixed_mul_ceil(e, &self.trading_config.fee_dom, &SCALAR_7)
         } else {
             position.notional.fixed_mul_ceil(e, &self.trading_config.fee_non_dom, &SCALAR_7)
         };
         let impact_fee = position.notional.fixed_div_ceil(e, &self.config.impact, &SCALAR_7);
 
+        // WHY: fees deducted from collateral before validation -- ensures post-fee
+        // collateral still meets margin requirements, preventing under-collateralized positions.
         position.col -= base_fee + impact_fee;
         position.validate(e, self.config.enabled, self.trading_config.min_notional, self.trading_config.max_notional, self.config.margin);
         position.fill(e, &self.data);
         storage::set_position(e, position_id, position);
 
+        // WHY: entry_wt (entry-weighted aggregate) tracks Sigma(notional/entry_price) per side.
+        // This enables O(1) PnL calculation for the entire side during ADL checks,
+        // without iterating over every position.
+        // floor rounding on entry_wt -- conservative (slightly understates aggregate weight).
         let ew_delta = position.notional.fixed_div_floor(e, &position.entry_price, &self.price_scalar);
         self.data.update_stats(position.long, position.notional, ew_delta);
         self.total_notional += position.notional;
@@ -103,7 +145,14 @@ impl Market {
         (base_fee, impact_fee)
     }
 
-    /// Close a position: settle PnL/fees, update market stats, remove from storage.
+    /// Close a position: settle PnL and all accrued fees, update market stats, remove from storage.
+    ///
+    /// # Parameters
+    /// - `position` - Mutable position to settle (notional may be reduced by ADL)
+    /// - `position_id` - Storage key (position + user tracking removed)
+    ///
+    /// # Returns
+    /// [`Settlement`] with broken-down PnL and fee components.
     pub fn close(&mut self, e: &Env, position: &mut Position, position_id: u32) -> Settlement {
         let s = position.settle(e, self);
         let ew_delta = position.notional.fixed_div_floor(e, &position.entry_price, &self.price_scalar);
@@ -160,7 +209,28 @@ impl MarketData {
         }
     }
 
-    /// Accrue borrowing then funding indices. Computes borrow rate from global curve params and per-market weight.
+    /// Accrue borrowing then funding indices to the current ledger timestamp.
+    ///
+    /// # Parameters
+    /// - `r_base` - Global base borrowing rate (SCALAR_18, hourly)
+    /// - `r_var` - Variable borrowing multiplier (SCALAR_7)
+    /// - `r_borrow` - Per-market borrowing weight (SCALAR_7)
+    /// - `vault_balance` - Current vault total assets (token_decimals)
+    ///
+    /// # Accrual order
+    /// 1. **Borrowing** (dominant side only): `borr_delta = borr_rate × elapsed / 3600`
+    ///    - If longs dominate: only `l_borr_idx` increases
+    ///    - If shorts dominate: only `s_borr_idx` increases
+    ///    - If balanced: both sides accrue equally
+    /// 2. **Funding** (peer-to-peer, skipped if either side is empty):
+    ///    - Paying side: `fund_idx += pay_delta`
+    ///    - Receiving side: `fund_idx -= recv_delta` (negative = gain)
+    ///    - `recv_delta` is scaled by `pay_notional / recv_notional` to conserve the total
+    ///
+    /// WHY: borrowing accrues before funding so that the borrowing index reflects
+    /// the pre-funding state. This prevents circular dependency between the two rates.
+    ///
+    /// WHY: funding skips if either side is zero -- no counterparty to pay/receive.
     pub fn accrue(&mut self, e: &Env, r_base: i128, r_var: i128, r_borrow: i128, vault_balance: i128) {
         let current_time = e.ledger().timestamp();
         let seconds = current_time.saturating_sub(self.last_update) as i128;
@@ -172,7 +242,9 @@ impl MarketData {
 
         let hour = ONE_HOUR_SECONDS as i128;
 
-        // Borrowing: dominant side only
+        // WHY: Only the dominant (heavier) side pays borrowing. The non-dominant
+        // side does not accrue borrowing because their positions reduce systemic risk.
+        // When balanced, both sides pay equally as neither is dominant.
         let market_notional = self.l_notional + self.s_notional;
         let util = if market_notional > 0 && vault_balance > 0 {
             market_notional.fixed_div_ceil(e, &vault_balance, &SCALAR_7).min(SCALAR_7)
@@ -193,7 +265,9 @@ impl MarketData {
             }
         }
 
-        // Funding: peer-to-peer — skip if either side is empty (no counterparty)
+        // WHY: Funding is peer-to-peer — skip if either side is empty because
+        // there is no counterparty to receive/pay the funding. Accumulating
+        // a one-sided index would create an unrecoverable debt.
         if self.fund_rate == 0 || self.l_notional == 0 || self.s_notional == 0 {
             return;
         }
@@ -206,6 +280,10 @@ impl MarketData {
             (self.s_notional, self.l_notional)
         };
 
+        // WHY: recv_delta is scaled by (pay_notional / recv_notional) so that
+        // the total funding paid by the dominant side equals the total received
+        // by the non-dominant side. Floor rounding on receive -- paying side never
+        // pays less than what receivers get (any rounding residual stays in the system).
         let recv_delta = if recv_notional > 0 {
             let ratio = pay_notional.fixed_div_floor(e, &recv_notional, &SCALAR_18);
             pay_delta.fixed_mul_floor(e, &ratio, &SCALAR_18)

@@ -7,19 +7,24 @@ use soroban_sdk::{
     IntoVal, TryFromVal, Val, Vec,
 };
 
-/********** Ledger Thresholds **********/
+// ── Ledger Thresholds ───────────────────────────────────────────────
+//
+// WHY: Three TTL tiers based on access frequency and expected lifetime:
+// - Instance (30/31d): Core state bumped every single transaction. Short threshold
+//   is fine because it's extended on every call.
+// - Market (45/52d): Config and data are touched on every position action but not
+//   every tx. Longer threshold provides buffer for idle markets.
+// - Position (14/21d): Perp positions are short-lived (most close within days).
+//   Shorter TTL avoids paying rent for abandoned/expired positions.
 
-const ONE_DAY_LEDGERS: u32 = 17280; // assumes 5s a ledger
+const ONE_DAY_LEDGERS: u32 = 17280; // assumes ~5s per ledger
 
-// Instance storage: core contract state (bumped every tx)
 const LEDGER_THRESHOLD_INSTANCE: u32 = ONE_DAY_LEDGERS * 30;      // ~30 days
 const LEDGER_BUMP_INSTANCE: u32 = LEDGER_THRESHOLD_INSTANCE + ONE_DAY_LEDGERS; // ~31 days
 
-// Market persistent storage (config, data — touched frequently)
 const LEDGER_THRESHOLD_MARKET: u32 = ONE_DAY_LEDGERS * 45;        // ~45 days
 const LEDGER_BUMP_MARKET: u32 = LEDGER_THRESHOLD_MARKET + 7 * ONE_DAY_LEDGERS; // ~52 days
 
-// Position persistent storage (short-lived perps positions)
 const LEDGER_THRESHOLD_POSITION: u32 = ONE_DAY_LEDGERS * 14;      // ~14 days
 const LEDGER_BUMP_POSITION: u32 = LEDGER_THRESHOLD_POSITION + 7 * ONE_DAY_LEDGERS; // ~21 days
 

@@ -11,6 +11,11 @@ use soroban_fixed_point_math::SorobanFixedPoint;
 use soroban_sdk::token::TokenClient;
 use soroban_sdk::{panic_with_error, Address, Env, Map, Vec};
 
+/// Accumulator for token transfers batched across multiple keeper actions.
+///
+/// WHY: Batching transfers avoids redundant token operations when multiple
+/// positions settle in a single `execute` call. Positive values = contract owes
+/// the address; negative values = the address owes the contract (vault withdrawals).
 pub(crate) struct Transfers {
     pub map: Map<Address, i128>,
 }
@@ -20,6 +25,7 @@ impl Transfers {
         Transfers { map: Map::new(e) }
     }
 
+    /// Add (or accumulate) a transfer amount for an address.
     pub fn add(&mut self, address: &Address, amount: i128) {
         self.map.set(
             address.clone(),
@@ -28,7 +34,19 @@ impl Transfers {
     }
 }
 
-/// Execute keeper triggers (Fill, StopLoss, TakeProfit, Liquidate) for a single market.
+/// Execute a batch of keeper triggers (Fill, StopLoss, TakeProfit, Liquidate) for a single market.
+///
+/// WHY: Single-tx batching for multiple keeper actions. The keeper submits all
+/// pending triggers for one market in a single call, minimizing transaction fees
+/// and ensuring atomic execution (all succeed or all fail).
+///
+/// # Transfer order (CEI-like)
+/// 1. Process all requests, accumulating transfers
+/// 2. Vault pays out (strategy_withdraw for winning positions)
+/// 3. Contract distributes to users/treasury/caller
+/// 4. Contract pays vault (collateral from losing positions)
+///
+/// This ordering ensures the contract has sufficient balance for each step.
 pub fn execute_trigger(
     e: &Env,
     caller: &Address,

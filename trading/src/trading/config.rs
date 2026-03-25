@@ -6,12 +6,18 @@ use crate::validation::{require_valid_config, require_valid_market_config};
 use crate::{storage, MarketData};
 use soroban_sdk::{panic_with_error, Env};
 
+/// Validate and store a new global trading configuration.
 pub fn execute_set_config(e: &Env, config: &TradingConfig) {
     require_valid_config(e, config);
     storage::set_config(e, config);
     (SetConfig {}).publish(e);
 }
 
+/// Register a new market or update an existing market's configuration.
+///
+/// On first registration: initializes `MarketData` with zero OI, ADL indices at 1e18,
+/// and `last_update` at current timestamp. Also seeds `last_funding_update` for the
+/// first market to establish the funding cadence.
 pub fn execute_set_market(e: &Env, feed_id: u32, config: &MarketConfig) {
     require_valid_market_config(e, config);
 
@@ -40,6 +46,7 @@ pub fn execute_set_market(e: &Env, feed_id: u32, config: &MarketConfig) {
     SetMarket { feed_id }.publish(e);
 }
 
+/// Remove a market. Panics if any open interest remains.
 pub fn execute_del_market(e: &Env, feed_id: u32) {
     let mut markets = storage::get_markets(e);
     let idx = markets

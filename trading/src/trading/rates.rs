@@ -2,15 +2,32 @@ use crate::constants::{SCALAR_7, SCALAR_18};
 use soroban_fixed_point_math::SorobanFixedPoint;
 use soroban_sdk::Env;
 
-/// Calculate the signed funding rate based on market imbalance.
+/// Calculate the signed funding rate based on open interest imbalance.
+///
+/// # Formula
+/// ```text
+/// rate = r_funding × |L - S| / (L + S)
+/// ```
 ///
 /// Returns a single i128 rate in SCALAR_18 precision.
-/// Positive = longs pay, negative = shorts pay.
+/// Positive = longs pay shorts, negative = shorts pay longs.
 ///
-/// Formula: baseRate × |L - S| / (L + S)
-/// - Naturally bounded in [0, baseRate]
-/// - One-sided market: ±baseRate
-/// - Balanced or no positions: 0
+/// # Bounds
+/// - Naturally bounded in `[-r_funding, +r_funding]` by the `|L-S|/(L+S)` fraction.
+/// - One-sided market: `|L-0|/(L+0) = 1` yields full `r_funding`.
+/// - Balanced or empty: rate is 0.
+///
+/// # Parameters
+/// - `long_notional` - Total long notional across all positions (token_decimals)
+/// - `short_notional` - Total short notional across all positions (token_decimals)
+/// - `base_rate` - `r_funding` from TradingConfig (SCALAR_18, hourly)
+///
+/// # Design (WHY)
+/// WHY: Funding is pure peer-to-peer. The dominant (heavier) side pays the
+/// non-dominant side directly. The protocol collects zero funding revenue --
+/// it only facilitates the transfer. This ensures the cost of holding a
+/// position scales with how imbalanced the market is, incentivizing
+/// arbitrageurs to restore balance.
 pub fn calc_funding_rate(
     e: &Env,
     long_notional: i128,
@@ -35,6 +52,8 @@ pub fn calc_funding_rate(
                 (short_notional - long_notional, false)
             };
 
+            // WHY: ceil rounding on funding rate -- rounds in favor of the receiving
+            // (non-dominant) side, ensuring they never receive less than owed.
             let fraction = imbalance.fixed_div_ceil(e, &total, &SCALAR_18);
             let rate = base_rate.fixed_mul_ceil(e, &fraction, &SCALAR_18);
 
@@ -43,13 +62,29 @@ pub fn calc_funding_rate(
     }
 }
 
-/// Calculate the per-market borrowing rate using a multiplicative utilization curve.
+/// Calculate the per-market borrowing rate using a steep utilization curve.
 ///
-/// Formula: base_rate × (1 + r_var × util^5) × r_borrow
-/// - r_var is SCALAR_7 (e.g. SCALAR_7 = at full util rate doubles)
-/// - r_borrow is the per-market weight (SCALAR_7, e.g. 1e7 = 1x, 2e7 = 2x)
-/// - Utilization is SCALAR_7 precision (0..SCALAR_7)
-///   Only the dominant side pays, so this rate applies to the heavier side only.
+/// # Formula
+/// ```text
+/// rate = r_base × (1 + r_var × util^5) × r_borrow
+/// ```
+///
+/// # Parameters
+/// - `r_base` - Global base borrowing rate (SCALAR_18, hourly)
+/// - `r_var` - Variable multiplier at full utilization (SCALAR_7; e.g. 1e7 = rate doubles at 100%)
+/// - `r_borrow` - Per-market weight (SCALAR_7; 1e7 = 1x, 2e7 = 2x for volatile markets)
+/// - `util` - Current market utilization, `total_notional / vault_balance` (SCALAR_7)
+///
+/// # Design (WHY)
+/// WHY: util^5 exponent creates a steep, convex curve that keeps borrowing
+/// cheap at low utilization but ramps aggressively near capacity. This
+/// disincentivizes concentrated positions that threaten vault solvency,
+/// while keeping costs negligible for normal usage. At 50% util the
+/// multiplier is only ~3%, but at 90% it's ~59%.
+///
+/// WHY: Only the dominant (heavier) side pays borrowing. The non-dominant
+/// side does not incur borrowing costs because their positions actually
+/// reduce systemic risk by providing counterparty balance.
 pub fn calc_borrowing_rate(
     e: &Env,
     r_base: i128,
@@ -61,7 +96,7 @@ pub fn calc_borrowing_rate(
         return r_base.fixed_mul_ceil(e, &r_borrow, &SCALAR_7);
     }
 
-    // util^5 in SCALAR_7 precision
+    // util^5 in SCALAR_7 precision (computed via repeated squaring + one multiply)
     let u2 = util.fixed_mul_ceil(e, &util, &SCALAR_7);
     let u4 = u2.fixed_mul_ceil(e, &u2, &SCALAR_7);
     let u5 = u4.fixed_mul_ceil(e, &util, &SCALAR_7);
@@ -70,6 +105,8 @@ pub fn calc_borrowing_rate(
     let util_factor = r_var.fixed_mul_ceil(e, &u5, &SCALAR_7);
     let multiplier = SCALAR_7 + util_factor;
 
+    // WHY: ceil rounding throughout -- borrowing rate rounds up to protect the vault
+    // from under-collecting fees in high-utilization scenarios.
     // rate = base × multiplier × r_borrow (SCALAR_18 result)
     let global_rate = r_base.fixed_mul_ceil(e, &multiplier, &SCALAR_7);
     global_rate.fixed_mul_ceil(e, &r_borrow, &SCALAR_7)

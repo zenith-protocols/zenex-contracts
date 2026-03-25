@@ -8,11 +8,21 @@ use soroban_fixed_point_math::SorobanFixedPoint;
 use soroban_sdk::{panic_with_error, Address, Env};
 // ── Result structs ──────────────────────────────────────────────────
 
+/// Breakdown of PnL and all fee components for a closed/settled position.
+///
+/// All amounts are in token_decimals. PnL and funding can be negative (loss/payment).
+/// Fees (base, impact, borrowing) are always >= 0.
 pub struct Settlement {
+    /// Raw price PnL: (exit_price - entry_price) / entry_price * notional.
+    /// Positive = profit, negative = loss. Does not include fees.
     pub pnl: i128,
+    /// Base trading fee charged at close (notional * fee_rate, SCALAR_7 fraction).
     pub base_fee: i128,
+    /// Price-impact fee (notional / impact_divisor, SCALAR_7 fraction).
     pub impact_fee: i128,
+    /// Accrued funding since position open. Positive = owed (dominant side), negative = earned.
     pub funding: i128,
+    /// Accrued borrowing fee since position open. Always >= 0.
     pub borrowing_fee: i128,
 }
 
@@ -25,7 +35,9 @@ impl Settlement {
         self.base_fee + self.impact_fee + self.funding + self.borrowing_fee
     }
 
-    /// Net PnL: raw pnl minus all fees, clamped to -collateral (can't lose more than you put in).
+    /// Net PnL: raw PnL minus all fees, clamped to `-col` (user can never lose more than collateral).
+    /// WHY: clamped to protect against fee accumulation exceeding collateral, which would
+    /// cause an underflow. The vault absorbs the shortfall in that case.
     pub fn net_pnl(&self, col: i128) -> i128 {
         (self.pnl - self.total_fee()).max(-col)
     }
@@ -80,6 +92,22 @@ impl Position {
         (id, position)
     }
 
+    /// Validate position parameters against trading and market constraints.
+    ///
+    /// # Parameters
+    /// - `enabled` - Whether the market is accepting new positions
+    /// - `min_notional` / `max_notional` - Notional bounds (token_decimals)
+    /// - `margin` - Initial margin requirement (SCALAR_7, e.g. 1e6 = 10% = 10x max leverage)
+    ///
+    /// # Panics
+    /// - `TradingError::NegativeValueNotAllowed` (735) if notional, price, or col <= 0
+    /// - `TradingError::MarketDisabled` (712) if market is not enabled
+    /// - `TradingError::NotionalBelowMinimum` (736) / `NotionalAboveMaximum` (737)
+    /// - `TradingError::LeverageAboveMaximum` (739) if `notional * margin > col`
+    ///
+    /// WHY: `margin` constraint ensures `leverage = notional / col <= 1 / margin`.
+    /// Margin check uses ceil rounding to prevent users from sneaking above max leverage
+    /// via rounding.
     pub fn validate(&self, e: &Env, enabled: bool, min_notional: i128, max_notional: i128, margin: i128) {
         if self.notional <= 0 || self.entry_price <= 0 || self.col <= 0 || self.tp < 0 || self.sl < 0 {
             panic_with_error!(e, TradingError::NegativeValueNotAllowed);
@@ -98,6 +126,15 @@ impl Position {
         }
     }
 
+    /// Guard for user-initiated close: position must be filled and at least MIN_OPEN_TIME old.
+    ///
+    /// # Panics
+    /// - `TradingError::ActionNotAllowedForStatus` (750) if position is not filled
+    /// - `TradingError::PositionTooNew` (748) if < 30s since fill
+    ///
+    /// WHY: MIN_OPEN_TIME (30 seconds) prevents same-block open+close price arbitrage.
+    /// Without it, a user could open and close in the same ledger using the same oracle
+    /// price, extracting risk-free profit from fee asymmetry.
     pub fn require_closable(&self, e: &Env) {
         if !self.filled {
             panic_with_error!(e, TradingError::ActionNotAllowedForStatus);
@@ -156,17 +193,38 @@ impl Position {
         self.adl_idx = ai;
     }
 
-    /// PnL/fee computation with ADL adjustment. No side effects on market.
+    /// Settle a position: compute PnL and all accrued fees using index-based accounting.
+    ///
+    /// # Index-based settlement formula
+    /// ```text
+    /// funding  = notional × (current_fund_idx - position.fund_idx) / SCALAR_18
+    /// borrowing = notional × (current_borr_idx - position.borr_idx) / SCALAR_18
+    /// pnl      = notional × (exit_price - entry_price) / entry_price
+    /// ```
+    ///
+    /// The position snapshots funding/borrowing/ADL indices at fill time. At settlement,
+    /// the difference between current and snapshotted index represents the per-unit
+    /// accrued rate, multiplied by notional to get the total amount.
+    ///
+    /// # ADL adjustment
+    /// If the ADL index has changed since fill, the position's notional is reduced
+    /// proportionally before any other calculation. This ensures the position's
+    /// exposure reflects the deleveraging that occurred.
+    ///
+    /// # Returns
+    /// [`Settlement`] with all components broken out.
     pub fn settle(&mut self, e: &Env, market: &Market) -> Settlement {
         let (funding_index, borrowing_index, adl_index) = market.data.indices(self.long);
 
-        // Apply ADL
+        // Apply ADL: scale down notional by the ratio of current/original ADL index.
+        // WHY: floor rounding on ADL reduction -- conservative for the position holder
+        // (slightly less notional = slightly less exposure = safer for the vault).
         if self.adl_idx != adl_index {
             self.notional = self.notional.fixed_mul_floor(e, &adl_index, &self.adl_idx);
             self.adl_idx = adl_index;
         }
 
-        // PnL
+        // PnL: floor rounding -- conservative for the trader (vault keeps rounding dust).
         let price_diff = if self.long {
             market.price - self.entry_price
         } else {
@@ -179,8 +237,9 @@ impl Position {
             self.notional.fixed_mul_floor(e, &ratio, &market.price_scalar)
         };
 
-        // Fees
-        // Closing from dominant side rebalances → lower fee; from non-dominant worsens → higher fee
+        // WHY: Closing from the dominant side rebalances the market (reduces imbalance),
+        // so it gets the lower non-dom fee. Closing from non-dominant side worsens
+        // imbalance, so it pays the higher dom fee. This mirrors open-side fee logic.
         let base_fee = if market.data.is_dominant(self.long, -self.notional) {
             self.notional.fixed_mul_ceil(e, &market.trading_config.fee_non_dom, &SCALAR_7)
         } else {
@@ -188,6 +247,8 @@ impl Position {
         };
         let impact_fee = self.notional.fixed_div_ceil(e, &market.config.impact, &SCALAR_7);
 
+        // WHY: funding uses floor (conservative for receiver), borrowing uses ceil
+        // (protocol never under-collects).
         let funding = self.notional.fixed_mul_floor(e, &(funding_index - self.fund_idx), &SCALAR_18);
         let borrowing_fee = self.notional.fixed_mul_ceil(e, &(borrowing_index - self.borr_idx), &SCALAR_18);
 

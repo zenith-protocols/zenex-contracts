@@ -9,9 +9,22 @@ use soroban_fixed_point_math::SorobanFixedPoint;
 use soroban_sdk::{panic_with_error, Env, Vec};
 use soroban_sdk::unwrap::UnwrapOptimized;
 
-/// Permissionless status update based on price data.
-/// - Active: if threshold met -> ADL (sets OnIce)
-/// - OnIce: if threshold dropped -> Active, else -> ADL
+/// Permissionless circuit breaker and auto-deleveraging (ADL) trigger.
+///
+/// Computes net trader PnL across all markets using entry-weighted aggregates
+/// (O(1) per market, no position iteration). Based on current status:
+///
+/// - **Active**: if `net_pnl >= 95%` of vault -> run ADL, set `OnIce`
+/// - **OnIce**: if `net_pnl < 90%` of vault -> restore `Active`; else -> run ADL again
+/// - **AdminOnIce/Frozen**: panics (admin-controlled states are not permissionless)
+///
+/// # Parameters
+/// - `feeds` - Verified price data for ALL registered markets
+///
+/// # Panics
+/// - `TradingError::ThresholdNotMet` (780) if PnL below trigger threshold
+/// - `TradingError::InvalidStatus` (760) if contract in admin-controlled state
+/// - `TradingError::InvalidPrice` (720) if any market feed missing from `feeds`
 pub fn execute_update_status(e: &Env, feeds: &Vec<PriceData>) {
     let current = ContractStatus::from_u32(e, storage::get_status(e));
     let vault = storage::get_vault(e);
@@ -62,8 +75,19 @@ pub fn execute_update_status(e: &Env, feeds: &Vec<PriceData>) {
     }
 }
 
-/// Reduce winning-side positions when vault cannot cover net liability.
-/// Sets status to OnIce.
+/// Reduce winning-side notionals proportionally to bring net PnL within vault capacity.
+///
+/// Computes `reduction_pct = deficit / total_winner_pnl`, then applies
+/// `factor = 1 - reduction_pct` to each winning side's notional, entry_wt, and ADL index.
+///
+/// WHY: Entry-weighted aggregate (`entry_wt`) enables O(1) per-market PnL calculation:
+/// `side_pnl = current_price * entry_wt - notional` for longs. Without it, we'd need
+/// to iterate every position on-chain, which is infeasible in a single transaction.
+///
+/// WHY: ADL applies to the index (not individual positions) so that individual positions
+/// are lazily adjusted at their next settlement. This avoids iterating all positions.
+///
+/// Sets status to `OnIce` after reduction.
 fn do_adl(
     e: &Env,
     cached: &Vec<(u32, MarketData, i128, i128)>,

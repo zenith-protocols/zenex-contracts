@@ -11,6 +11,13 @@ use soroban_fixed_point_math::SorobanFixedPoint;
 use soroban_sdk::token::TokenClient;
 use soroban_sdk::{panic_with_error, Address, Env};
 
+/// Create a pending limit order. Validates parameters, stores position, transfers collateral.
+///
+/// The order is not filled immediately -- a keeper must call `execute` with `Fill` type
+/// when the market price reaches `entry_price`.
+///
+/// # Auth
+/// Requires `user.require_auth()`.
 #[allow(clippy::too_many_arguments)]
 pub fn execute_create_limit(
     e: &Env,
@@ -45,6 +52,12 @@ pub fn execute_create_limit(
     id
 }
 
+/// Cancel a pending (unfilled) limit order. Returns collateral to user.
+///
+/// No fees are charged on cancellation since the order was never filled.
+///
+/// # Auth
+/// Requires `position.user.require_auth()`.
 pub fn execute_cancel_limit(e: &Env, position_id: u32) -> i128 {
     require_can_manage(e);
     let position = storage::get_position(e, position_id);
@@ -70,6 +83,14 @@ pub fn execute_cancel_limit(e: &Env, position_id: u32) -> i128 {
     position.col
 }
 
+/// Create and immediately fill a market order at the current oracle price.
+///
+/// Unlike `execute_create_limit`, this fills the position in the same transaction.
+/// Open fees (base + impact) are deducted from collateral. The remaining fee
+/// portion goes to the vault and treasury.
+///
+/// # Auth
+/// Requires `user.require_auth()`.
 #[allow(clippy::too_many_arguments)]
 pub fn execute_create_market(
     e: &Env,
@@ -115,6 +136,17 @@ pub fn execute_create_market(
     id
 }
 
+/// Close a filled position at the current oracle price.
+///
+/// Settles all accrued fees (funding, borrowing) and PnL. User receives
+/// `max(equity, 0)`. If the position is underwater, user gets nothing and
+/// the vault absorbs the remainder. Treasury receives its fee cut.
+///
+/// # Auth
+/// Requires `position.user.require_auth()`.
+///
+/// # Returns
+/// User payout amount (token_decimals), >= 0.
 pub fn execute_close_position(e: &Env, position_id: u32, price_data: &PriceData) -> i128 {
     require_can_manage(e);
     let mut position = storage::get_position(e, position_id);
@@ -165,6 +197,14 @@ pub fn execute_close_position(e: &Env, position_id: u32, price_data: &PriceData)
     user_payout
 }
 
+/// Add or withdraw collateral on an open (filled) position.
+///
+/// For withdrawals, a margin check is performed: the position's equity after
+/// settlement must remain above `notional * margin`. This prevents users from
+/// extracting collateral to a point where the position would be immediately liquidatable.
+///
+/// # Auth
+/// Requires `position.user.require_auth()`.
 pub fn execute_modify_collateral(e: &Env, position_id: u32, new_collateral: i128, price_data: &PriceData) {
     require_can_manage(e);
     let mut position = storage::get_position(e, position_id);
@@ -211,6 +251,13 @@ pub fn execute_modify_collateral(e: &Env, position_id: u32, new_collateral: i128
     .publish(e);
 }
 
+/// Update take-profit and stop-loss trigger prices on a position.
+///
+/// Set to 0 to clear a trigger. Validates direction constraints (TP must be
+/// above entry for longs, below for shorts; SL is the reverse).
+///
+/// # Auth
+/// Requires `position.user.require_auth()`.
 pub fn execute_set_triggers(e: &Env, position_id: u32, take_profit: i128, stop_loss: i128) {
     require_can_manage(e);
     let mut position = storage::get_position(e, position_id);
@@ -231,6 +278,14 @@ pub fn execute_set_triggers(e: &Env, position_id: u32, take_profit: i128, stop_l
     .publish(e);
 }
 
+/// Apply funding rate updates across all markets. Permissionless, callable once per hour.
+///
+/// For each market: accrues borrowing + funding indices, then recalculates the
+/// funding rate based on current OI imbalance. The new rate takes effect for the
+/// next accrual period.
+///
+/// # Panics
+/// - `TradingError::FundingTooEarly` (790) if < 1 hour since last call
 pub fn execute_apply_funding(e: &Env) {
     let last_funding_update = storage::get_last_funding_update(e);
     let elapsed = e.ledger().timestamp() - last_funding_update;

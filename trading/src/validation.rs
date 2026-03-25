@@ -7,7 +7,13 @@ use crate::storage;
 use crate::types::{ContractStatus, MarketConfig, TradingConfig};
 use soroban_sdk::{panic_with_error, Env};
 
-/// Contract must be Active (for opening new positions)
+/// Guard: contract must be `Active` to open new positions.
+///
+/// OnIce, AdminOnIce, and Frozen all block new opens. Existing positions
+/// can still be managed (closed, liquidated) under OnIce/AdminOnIce.
+///
+/// # Panics
+/// - `TradingError::ContractOnIce` (761)
 pub fn require_active(e: &Env) {
     let status = ContractStatus::from_u32(e, storage::get_status(e));
     match status {
@@ -16,7 +22,13 @@ pub fn require_active(e: &Env) {
     }
 }
 
-/// Contract allows position management (close, modify, cancel, trigger) — everything except Frozen
+/// Guard: contract allows position management (close, modify, cancel, triggers).
+///
+/// Only `Frozen` blocks management. All other states (Active, OnIce, AdminOnIce)
+/// permit existing position operations so users can always exit.
+///
+/// # Panics
+/// - `TradingError::ContractFrozen` (762)
 pub fn require_can_manage(e: &Env) {
     let status = ContractStatus::from_u32(e, storage::get_status(e));
     match status {
@@ -25,8 +37,14 @@ pub fn require_can_manage(e: &Env) {
     }
 }
 
+/// Validate global trading configuration parameters against safety bounds.
+///
+/// # Panics
+/// - `TradingError::NegativeValueNotAllowed` (735) if any rate/fee is negative
+/// - `TradingError::InvalidConfig` (702) if any value exceeds its upper bound or
+///   if min_notional/max_notional/max_util are logically invalid
 pub fn require_valid_config(e: &Env, config: &TradingConfig) {
-    // Lower bounds
+    // Lower bounds: rates and fees must be non-negative
     if config.caller_rate < 0
         || config.fee_dom < 0
         || config.fee_non_dom < 0
@@ -37,7 +55,7 @@ pub fn require_valid_config(e: &Env, config: &TradingConfig) {
         panic_with_error!(e, TradingError::NegativeValueNotAllowed);
     }
 
-    // Upper bounds
+    // Upper bounds: each parameter capped to prevent misconfiguration
     if config.caller_rate > MAX_CALLER_RATE
         || config.fee_dom > MAX_FEE_RATE
         || config.fee_non_dom > MAX_FEE_RATE
@@ -57,14 +75,22 @@ pub fn require_valid_config(e: &Env, config: &TradingConfig) {
         panic_with_error!(e, TradingError::InvalidConfig);
     }
 
-    // Dominant fee must be >= non-dominant fee (cancel/fill refund logic depends on this)
+    // WHY: fee_dom >= fee_non_dom is an invariant that the open/close fee logic
+    // depends on. The dominant side (which worsens imbalance) pays the higher fee.
+    // Violating this would let dominant-side opens pay less than non-dominant.
     if config.fee_dom < config.fee_non_dom {
         panic_with_error!(e, TradingError::InvalidConfig);
     }
 }
 
+/// Validate per-market configuration parameters against safety bounds.
+///
+/// # Panics
+/// - `TradingError::NegativeValueNotAllowed` (735) if margin or liq_fee <= 0
+/// - `TradingError::InvalidConfig` (702) if bounds exceeded or margin <= liq_fee
 pub fn require_valid_market_config(e: &Env, config: &MarketConfig) {
-    // Lower bounds
+    // WHY: margin > 0 required because leverage = 1/margin; margin <= 0 is undefined.
+    // liq_fee > 0 required because it doubles as the liquidation threshold.
     if config.margin <= 0
         || config.liq_fee <= 0
         || config.r_borrow < 0
@@ -72,7 +98,6 @@ pub fn require_valid_market_config(e: &Env, config: &MarketConfig) {
         panic_with_error!(e, TradingError::NegativeValueNotAllowed);
     }
 
-    // Upper bounds
     if config.margin > MAX_MARGIN
         || config.liq_fee > MAX_LIQ_FEE
         || config.r_borrow > MAX_R_BORROW
@@ -82,7 +107,9 @@ pub fn require_valid_market_config(e: &Env, config: &MarketConfig) {
         panic_with_error!(e, TradingError::InvalidConfig);
     }
 
-    // margin must be > liq_fee (can't be liquidated before max leverage)
+    // WHY: margin must strictly exceed liq_fee. If margin <= liq_fee, a position
+    // opened at max leverage would be immediately liquidatable (equity at margin
+    // equals the liquidation threshold). The gap between them is the safety buffer.
     if config.margin <= config.liq_fee {
         panic_with_error!(e, TradingError::InvalidConfig);
     }
