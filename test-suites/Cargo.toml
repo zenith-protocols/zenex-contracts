@@ -16,6 +16,8 @@ factory = { path = "../factory", features = ["testutils"] }
 price-verifier = { path = "../price-verifier", features = ["testutils"] }
 treasury = { path = "../treasury", features = ["testutils"] }
 governance = { path = "../governance", features = ["testutils"] }
+strategy-vault = { path = "../strategy-vault", features = ["testutils"] }
+stellar-access = { workspace = true }
 ed25519-dalek = { version = "2", features = ["alloc"] }
 
 [dev-dependencies]

@@ -1732,6 +1732,8 @@ dependencies = [
  "proptest",
  "soroban-fixed-point-math",
  "soroban-sdk",
+ "stellar-access",
+ "strategy-vault",
  "trading",
  "treasury",
 ]
