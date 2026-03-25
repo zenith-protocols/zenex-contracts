@@ -11,17 +11,13 @@ doctest = false
 [features]
 testutils = [
     "soroban-sdk/testutils",
-    "trading/testutils",
 ]
 
 [dependencies]
 soroban-sdk = { workspace = true }
-soroban-fixed-point-math = { workspace = true }
 stellar-access = { workspace = true }
 stellar-contract-utils = { workspace = true }
 stellar-macros = { workspace = true }
-trading = { path = "../trading", features = ["library"] }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
-trading = { path = "../trading", features = ["testutils", "library"] }
