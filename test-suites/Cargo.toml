@@ -12,6 +12,10 @@ soroban-sdk = { workspace = true, features = ["testutils"] }
 soroban-fixed-point-math = { workspace = true }
 trading = { path = "../trading", features = ["testutils"] }
 factory = { path = "../factory", features = ["testutils"] }
+price-verifier = { path = "../price-verifier", features = ["testutils"] }
+treasury = { path = "../treasury", features = ["testutils"] }
+governance = { path = "../governance", features = ["testutils"] }
+ed25519-dalek = { version = "2", features = ["alloc"] }
 
 [dev-dependencies]
 proptest = "1"
