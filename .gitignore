@@ -10,3 +10,6 @@ test_snapshots
 
 security
 security-v2
+.planning
+.claude/
+CLAUDE.md
