@@ -38,5 +38,5 @@ coverage-per-crate:
 
 # Mutation testing (best effort, long-running)
 mutants:
-	cargo mutants --package trading --timeout 120 -- --test-threads=1 2>&1 | tee target/mutants-trading.txt
+	cargo mutants --package trading --timeout 120 2>&1 | tee target/mutants-trading.txt
 	@echo "Results: target/mutants-trading.txt"
