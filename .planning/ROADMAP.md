@@ -67,12 +67,12 @@ Plans:
 **Plans**: 7 plans
 
 Plans:
-- [ ] 03-01-PLAN.md — TestFixture rebuild with real PriceVerifier, Pyth helper (with confidence), factory deployment + price verifier integration tests (TEST-01, TEST-06, TEST-07)
-- [ ] 03-02-PLAN.md — Position lifecycle and liquidation integration tests (TEST-02, TEST-05)
+- [x] 03-01-PLAN.md — TestFixture rebuild with real PriceVerifier, Pyth helper (with confidence), factory deployment + price verifier integration tests (TEST-01, TEST-06, TEST-07)
+- [x] 03-02-PLAN.md — Position lifecycle and liquidation integration tests (TEST-02, TEST-05)
 - [ ] 03-03-PLAN.md — ADL integration tests and fee system conservation/accuracy tests (TEST-04, TEST-05)
-- [ ] 03-04-PLAN.md — Authorization negative tests and timelock integration tests (TEST-03)
+- [x] 03-04-PLAN.md — Authorization negative tests and timelock integration tests (TEST-03)
 - [ ] 03-05-PLAN.md — Coverage measurement, mutation testing, threat-to-test traceability matrix, old test cleanup (TEST-08, TEST-09, TEST-10)
-- [ ] 03-06-PLAN.md — Protocol specification, architecture docs, deployment docs, docs folder structure (DOC-01, DOC-02, DOC-05)
+- [x] 03-06-PLAN.md — Protocol specification, architecture docs, deployment docs, docs folder structure (DOC-01, DOC-02, DOC-05)
 - [ ] 03-07-PLAN.md — Rustdoc comments and inline decision annotations across all contracts (DOC-03, DOC-04)
 
 ## Progress

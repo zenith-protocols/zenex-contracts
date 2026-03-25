@@ -29,10 +29,10 @@ Requirements for audit-ready submission. Each maps to roadmap phases.
 ### Testing
 
 - [ ] **TEST-01**: Integration tests in test-suites rebuilt against current trading API (replacing outdated oracle pattern)
-- [ ] **TEST-02**: Cross-contract tests covering full position lifecycle (open -> accrue -> close/liquidate/ADL)
-- [ ] **TEST-03**: Authorization negative tests for every privileged function (verify unauthorized callers are rejected)
-- [ ] **TEST-04**: Fee system tests (funding peer-to-peer conservation, borrowing curve accuracy, fee accrual over time)
-- [ ] **TEST-05**: Edge case tests for liquidation, ADL triggers, vault utilization limits, and market config boundaries
+- [x] **TEST-02**: Cross-contract tests covering full position lifecycle (open -> accrue -> close/liquidate/ADL)
+- [x] **TEST-03**: Authorization negative tests for every privileged function (verify unauthorized callers are rejected)
+- [x] **TEST-04**: Fee system tests (funding peer-to-peer conservation, borrowing curve accuracy, fee accrual over time)
+- [x] **TEST-05**: Edge case tests for liquidation, ADL triggers, vault utilization limits, and market config boundaries
 - [ ] **TEST-06**: Factory deployment tests (deploy_v2 atomic deployment, address precomputation)
 - [ ] **TEST-07**: Price verifier tests (freshness, exponent handling, multi-price verification)
 - [ ] **TEST-08**: Line coverage >= 80% measured by cargo-llvm-cov
@@ -101,10 +101,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | QUAL-08 | Phase 2 | Complete |
 | QUAL-09 | Phase 2 | Complete |
 | TEST-01 | Phase 3 | Pending |
-| TEST-02 | Phase 3 | Pending |
-| TEST-03 | Phase 3 | Pending |
-| TEST-04 | Phase 3 | Pending |
-| TEST-05 | Phase 3 | Pending |
+| TEST-02 | Phase 3 | Complete |
+| TEST-03 | Phase 3 | Complete |
+| TEST-04 | Phase 3 | Complete |
+| TEST-05 | Phase 3 | Complete |
 | TEST-06 | Phase 3 | Pending |
 | TEST-07 | Phase 3 | Pending |
 | TEST-08 | Phase 3 | Pending |

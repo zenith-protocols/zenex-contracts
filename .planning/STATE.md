@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: Phase complete — ready for verification
-stopped_at: Completed 02-03-PLAN.md
-last_updated: "2026-03-24T21:41:12.174Z"
+stopped_at: Completed 03-04-PLAN.md
+last_updated: "2026-03-25T12:47:37.630Z"
 progress:
   total_phases: 3
   completed_phases: 2
-  total_plans: 5
-  completed_plans: 5
+  total_plans: 12
+  completed_plans: 9
 ---
 
 # Project State
@@ -51,6 +51,9 @@ Plan: 3 of 3
 | Phase 02 P02 | 5min | 2 tasks | 10 files |
 | Phase 02 P01 | 6min | 1 tasks | 7 files |
 | Phase 02 P03 | 23min | 2 tasks | 18 files |
+| Phase 03 P02 | 7min | 2 tasks | 2 files |
+| Phase 03 P03 | 7min | 2 tasks | 2 files |
+| Phase 03 P04 | 10min | 2 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -71,6 +74,12 @@ Recent decisions affecting current work:
 - [Phase 02]: Used dedicated PendingDelay storage for timelocked delay updates instead of self-invoke (Soroban prevents contract re-entry)
 - [Phase 02]: All Scout Soroban critical findings (79 across 5 crates) are integer-overflow false positives mitigated by overflow-checks=true in release profile
 - [Phase 02]: 4 transitive soroban-sdk advisories (time, keccak, derivative, paste) documented with ignores in deny.toml; not exploitable in WASM
+- [Phase 03]: All integration tests use real Ed25519-signed Pyth payloads with invariant-based assertions rather than mocks or brittle numeric checks
+- [Phase 03]: ADL tests use multi-feed price updates (BTC+ETH+XLM) because update_status requires all market prices
+- [Phase 03]: Borrowing curve verified via borrowing index delta (l_borr_idx) instead of non-existent borr_rate field
+- [Phase 03]: Token conservation tolerance: 2 units per position for fixed-point rounding across multiple contract calls
+- [Phase 03]: Two deployment strategies for auth tests: fixture-based vs direct e.register() based on contract complexity
+- [Phase 03]: Governance ownership transfer via env.invoke_contract for Ownable trait methods not on TradingClient
 
 ### Pending Todos
 
@@ -85,6 +94,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-24T21:41:12.172Z
-Stopped at: Completed 02-03-PLAN.md
+Last session: 2026-03-25T12:47:37.628Z
+Stopped at: Completed 03-04-PLAN.md
 Resume file: None
