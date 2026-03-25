@@ -1,3 +1,27 @@
+//! Pyth Lazer binary format parser and Ed25519 signature verifier.
+//!
+//! # Binary format (Solana-compatible Pyth Lazer envelope)
+//! ```text
+//! [0..4]    magic: 0x821A01B9 (Solana format identifier)
+//! [4..68]   signature: Ed25519 signature (64 bytes)
+//! [68..100] pubkey: Ed25519 public key (32 bytes)
+//! [100..102] payload_len: u16 LE
+//! [102..]   payload:
+//!   [0..4]   magic: 0x93C7D375 (payload format identifier)
+//!   [4..12]  publish_time: u64 LE (microseconds, divided by 1e6 -> seconds)
+//!   [13]     num_feeds: u8
+//!   For each feed:
+//!     [0..4]  feed_id: u32 LE
+//!     [4]     num_props: u8
+//!     For each property:
+//!       [0]     prop_type: u8 (0=price, 4=exponent, 5=confidence)
+//!       [1..]   value: i64 LE (price/confidence) or i16 LE (exponent)
+//! ```
+//!
+//! WHY: Signature is verified BEFORE parsing any feed data (defense in depth).
+//! An attacker cannot craft a payload that passes parsing but has an invalid signature
+//! because verification happens first.
+
 use soroban_sdk::{panic_with_error, BytesN, Bytes, Env, Vec};
 use soroban_sdk::unwrap::UnwrapOptimized;
 
@@ -9,6 +33,7 @@ const PAYLOAD_FORMAT_MAGIC: u32 = 0x93C7D375;
 const PROP_PRICE: u8 = 0;
 const PROP_EXPONENT: u8 = 4;
 const PROP_CONFIDENCE: u8 = 5;
+/// Maximum buffer size for price update payloads (prevents excessive memory usage in WASM).
 const MAX_BUF: usize = 1024;
 
 fn read_u16(buf: &[u8], off: usize) -> u16 {
@@ -25,8 +50,14 @@ fn read_u64(buf: &[u8], off: usize) -> u64 {
     u64::from_le_bytes(a)
 }
 
-/// Verify a Pyth Lazer update blob and extract all price feeds.
-/// Panics on any verification failure.
+/// Check that a price is not stale relative to the current ledger timestamp.
+///
+/// WHY: Uses `abs_diff` instead of `now - publish_time` for clock-skew tolerance.
+/// In some network conditions, the oracle publish_time may be slightly ahead of the
+/// ledger timestamp. `abs_diff` handles both directions without underflow.
+///
+/// # Panics
+/// - `PriceVerifierError::PriceStale` if `|now - publish_time| > max_staleness`
 pub fn check_staleness(env: &Env, price: &PriceData, max_staleness: u64) {
     let now = env.ledger().timestamp();
     let age = now.abs_diff(price.publish_time);
@@ -35,6 +66,21 @@ pub fn check_staleness(env: &Env, price: &PriceData, max_staleness: u64) {
     }
 }
 
+/// Verify the Ed25519 signature on a Pyth Lazer binary payload, then parse and
+/// return all price feeds contained within.
+///
+/// # Verification steps
+/// 1. Check minimum length and Solana format magic bytes
+/// 2. Extract signature (64 bytes) and public key (32 bytes)
+/// 3. Verify public key matches `trusted_signer` from storage
+/// 4. Verify Ed25519 signature over the payload bytes
+/// 5. Check payload format magic bytes
+/// 6. Parse each feed's price, exponent, and optional confidence
+/// 7. Reject any feed where `confidence > price * max_confidence_bps / 10000`
+///
+/// # Panics
+/// - `PriceVerifierError::InvalidData` on any format or signature error
+/// - `PriceVerifierError::InvalidPrice` if required fields missing or confidence too wide
 pub fn verify_and_extract(
     env: &Env,
     update_data: Bytes,

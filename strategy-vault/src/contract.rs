@@ -1,8 +1,17 @@
-//! Vault Contract - ERC-4626 compliant tokenized vault with deposit locking
+//! # Strategy Vault
 //!
-//! This contract implements the OpenZeppelin FungibleVault trait with a lock
-//! mechanism: depositors cannot transfer, withdraw, or redeem their shares
-//! until lock_time seconds after their last deposit.
+//! ERC-4626 compliant tokenized vault with deposit locking for the Zenex
+//! perpetual futures protocol.
+//!
+//! Depositors provide collateral that backs trader positions. A time-lock
+//! mechanism prevents flash-deposit-withdraw attacks: shares cannot be
+//! transferred, withdrawn, or redeemed until `lock_time` seconds after
+//! the depositor's last deposit.
+//!
+//! Only the designated `strategy` address (the trading contract) can call
+//! `strategy_withdraw` to fund winning position payouts.
+//!
+//! See: Protocol Spec -- `docs/audit/PROTOCOL-SPEC.md`
 
 use soroban_sdk::{contract, contractimpl, Address, Env, MuxedAddress, String};
 use stellar_tokens::{
@@ -17,15 +26,22 @@ pub struct StrategyVaultContract;
 
 #[contractimpl]
 impl StrategyVaultContract {
-    /// Initializes the vault
+    /// Initialize the strategy vault with share token metadata and locking parameters.
     ///
-    /// # Arguments
-    /// * `name` - Name for the vault share token
-    /// * `symbol` - Symbol for the vault share token
-    /// * `asset` - Address of the underlying token contract
-    /// * `decimals_offset` - Virtual offset for inflation attack protection (0-10)
-    /// * `strategy` - Authorized strategy contract address (trading contract)
-    /// * `lock_time` - Delay in seconds before depositors can transfer their shares
+    /// # Parameters
+    /// - `name` - Human-readable name for the vault share token (e.g. "Zenex BTC Vault")
+    /// - `symbol` - Symbol for the vault share token (e.g. "zBTC")
+    /// - `asset` - Address of the underlying collateral token (e.g. USDC)
+    /// - `decimals_offset` - Virtual decimal offset for vault inflation attack protection (0-10).
+    ///   WHY: A non-zero offset inflates the internal share:asset ratio, making the
+    ///   classic "first depositor" vault inflation attack economically infeasible.
+    ///   See ERC-4626 security considerations.
+    /// - `strategy` - Authorized strategy contract (trading contract). Only this address
+    ///   can call `strategy_withdraw`.
+    /// - `lock_time` - Seconds depositors must wait after their last deposit before
+    ///   transferring, withdrawing, or redeeming shares.
+    ///   WHY: Prevents flash-deposit-withdraw where an attacker deposits just before
+    ///   a large payout, captures the yield, and immediately redeems.
     pub fn __constructor(
         e: Env,
         name: String,
@@ -56,7 +72,17 @@ impl StrategyVaultContract {
         StrategyVault::get_lock_time(&e, &user)
     }
 
-    /// Strategy withdraws tokens from the vault (decreases total_assets and share price)
+    /// Strategy (trading contract) withdraws tokens from the vault to pay winning positions.
+    ///
+    /// Decreases `total_assets` and thus the share price for all depositors.
+    /// WHY: Only the `strategy` address can call this. The check is
+    /// `strategy.require_auth()` combined with the internal `StrategyVault::withdraw`
+    /// which verifies `strategy == stored_strategy`. This ensures only the designated
+    /// trading contract can extract funds.
+    ///
+    /// # Parameters
+    /// - `strategy` - Must match the stored strategy address and provide auth
+    /// - `amount` - Token amount to withdraw (token_decimals)
     pub fn strategy_withdraw(e: Env, strategy: Address, amount: i128) {
         strategy.require_auth();
         StrategyVault::withdraw(&e, &strategy, amount);
@@ -64,12 +90,15 @@ impl StrategyVaultContract {
     }
 }
 
-// Implement FungibleToken trait for share token functionality
+// Implement FungibleToken trait for share token functionality.
+// WHY: transfer and transfer_from are overridden to enforce the deposit lock.
+// Without this, a depositor could transfer shares to a fresh address to bypass
+// the lock_time check on withdraw/redeem.
 #[contractimpl(contracttrait)]
 impl FungibleToken for StrategyVaultContract {
     type ContractType = Vault;
 
-    /// Override: Depositors cannot transfer until lock expires
+    /// Override: Depositors cannot transfer shares until lock_time expires after last deposit.
     fn transfer(e: &Env, from: Address, to: MuxedAddress, amount: i128) {
         StrategyVault::require_unlocked(e, &from);
         Base::transfer(e, &from, &to, amount);
@@ -82,11 +111,18 @@ impl FungibleToken for StrategyVaultContract {
     }
 }
 
-// Implement FungibleVault trait for ERC-4626 functionality
-// Override deposit/mint to track timestamps, redeem/withdraw to enforce lock
+// Implement FungibleVault trait for ERC-4626 functionality.
+// Overrides: deposit/mint record the deposit timestamp for lock tracking.
+// redeem/withdraw enforce the lock before allowing share redemption.
 #[contractimpl(contracttrait)]
 impl FungibleVault for StrategyVaultContract {
-    /// Override: Track deposit timestamp for the receiver (who gets the shares)
+    /// Deposit assets and mint shares to receiver. Records deposit timestamp for lock.
+    ///
+    /// # Parameters
+    /// - `assets` - Amount of underlying tokens to deposit (token_decimals)
+    /// - `receiver` - Address receiving the vault shares (lock timer starts for this address)
+    /// - `from` - Address providing the tokens
+    /// - `operator` - Address authorized to perform the deposit
     fn deposit(e: &Env, assets: i128, receiver: Address, from: Address, operator: Address) -> i128 {
         let shares = Vault::deposit(e, assets, receiver.clone(), from, operator);
         storage::set_last_deposit_time(e, &receiver, e.ledger().timestamp());

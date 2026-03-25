@@ -16,42 +16,103 @@ mod storage;
 pub use errors::TimelockError;
 pub use storage::QueuedCall;
 
+/// Governance timelock contract for deferred admin operations on trading contracts.
+///
+/// All configuration changes (set_config, set_market) are queued with a mandatory
+/// delay before execution. This gives users and auditors time to review pending
+/// changes before they take effect.
+///
+/// Exception: `set_status` bypasses the delay for emergency halts. WHY: In a
+/// security incident, the admin must be able to freeze the contract immediately
+/// without waiting for the timelock to expire.
+///
+/// See: Protocol Spec -- `docs/audit/PROTOCOL-SPEC.md`
 #[derive(Upgradeable)]
 #[contract]
 pub struct TimelockContract;
 
 #[contractclient(name = "TimelockClient")]
 pub trait Timelock {
-    /// (Owner only) Queue a call to target contract after delay
+    /// (Owner only) Queue an arbitrary contract call to execute after the delay.
+    ///
+    /// WHY: Uses a generic `invoke_contract(target, fn_name, args)` pattern
+    /// rather than hard-coding specific functions. This allows the governance
+    /// contract to be reused across different target contracts without modification.
+    ///
+    /// # Parameters
+    /// - `target` - Contract address to call
+    /// - `fn_name` - Function name to invoke on the target
+    /// - `args` - Arguments to pass (serialized as `Vec<Val>`)
+    ///
+    /// # Returns
+    /// Nonce (monotonically increasing u32) identifying this queued call.
+    ///
+    /// # Panics
+    /// - `TimelockError::Unauthorized` (3) if caller is not the owner
     fn queue(e: Env, target: Address, fn_name: Symbol, args: Vec<Val>) -> u32;
 
-    /// (Owner only) Cancel a queued call by nonce
+    /// (Owner only) Cancel a queued call before it is executed.
+    ///
+    /// # Panics
+    /// - `TimelockError::Unauthorized` (3) if caller is not the owner
+    /// - `TimelockError::NotQueued` (1) if nonce not found
     fn cancel(e: Env, nonce: u32);
 
-    /// (Permissionless) Execute a queued call after delay has passed
+    /// (Permissionless) Execute a queued call after the delay has passed.
+    ///
+    /// WHY: CEI pattern -- the queue entry is removed from storage BEFORE the
+    /// external call is made. While Soroban prevents re-entrancy at the host level,
+    /// following Check-Effects-Interactions is defense-in-depth for auditor confidence.
+    ///
+    /// # Panics
+    /// - `TimelockError::NotQueued` (1) if nonce not found
+    /// - `TimelockError::NotUnlocked` (2) if delay has not yet passed
     fn execute(e: Env, nonce: u32);
 
-    /// (Owner only) Immediately call set_status on a target contract (bypass delay)
+    /// (Owner only) Immediately call `set_status` on a target contract, bypassing the delay.
+    ///
+    /// WHY: Emergency status changes (freeze, on-ice) must be immediate to protect
+    /// user funds. The delay is only meaningful for configuration changes that could
+    /// harm users if applied without notice.
+    ///
+    /// # Parameters
+    /// - `target` - Trading contract address
+    /// - `status` - New status value (0=Active, 2=AdminOnIce, 3=Frozen)
     fn set_status(e: Env, target: Address, status: u32);
 
-    /// (Owner only) Queue a delay update through the timelock mechanism.
-    /// The new delay is stored in temporary storage with the current delay as
-    /// the waiting period. Call apply_delay() after the delay passes.
+    /// (Owner only) Queue a delay update. The new delay takes effect after the
+    /// CURRENT delay passes, preventing instant delay reduction attacks.
+    ///
+    /// WHY: Uses dedicated `PendingDelay` storage instead of `self.queue()` because
+    /// Soroban prevents a contract from re-entering itself (even via invoke_contract).
+    /// The current delay serves as the waiting period, ensuring an admin cannot
+    /// instantly reduce the delay to zero and then push through changes.
     fn set_delay(e: Env, new_delay: u64);
 
-    /// (Permissionless) Apply a pending delay change after the delay has passed.
-    /// Analogous to execute() but for the delay parameter itself.
+    /// (Permissionless) Apply a pending delay change after the current delay has passed.
+    ///
+    /// # Panics
+    /// - `TimelockError::NotQueued` (1) if no pending delay change
+    /// - `TimelockError::NotUnlocked` (2) if current delay has not yet passed
     fn apply_delay(e: Env);
 
-    /// Get the configured delay in seconds
+    /// Returns the current delay in seconds.
     fn get_delay(e: Env) -> u64;
 
-    /// Get a queued call by nonce (panics if not found or expired)
+    /// Returns a queued call by nonce.
+    ///
+    /// # Panics
+    /// - `TimelockError::NotQueued` (1) if nonce not found or expired
     fn get_queued(e: Env, nonce: u32) -> QueuedCall;
 }
 
 #[contractimpl]
 impl TimelockContract {
+    /// Initialize the governance timelock with an owner and delay period.
+    ///
+    /// # Parameters
+    /// - `owner` - Admin address authorized to queue/cancel calls and set status
+    /// - `delay` - Mandatory waiting period in seconds before queued calls can execute
     pub fn __constructor(e: Env, owner: Address, delay: u64) {
         ownable::set_owner(&e, &owner);
         storage::set_delay(&e, delay);

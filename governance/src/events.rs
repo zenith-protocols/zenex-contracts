@@ -1,5 +1,6 @@
 use soroban_sdk::{contractevent, Address, Symbol};
 
+/// Emitted when a new call is queued via `queue` or when `set_delay` creates a pending change.
 #[contractevent]
 #[derive(Clone)]
 pub struct Queued {
@@ -10,6 +11,7 @@ pub struct Queued {
     pub unlock_time: u64,
 }
 
+/// Emitted when a queued call is executed after the delay period.
 #[contractevent]
 #[derive(Clone)]
 pub struct Executed {
@@ -19,6 +21,7 @@ pub struct Executed {
     pub fn_name: Symbol,
 }
 
+/// Emitted when a queued call is cancelled by the owner.
 #[contractevent]
 #[derive(Clone)]
 pub struct Cancelled {
@@ -26,6 +29,7 @@ pub struct Cancelled {
     pub nonce: u32,
 }
 
+/// Emitted when `set_status` is called (immediate, no delay).
 #[contractevent]
 #[derive(Clone)]
 pub struct StatusSet {
@@ -34,6 +38,7 @@ pub struct StatusSet {
     pub status: u32,
 }
 
+/// Emitted when a pending delay change is applied via `apply_delay`.
 #[contractevent]
 #[derive(Clone)]
 pub struct DelaySet {
