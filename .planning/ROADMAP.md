@@ -73,7 +73,7 @@ Plans:
 - [x] 03-04-PLAN.md — Authorization negative tests and timelock integration tests (TEST-03)
 - [ ] 03-05-PLAN.md — Coverage measurement, mutation testing, threat-to-test traceability matrix, old test cleanup (TEST-08, TEST-09, TEST-10)
 - [x] 03-06-PLAN.md — Protocol specification, architecture docs, deployment docs, docs folder structure (DOC-01, DOC-02, DOC-05)
-- [ ] 03-07-PLAN.md — Rustdoc comments and inline decision annotations across all contracts (DOC-03, DOC-04)
+- [x] 03-07-PLAN.md — Rustdoc comments and inline decision annotations across all contracts (DOC-03, DOC-04)
 
 ## Progress
 

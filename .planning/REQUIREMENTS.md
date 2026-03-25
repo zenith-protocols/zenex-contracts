@@ -43,8 +43,8 @@ Requirements for audit-ready submission. Each maps to roadmap phases.
 
 - [ ] **DOC-01**: Protocol specification covering fee system (funding + borrowing), position lifecycle, ADL mechanism, and decimal system
 - [ ] **DOC-02**: Architecture documentation with component diagrams and data flow between contracts
-- [ ] **DOC-03**: Function-level rustdoc comments on all public functions in trading, strategy-vault, factory, price-verifier
-- [ ] **DOC-04**: Inline decision annotations on non-obvious code (why SCALAR_7 vs SCALAR_18, why MIN_OPEN_TIME, etc.)
+- [x] **DOC-03**: Function-level rustdoc comments on all public functions in trading, strategy-vault, factory, price-verifier
+- [x] **DOC-04**: Inline decision annotations on non-obvious code (why SCALAR_7 vs SCALAR_18, why MIN_OPEN_TIME, etc.)
 - [ ] **DOC-05**: Technical docs in docs/ folder organized for both auditor and developer audiences
 
 ## v2 Requirements
@@ -112,8 +112,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | TEST-10 | Phase 3 | Pending |
 | DOC-01 | Phase 3 | Pending |
 | DOC-02 | Phase 3 | Pending |
-| DOC-03 | Phase 3 | Pending |
-| DOC-04 | Phase 3 | Pending |
+| DOC-03 | Phase 3 | Complete |
+| DOC-04 | Phase 3 | Complete |
 | DOC-05 | Phase 3 | Pending |
 
 **Coverage:**
