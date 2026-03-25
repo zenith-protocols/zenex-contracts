@@ -64,13 +64,16 @@ Plans:
   6. A threat-to-test traceability matrix exists mapping every threat ID from the Phase 1 catalog to at least one integration test, with no high/critical threats left untested (TEST-10)
   7. A protocol specification document covers the fee system, position lifecycle, ADL mechanism, and decimal system with enough precision that an auditor can independently verify the math (DOC-01)
   8. Architecture documentation with component diagrams, data flow, and a docs/ folder organized for auditor and developer audiences exists, and every public function has a rustdoc comment (DOC-02, DOC-03, DOC-04, DOC-05)
-**Plans**: TBD
+**Plans**: 7 plans
 
 Plans:
-- [ ] 03-01: TBD
-- [ ] 03-02: TBD
-- [ ] 03-03: TBD
-- [ ] 03-04: TBD
+- [ ] 03-01-PLAN.md — TestFixture rebuild with real PriceVerifier, Pyth helper (with confidence), factory deployment + price verifier integration tests (TEST-01, TEST-06, TEST-07)
+- [ ] 03-02-PLAN.md — Position lifecycle and liquidation integration tests (TEST-02, TEST-05)
+- [ ] 03-03-PLAN.md — ADL integration tests and fee system conservation/accuracy tests (TEST-04, TEST-05)
+- [ ] 03-04-PLAN.md — Authorization negative tests and timelock integration tests (TEST-03)
+- [ ] 03-05-PLAN.md — Coverage measurement, mutation testing, threat-to-test traceability matrix, old test cleanup (TEST-08, TEST-09, TEST-10)
+- [ ] 03-06-PLAN.md — Protocol specification, architecture docs, deployment docs, docs folder structure (DOC-01, DOC-02, DOC-05)
+- [ ] 03-07-PLAN.md — Rustdoc comments and inline decision annotations across all contracts (DOC-03, DOC-04)
 
 ## Progress
 
@@ -79,6 +82,6 @@ Phases execute in numeric order: 1 -> 2 -> 3
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Threat Model | 0/2 | Not started | - |
-| 2. Code Quality and Static Analysis | 0/3 | Not started | - |
-| 3. Integration Tests and Documentation | 0/4 | Not started | - |
+| 1. Threat Model | 2/2 | Complete | 2026-03-24 |
+| 2. Code Quality and Static Analysis | 3/3 | Complete | 2026-03-24 |
+| 3. Integration Tests and Documentation | 0/7 | Not started | - |
