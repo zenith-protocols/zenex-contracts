@@ -222,7 +222,94 @@ fn test_liquidation_after_interest_accrual() {
 }
 
 // ==========================================
-// 4. Status Edge Case (T-DOS-05)
+// 4. Liquidation After ADL
+// ==========================================
+
+#[test]
+fn test_liquidation_after_adl() {
+    let fixture = setup_fixture();
+    let user = Address::generate(&fixture.env);
+    let user2 = Address::generate(&fixture.env);
+    let keeper = Address::generate(&fixture.env);
+    fixture.token.mint(&user, &(100_000_000 * SCALAR_7));
+    fixture.token.mint(&user2, &(100_000_000 * SCALAR_7));
+
+    // Bump max_notional for large ADL-triggering positions
+    let mut config = fixture.trading.get_config();
+    config.max_notional = 1_000_000_000 * SCALAR_7;
+    fixture.trading.set_config(&config);
+
+    // Open large long positions to create a deficit scenario (user2 provides the mass)
+    for _ in 0..5 {
+        fixture.open_and_fill(
+            &user2,
+            AssetIndex::BTC as u32,
+            1_100_000 * SCALAR_7,
+            100_000_000 * SCALAR_7,
+            true,
+            BTC_PRICE_I64,
+            0,
+            0,
+        );
+    }
+
+    // User opens a highly leveraged long: 120 col, 10k notional (~83x)
+    let position_id = fixture.open_and_fill(
+        &user,
+        AssetIndex::BTC as u32,
+        120 * SCALAR_7,
+        10_000 * SCALAR_7,
+        true,
+        BTC_PRICE_I64,
+        0,
+        0,
+    );
+
+    // Price pumps 50% -> triggers ADL (longs are winning, vault can't cover)
+    let pump_ts = fixture.env.ledger().timestamp() + 31;
+    let pump_price = pyth_helper::build_price_update(
+        &fixture.env,
+        &fixture.signing_key,
+        &[
+            pyth_helper::FeedInput { feed_id: 1, price: 150_000 * PRICE_SCALAR as i64, exponent: -8, confidence: None },
+            pyth_helper::FeedInput { feed_id: 2, price: 200_000_000_000, exponent: -8, confidence: None },
+            pyth_helper::FeedInput { feed_id: 3, price: 10_000_000, exponent: -8, confidence: None },
+        ],
+        pump_ts,
+    );
+    fixture.jump(31);
+    fixture.trading.update_status(&pump_price);
+
+    // ADL reduced long notional -- verify the index changed
+    let market = fixture.trading.get_market_data(&(AssetIndex::BTC as u32));
+    assert!(market.l_adl_idx < 1_000_000_000_000_000_000i128, "ADL should have reduced long index");
+
+    // Now price crashes back below entry -- the ADL-reduced position has less
+    // notional to absorb the loss, making it easier to liquidate
+    let crash_ts = fixture.env.ledger().timestamp() + 31;
+    let crash_price = pyth_helper::build_price_update(
+        &fixture.env,
+        &fixture.signing_key,
+        &[
+            pyth_helper::FeedInput { feed_id: 1, price: 97_000 * PRICE_SCALAR as i64, exponent: -8, confidence: None },
+            pyth_helper::FeedInput { feed_id: 2, price: 200_000_000_000, exponent: -8, confidence: None },
+            pyth_helper::FeedInput { feed_id: 3, price: 10_000_000, exponent: -8, confidence: None },
+        ],
+        crash_ts,
+    );
+    fixture.jump(31);
+
+    let requests = svec![&fixture.env, liquidation_request(position_id)];
+    fixture.trading.execute(&keeper, &requests, &crash_price);
+
+    assert!(
+        !fixture.position_exists(position_id),
+        "Position should be liquidated after ADL + price reversal"
+    );
+}
+
+// ==========================================
+// 5. Status Edge Case (T-DOS-05)
 // ==========================================
 
 #[test]

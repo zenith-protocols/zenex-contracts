@@ -8,10 +8,6 @@ use soroban_sdk::testutils::{Address as _, Ledger as _};
 use soroban_sdk::token::StellarAssetClient;
 use soroban_sdk::{contract, contractimpl, contracttype, Address, Bytes, Env, Map, Vec};
 
-//************************************************
-//           Test Constants
-//************************************************
-
 /// Default BTC price raw (exponent -8), used in mock price verifier
 pub const BTC_PRICE_RAW: i128 = 10_000_000_000_000; // $100,000 with exponent -8
 
@@ -23,10 +19,6 @@ pub const BTC_FEED_ID: u32 = 1;
 
 /// Price scalar matching mock exponent -8 (10^8)
 pub const PRICE_SCALAR: i128 = 100_000_000;
-
-//************************************************
-//           Mock Price Verifier
-//************************************************
 
 /// Mock price-verifier that simulates verify functions.
 /// Stores a map of feed_id → normalized price (i128) in instance storage.
