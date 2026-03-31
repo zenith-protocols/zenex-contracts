@@ -9,7 +9,6 @@ crate-type = ["lib", "cdylib"]
 doctest = false
 
 [features]
-library = []
 testutils = [
     "soroban-sdk/testutils",
 ]

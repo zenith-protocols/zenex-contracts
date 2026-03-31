@@ -222,52 +222,54 @@ fn test_funding_rate_zero_with_balanced_sides() {
 
 #[test]
 fn test_borrowing_curve_at_utilization_points() {
-    // We test the borrowing curve at multiple utilization levels.
-    // Formula: r_base * (1 + r_var * util^5) * r_borrow
-    // From default_config(): r_base = 10_000_000_000_000 (SCALAR_18), r_var = SCALAR_7, r_borrow = SCALAR_7
-    // At util=0: rate = r_base * 1 * 1 = r_base
-    // At util=100%: rate = r_base * (1 + 1) * 1 = 2 * r_base
+    // Additive formula: rate = r_base + r_var × UtilVault^5 + r_var_market × UtilMarket^3
     //
-    // Strategy: Open positions to reach target utilization, then jump 1 hour.
-    // The borrowing index delta over 1 hour equals the hourly rate:
-    //   borrow_delta = borr_rate * seconds / ONE_HOUR = borr_rate * 1
-    // So l_borr_idx after 1 hour accrual = borr_rate (starting from 0).
+    // In a single-market scenario, total_notional == market_notional.
+    // UtilVault = notional / (max_util_global × vault / SCALAR_7)
+    // UtilMarket = notional / (max_util_market × vault / SCALAR_7)
+    //
+    // Strategy: Open positions to push notional, then jump 1 hour.
+    // The borrowing index delta over 1 hour equals the hourly rate.
 
     let config = default_config();
     let r_base = config.r_base;
-    let r_var = config.r_var;
+    let r_var = config.r_var; // SCALAR_18
     let e_standalone = soroban_sdk::Env::default();
     let market_config = default_market(&e_standalone);
-    let r_borrow = market_config.r_borrow;
+    let r_var_market = market_config.r_var_market; // SCALAR_18
+    let max_util_global = config.max_util;       // 10 * SCALAR_7
+    let max_util_market = market_config.max_util; // 5 * SCALAR_7
 
-    // Test at 4 utilization points: 25%, 50%, 75%, 90%
-    let util_points: [(i128, &str); 4] = [
-        (2_500_000, "25%"),  // 25% in SCALAR_7
-        (5_000_000, "50%"),  // 50%
-        (7_500_000, "75%"),  // 75%
-        (9_000_000, "90%"),  // 90%
+    // Vault has 100_000_000 * SCALAR_7 (100M tokens).
+    let vault_balance: i128 = 100_000_000 * SCALAR_7;
+    let cap_vault = vault_balance * max_util_global / SCALAR_7;    // max global capacity
+    let cap_market = vault_balance * max_util_market / SCALAR_7;   // max market capacity
+
+    // Test at 4 notional levels as fractions of cap_market (the smaller cap):
+    //   25%, 50%, 75%, 90% of cap_market
+    // Each gives different util_vault and util_market because caps differ.
+    let pct_points: [(i128, &str); 4] = [
+        (2_500_000, "25%"),
+        (5_000_000, "50%"),
+        (7_500_000, "75%"),
+        (9_000_000, "90%"),
     ];
 
-    for (util_s7, label) in util_points.iter() {
+    for (pct_s7, label) in pct_points.iter() {
         let fixture = setup_fixture();
         let user = Address::generate(&fixture.env);
         fixture.token.mint(&user, &(500_000_000 * SCALAR_7));
 
-        // Bump max_notional so large positions are allowed
         let mut trading_config = fixture.trading.get_config();
-        trading_config.max_notional = 1_000_000_000 * SCALAR_7; // 1B
+        trading_config.max_notional = 1_000_000_000 * SCALAR_7;
         fixture.trading.set_config(&trading_config);
 
-        // Vault has 100_000_000 * SCALAR_7 (100M). To reach target utilization:
-        // total_notional = util * vault_balance
-        let vault_balance: i128 = 100_000_000 * SCALAR_7;
-        let target_notional = (*util_s7 as i128)
-            .fixed_mul_floor(vault_balance, SCALAR_7)
+        // Target notional = pct of cap_market
+        let target_notional = (*pct_s7 as i128)
+            .fixed_mul_floor(cap_market, SCALAR_7)
             .unwrap();
 
-        // Open a big long position to reach target utilization
-        // Use generous collateral to avoid margin violations
-        let collateral = target_notional / 2; // ~2x leverage
+        let collateral = target_notional / 2;
         let _pos = fixture.open_and_fill(
             &user,
             AssetIndex::BTC as u32,
@@ -279,42 +281,42 @@ fn test_borrowing_curve_at_utilization_points() {
             0,
         );
 
-        // Read initial borrowing index (should be 0 after first accrual at open time)
         let market_before = fixture.trading.get_market_data(&(AssetIndex::BTC as u32));
         let borr_idx_before = market_before.l_borr_idx;
 
-        // Jump exactly 1 hour and apply_funding to trigger accrual
         fixture.jump(SECONDS_IN_HOUR);
         fixture.trading.apply_funding();
 
-        // Read market data: borrowing index delta = borr_rate * 1 hour / 1 hour = borr_rate
         let market_after = fixture.trading.get_market_data(&(AssetIndex::BTC as u32));
         let observed_borr_delta = market_after.l_borr_idx - borr_idx_before;
 
-        // Compute expected rate off-chain:
-        // util^5 in SCALAR_7 precision
-        let u2 = (*util_s7 as i128)
-            .fixed_mul_ceil(*util_s7 as i128, SCALAR_7)
-            .unwrap();
-        let u4 = u2.fixed_mul_ceil(u2, SCALAR_7).unwrap();
-        let u5 = u4.fixed_mul_ceil(*util_s7 as i128, SCALAR_7).unwrap();
+        // Compute expected rate off-chain (additive formula):
+        // util_vault = notional / cap_vault (SCALAR_7)
+        let util_vault = target_notional
+            .fixed_div_ceil(cap_vault, SCALAR_7)
+            .unwrap()
+            .min(SCALAR_7);
+        // util_market = notional / cap_market = pct_s7 (SCALAR_7)
+        let util_market = target_notional
+            .fixed_div_ceil(cap_market, SCALAR_7)
+            .unwrap()
+            .min(SCALAR_7);
 
-        // multiplier = 1 + r_var * util^5 (in SCALAR_7)
-        let util_factor = r_var.fixed_mul_ceil(u5, SCALAR_7).unwrap();
-        let multiplier = SCALAR_7 + util_factor;
+        // Vault: util_vault^5
+        let uv2 = util_vault.fixed_mul_ceil(util_vault, SCALAR_7).unwrap();
+        let uv4 = uv2.fixed_mul_ceil(uv2, SCALAR_7).unwrap();
+        let uv5 = uv4.fixed_mul_ceil(util_vault, SCALAR_7).unwrap();
 
-        // rate = r_base * multiplier * r_borrow (this is per-hour in SCALAR_18)
-        let global_rate = r_base
-            .fixed_mul_ceil(multiplier, SCALAR_7)
-            .unwrap();
-        let expected_borr_rate = global_rate
-            .fixed_mul_ceil(r_borrow, SCALAR_7)
-            .unwrap();
+        // Market: util_market^3
+        let um2 = util_market.fixed_mul_ceil(util_market, SCALAR_7).unwrap();
+        let um3 = um2.fixed_mul_ceil(util_market, SCALAR_7).unwrap();
 
-        // After 1 hour, the borrow delta should equal the hourly rate
-        // Allow 5% tolerance because vault_balance changes after opening (fees paid to
-        // vault/treasury on open), which changes the actual utilization slightly.
-        let tolerance_pct = 5; // 5%
+        let vault_term = r_var.fixed_mul_ceil(uv5, SCALAR_7).unwrap();
+        let market_term = r_var_market.fixed_mul_ceil(um3, SCALAR_7).unwrap();
+        let expected_borr_rate = r_base + vault_term + market_term;
+
+        // Allow 5% tolerance (vault_balance shifts slightly due to open fees)
+        let tolerance_pct = 5;
         let abs_diff = (observed_borr_delta - expected_borr_rate).abs();
         let max_diff = expected_borr_rate * tolerance_pct / 100;
         assert!(

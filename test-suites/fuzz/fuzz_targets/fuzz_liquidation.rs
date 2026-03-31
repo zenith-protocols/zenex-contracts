@@ -18,7 +18,6 @@ use soroban_sdk::xdr::ScErrorType;
 use soroban_sdk::{vec as svec, Address};
 use test_suites::setup::create_fixture_with_data;
 use test_suites::SCALAR_7;
-use trading::{ExecuteRequest, ExecuteRequestType};
 
 const BTC_BASE: i128 = 100_000_0000000;
 const ETH_BASE: i128 = 2_000_0000000;
@@ -142,13 +141,7 @@ fuzz_target!(|input: FuzzInput| {
         // Fill the pending limit order
         let fill_result = fixture.trading.try_execute(
             &user,
-            &svec![
-                &fixture.env,
-                ExecuteRequest {
-                    request_type: 0, // Fill
-                    position_id: pos_id,
-                },
-            ],
+            &svec![&fixture.env, pos_id],
         );
         verify_no_host_error(&fill_result, "FillPosition");
 
@@ -206,13 +199,7 @@ fuzz_target!(|input: FuzzInput| {
             if step.try_liquidate {
                 let liq_result = fixture.trading.try_execute(
                     &keeper,
-                    &svec![
-                        &fixture.env,
-                        ExecuteRequest {
-                            request_type: ExecuteRequestType::Liquidate as u32,
-                            position_id: pos_id,
-                        }
-                    ],
+                    &svec![&fixture.env, pos_id],
                 );
                 verify_no_host_error(&liq_result, "Liquidate");
 

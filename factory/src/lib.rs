@@ -11,10 +11,25 @@ use events::Deploy;
 pub use storage::FactoryInitMeta;
 
 use soroban_sdk::{
-    contract, contractclient, contractimpl,
-    Address, Bytes, BytesN, Env, IntoVal, String,
+    contract, contractclient, contractimpl, contracttype,
+    Address, BytesN, Env, String,
 };
-use trading::TradingConfig;
+
+/// Mirrors trading::TradingConfig. Same XDR encoding on-chain.
+/// r_var is the vault-level variable borrowing rate (SCALAR_18).
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct TradingConfig {
+    pub caller_rate:  i128,
+    pub min_notional: i128,
+    pub max_notional: i128,
+    pub fee_dom:      i128,
+    pub fee_non_dom:  i128,
+    pub max_util:     i128,
+    pub r_funding:    i128,
+    pub r_base:       i128,
+    pub r_var:        i128,
+}
 
 /// Factory contract for atomic deployment of trading pools (trading + vault).
 #[contract]
@@ -23,17 +38,6 @@ pub struct FactoryContract;
 #[contractclient(name = "FactoryClient")]
 pub trait Factory {
     /// Deploy a new trading pool: creates a strategy-vault and a trading contract atomically.
-    ///
-    /// WHY: Deterministic address precomputation resolves the circular dependency:
-    /// the vault's `strategy` must point to the trading contract, and the trading
-    /// contract's `vault` must point to the vault. By using `deployed_address()`,
-    /// both addresses are known before either contract is deployed.
-    ///
-    /// # Deployment order
-    /// 1. Compute deterministic salts from (admin, salt) for front-run protection
-    /// 2. Precompute both addresses via `deployer.deployed_address()`
-    /// 3. Deploy vault first (its constructor does NOT call trading)
-    /// 4. Deploy trading second (it can call vault if needed during construction)
     ///
     /// # Parameters
     /// - `admin` - Owner of the new trading contract (must `require_auth`)
@@ -93,11 +97,11 @@ impl Factory for FactoryContract {
         storage::extend_instance(&e);
         let init_meta = storage::get_init_meta(&e);
 
-        // Compute deterministic salts with front-run protection
-        let (trading_salt, vault_salt) = compute_salts(&e, &admin, &salt);
+        let mut vault_salt_bytes = salt.to_array();
+        vault_salt_bytes[31] ^= 1;
+        let vault_salt: BytesN<32> = BytesN::from_array(&e, &vault_salt_bytes);
 
-        // Precompute both addresses before deploying either contract
-        let trading_deployer = e.deployer().with_current_contract(trading_salt);
+        let trading_deployer = e.deployer().with_current_contract(salt);
         let vault_deployer = e.deployer().with_current_contract(vault_salt);
         let trading_address = trading_deployer.deployed_address();
         let vault_address = vault_deployer.deployed_address();
@@ -114,7 +118,6 @@ impl Factory for FactoryContract {
             (admin.clone(), token, vault_address.clone(), price_verifier, init_meta.treasury, config),
         );
 
-        // Record deployments
         storage::set_deployed(&e, &trading_address);
 
         Deploy {
@@ -128,28 +131,4 @@ impl Factory for FactoryContract {
         storage::extend_instance(&e);
         storage::is_deployed(&e, &trading)
     }
-}
-
-/// Compute deterministic, front-run-resistant salts for vault and trading deployment.
-///
-/// WHY: The salt is derived from `keccak256(user_salt || admin_address || discriminator)`.
-/// Including the admin address prevents front-running: an attacker cannot use the same
-/// salt to deploy to the same address because their admin address differs.
-/// The trailing byte (0 for trading, 1 for vault) ensures the two contracts get
-/// different addresses even with the same admin and user salt.
-fn compute_salts(e: &Env, admin: &Address, salt: &BytesN<32>) -> (BytesN<32>, BytesN<32>) {
-    let mut admin_bytes: [u8; 56] = [0; 56];
-    admin.to_string().copy_into_slice(&mut admin_bytes);
-
-    let mut trading_salt_bytes: Bytes = salt.into_val(e);
-    trading_salt_bytes.extend_from_array(&admin_bytes);
-    trading_salt_bytes.push_back(0u8);
-    let trading_salt = e.crypto().keccak256(&trading_salt_bytes);
-
-    let mut vault_salt_bytes: Bytes = salt.into_val(e);
-    vault_salt_bytes.extend_from_array(&admin_bytes);
-    vault_salt_bytes.push_back(1u8);
-    let vault_salt = e.crypto().keccak256(&vault_salt_bytes);
-
-    (trading_salt.into(), vault_salt.into())
 }

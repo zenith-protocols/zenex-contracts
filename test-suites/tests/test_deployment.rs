@@ -13,6 +13,7 @@ use test_suites::pyth_helper;
 use test_suites::test_fixture::TestFixture;
 use trading::testutils::default_config;
 use trading::TradingClient;
+use test_suites::to_factory_config;
 use treasury::TreasuryContract;
 use factory::{FactoryClient, FactoryContract, FactoryInitMeta};
 
@@ -103,7 +104,7 @@ fn test_factory_deploy_deterministic_address_prediction() {
     let factory_id = e.register(FactoryContract {}, (init_meta,));
     let factory_client = FactoryClient::new(&e, &factory_id);
 
-    let config = default_config();
+    let config = to_factory_config(&default_config());
 
     // Deploy with salt1
     let salt1 = BytesN::<32>::random(&e);
@@ -172,7 +173,7 @@ fn test_factory_deploy_vault_decimals_offset() {
     let factory_id = e.register(FactoryContract {}, (init_meta,));
     let factory_client = FactoryClient::new(&e, &factory_id);
 
-    let config = default_config();
+    let config = to_factory_config(&default_config());
 
     // Deploy with decimals_offset=2 (inflation attack protection)
     let salt = BytesN::<32>::random(&e);

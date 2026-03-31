@@ -1,10 +1,10 @@
 use crate::constants::{
-    MAX_CALLER_RATE, MAX_FEE_RATE, MAX_LIQ_FEE, MAX_MARGIN, MAX_R_BORROW,
+    MAX_CALLER_RATE, MAX_FEE_RATE, MAX_LIQ_FEE, MAX_MARGIN, MAX_R_VAR_MARKET,
     MAX_R_VAR, MAX_RATE_HOURLY, MAX_UTIL, MIN_IMPACT,
 };
 use crate::errors::TradingError;
 use crate::storage;
-use crate::types::{ContractStatus, MarketConfig, TradingConfig};
+use crate::types::{ContractStatus, MarketConfig, MarketStatus, TradingConfig};
 use soroban_sdk::{panic_with_error, Env};
 
 /// Guard: contract must be `Active` to open new positions.
@@ -75,9 +75,7 @@ pub fn require_valid_config(e: &Env, config: &TradingConfig) {
         panic_with_error!(e, TradingError::InvalidConfig);
     }
 
-    // WHY: fee_dom >= fee_non_dom is an invariant that the open/close fee logic
-    // depends on. The dominant side (which worsens imbalance) pays the higher fee.
-    // Violating this would let dominant-side opens pay less than non-dominant.
+    // fee_dom >= fee_non_dom dominant side should pay more.
     if config.fee_dom < config.fee_non_dom {
         panic_with_error!(e, TradingError::InvalidConfig);
     }
@@ -89,25 +87,28 @@ pub fn require_valid_config(e: &Env, config: &TradingConfig) {
 /// - `TradingError::NegativeValueNotAllowed` (735) if margin or liq_fee <= 0
 /// - `TradingError::InvalidConfig` (702) if bounds exceeded or margin <= liq_fee
 pub fn require_valid_market_config(e: &Env, config: &MarketConfig) {
-    // WHY: margin > 0 required because leverage = 1/margin; margin <= 0 is undefined.
+    // Validate status is a recognized MarketStatus value (panics with InvalidStatus if not)
+    MarketStatus::from_u32(e, config.status);
+
+    // margin > 0 required because leverage = 1/margin; margin <= 0 is undefined.
     // liq_fee > 0 required because it doubles as the liquidation threshold.
     if config.margin <= 0
         || config.liq_fee <= 0
-        || config.r_borrow < 0
+        || config.r_var_market < 0
     {
         panic_with_error!(e, TradingError::NegativeValueNotAllowed);
     }
 
     if config.margin > MAX_MARGIN
         || config.liq_fee > MAX_LIQ_FEE
-        || config.r_borrow > MAX_R_BORROW
+        || config.r_var_market > MAX_R_VAR_MARKET
         || config.impact < MIN_IMPACT
         || config.max_util > MAX_UTIL
     {
         panic_with_error!(e, TradingError::InvalidConfig);
     }
 
-    // WHY: margin must strictly exceed liq_fee. If margin <= liq_fee, a position
+    // margin must strictly exceed liq_fee. If margin <= liq_fee, a position
     // opened at max leverage would be immediately liquidatable (equity at margin
     // equals the liquidation threshold). The gap between them is the safety buffer.
     if config.margin <= config.liq_fee {

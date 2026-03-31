@@ -2,150 +2,218 @@ use crate::constants::SCALAR_7;
 use crate::errors::TradingError;
 use crate::events::{FillLimit, Liquidation, StopLoss, TakeProfit};
 use crate::storage;
-use crate::trading::market::Market;
+use crate::trading::context::Context;
 use crate::trading::position::{Position, Settlement};
 use crate::dependencies::PriceData;
-use crate::types::{ExecuteRequest, ExecuteRequestType};
 use crate::validation::require_can_manage;
 use soroban_fixed_point_math::SorobanFixedPoint;
 use soroban_sdk::token::TokenClient;
 use soroban_sdk::{panic_with_error, Address, Env, Map, Vec};
 
-/// Accumulator for token transfers batched across multiple keeper actions.
-///
-/// WHY: Batching transfers avoids redundant token operations when multiple
-/// positions settle in a single `execute` call. Positive values = contract owes
-/// the address; negative values = the address owes the contract (vault withdrawals).
-pub(crate) struct Transfers {
-    pub map: Map<Address, i128>,
+/// Accumulate a transfer amount for an address (batches multiple payouts).
+fn add_transfer(map: &mut Map<Address, i128>, address: &Address, amount: i128) {
+    map.set(
+        address.clone(),
+        amount + map.get(address.clone()).unwrap_or(0),
+    );
 }
 
-impl Transfers {
-    pub fn new(e: &Env) -> Self {
-        Transfers { map: Map::new(e) }
-    }
-
-    /// Add (or accumulate) a transfer amount for an address.
-    pub fn add(&mut self, address: &Address, amount: i128) {
-        self.map.set(
-            address.clone(),
-            amount + self.map.get(address.clone()).unwrap_or(0),
-        );
-    }
-}
-
-/// Execute a batch of keeper triggers (Fill, StopLoss, TakeProfit, Liquidate) for a single market.
+/// Execute a batch of keeper triggers for a single market.
 ///
-/// WHY: Single-tx batching for multiple keeper actions. The keeper submits all
-/// pending triggers for one market in a single call, minimizing transaction fees
-/// and ensuring atomic execution (all succeed or all fail).
+/// The contract auto-detects the action for each position:
+/// - **Not filled** → fill limit order (if price crossed entry)
+/// - **Filled** → priority order: liquidate > stop-loss > take-profit
 ///
-/// # Transfer order (CEI-like)
-/// 1. Process all requests, accumulating transfers
+/// # Transfer order
+/// 1. Process all positions, accumulating transfers
 /// 2. Vault pays out (strategy_withdraw for winning positions)
 /// 3. Contract distributes to users/treasury/caller
 /// 4. Contract pays vault (collateral from losing positions)
-///
-/// This ordering ensures the contract has sufficient balance for each step.
 pub fn execute_trigger(
     e: &Env,
     caller: &Address,
-    requests: Vec<ExecuteRequest>,
+    position_ids: Vec<u32>,
     price_data: &PriceData,
 ) {
     require_can_manage(e);
 
-    let mut market = Market::load(e, price_data);
-    let transfers = process_execute_requests(e, &mut market, caller, requests);
+    let mut ctx = Context::load(e, price_data);
+    let transfers = process_positions(e, &mut ctx, caller, position_ids);
 
-    let token_client = TokenClient::new(e, &market.token);
-    let vault_client = crate::dependencies::VaultClient::new(e, &market.vault);
+    let token_client = TokenClient::new(e, &ctx.token);
+    let vault_client = crate::dependencies::VaultClient::new(e, &ctx.vault);
 
     // STEP 1: Vault pays to contract (if needed)
-    let vault_transfer = transfers.map.get(market.vault.clone()).unwrap_or(0);
+    let vault_transfer = transfers.get(ctx.vault.clone()).unwrap_or(0);
     if vault_transfer < 0 {
         vault_client.strategy_withdraw(&e.current_contract_address(), &vault_transfer.abs());
     }
 
     // STEP 2: Handle all other transfers
-    for (address, amount) in transfers.map.iter() {
-        if address != market.vault && amount > 0 {
+    for (address, amount) in transfers.iter() {
+        if address != ctx.vault && amount > 0 {
             token_client.transfer(&e.current_contract_address(), &address, &amount);
         }
     }
 
     // STEP 3: Contract pays to vault if needed
     if vault_transfer > 0 {
-        token_client.transfer(&e.current_contract_address(), &market.vault, &vault_transfer);
+        token_client.transfer(&e.current_contract_address(), &ctx.vault, &vault_transfer);
     }
 
-    market.store(e);
+    ctx.store(e);
 }
 
-fn process_execute_requests(
+fn process_positions(
     e: &Env,
-    market: &mut Market,
+    ctx: &mut Context,
     caller: &Address,
-    requests: Vec<ExecuteRequest>,
-) -> Transfers {
-    let mut t = Transfers::new(e);
+    position_ids: Vec<u32>,
+) -> Map<Address, i128> {
+    let mut t: Map<Address, i128> = Map::new(e);
 
-    for request in requests.iter() {
-        let request_type = ExecuteRequestType::from_u32(e, request.request_type);
-        let mut position = storage::get_position(e, request.position_id);
+    for position_id in position_ids.iter() {
+        let mut position = storage::get_position(e, position_id);
 
-        if position.feed != market.feed_id {
+        if position.feed != ctx.feed_id {
             panic_with_error!(e, TradingError::InvalidPrice);
         }
 
-        let position_id = request.position_id;
-        match request_type {
-            ExecuteRequestType::Fill => apply_fill(e, &mut t, market, caller, &mut position, position_id),
-            ExecuteRequestType::StopLoss => apply_stop_loss(e, &mut t, market, caller, &mut position, position_id),
-            ExecuteRequestType::TakeProfit => apply_take_profit(e, &mut t, market, caller, &mut position, position_id),
-            ExecuteRequestType::Liquidate => apply_liquidation(e, &mut t, market, caller, &mut position, position_id),
-        };
+        if !position.filled {
+            apply_fill(e, &mut t, ctx, caller, &mut position, position_id);
+        } else {
+            apply_close(e, &mut t, ctx, caller, &mut position, position_id);
+        }
     }
 
     t
 }
 
-/// Handle position close logic shared by stop loss and take profit.
-fn handle_close(
+/// Close a filled position, auto-detecting the action:
+/// liquidate (equity < threshold) > stop-loss > take-profit.
+///
+/// Liquidation bypasses MIN_OPEN_TIME (only requires fresh price).
+/// SL/TP require MIN_OPEN_TIME via require_closable.
+fn apply_close(
     e: &Env,
-    t: &mut Transfers,
-    market: &mut Market,
+    t: &mut Map<Address, i128>,
+    ctx: &mut Context,
     caller: &Address,
     position: &mut Position,
     position_id: u32,
-) -> Settlement {
-    if !position.filled {
-        panic_with_error!(e, TradingError::ActionNotAllowedForStatus);
-    }
-    position.require_closable(e);
-
+) {
     let col = position.col;
-    let s = market.close(e, position, position_id);
+    let s = ctx.close(e, position, position_id);
+    let liq_threshold = position.notional.fixed_mul_floor(e, &ctx.config.liq_fee, &SCALAR_7);
+    let equity = s.equity(col);
 
-    let user_payout = s.equity(col).max(0);
-    let treasury_fee = market.treasury_fee(e, s.protocol_fee());
-    let caller_fee = s.trading_fee()
-        .fixed_mul_floor(e, &market.trading_config.caller_rate, &SCALAR_7);
-    let vault_transfer = col - user_payout - treasury_fee - caller_fee;
-
-    if user_payout > 0 { t.add(&position.user, user_payout); }
-    if vault_transfer != 0 { t.add(&market.vault, vault_transfer); }
-    if treasury_fee > 0 { t.add(&market.treasury, treasury_fee); }
-    if caller_fee > 0 { t.add(caller, caller_fee); }
-
-    s
+    // Priority 1: Liquidation if under collateralized, regardless of open time or SL/TP
+    if equity < liq_threshold {
+        position.require_liquidatable(e, ctx.publish_time);
+        settle_liquidation(e, t, ctx, caller, position, position_id, col, &s, equity);
+    }
+    // Priority 2: Stop-loss if trigger price hit, requires open time
+    else if position.check_stop_loss(ctx.price) {
+        position.require_closable(e);
+        settle_close(e, t, ctx, caller, position, position_id, col, &s);
+        StopLoss {
+            feed_id: position.feed,
+            user: position.user.clone(),
+            position_id,
+            price: ctx.price,
+            pnl: s.net_pnl(col),
+            base_fee: s.base_fee,
+            impact_fee: s.impact_fee,
+            funding: s.funding,
+            borrowing_fee: s.borrowing_fee,
+        }
+        .publish(e);
+    }
+    // Priority 3: Take-profit if trigger price hit, requires open time
+    else if position.check_take_profit(ctx.price) {
+        position.require_closable(e);
+        settle_close(e, t, ctx, caller, position, position_id, col, &s);
+        TakeProfit {
+            feed_id: position.feed,
+            user: position.user.clone(),
+            position_id,
+            price: ctx.price,
+            pnl: s.net_pnl(col),
+            base_fee: s.base_fee,
+            impact_fee: s.impact_fee,
+            funding: s.funding,
+            borrowing_fee: s.borrowing_fee,
+        }
+        .publish(e);
+    } else {
+        panic_with_error!(e, TradingError::NotActionable);
+    }
 }
 
-/// Fill a pending limit order
+/// Distribute transfers for a normal close (SL/TP).
+fn settle_close(
+    _e: &Env,
+    t: &mut Map<Address, i128>,
+    ctx: &Context,
+    caller: &Address,
+    position: &Position,
+    _position_id: u32,
+    col: i128,
+    s: &Settlement,
+) {
+    let user_payout = s.equity(col).max(0);
+    let treasury_fee = ctx.treasury_fee(_e, s.protocol_fee());
+    let caller_fee = s.trading_fee()
+        .fixed_mul_floor(_e, &ctx.trading_config.caller_rate, &SCALAR_7);
+    let vault_transfer = col - user_payout - treasury_fee - caller_fee;
+
+    if user_payout > 0 { add_transfer(t, &position.user, user_payout); }
+    if vault_transfer != 0 { add_transfer(t, &ctx.vault, vault_transfer); }
+    if treasury_fee > 0 { add_transfer(t, &ctx.treasury, treasury_fee); }
+    if caller_fee > 0 { add_transfer(t, caller, caller_fee); }
+}
+
+/// Distribute transfers for a liquidation.
+fn settle_liquidation(
+    e: &Env,
+    t: &mut Map<Address, i128>,
+    ctx: &Context,
+    caller: &Address,
+    position: &Position,
+    position_id: u32,
+    col: i128,
+    s: &Settlement,
+    equity: i128,
+) {
+    let liq_fee = equity.max(0);
+    let revenue = (s.protocol_fee() + liq_fee).min(col);
+    let treasury_fee = ctx.treasury_fee(e, revenue);
+    let caller_fee = (s.trading_fee() + liq_fee).min(col)
+        .fixed_mul_floor(e, &ctx.trading_config.caller_rate, &SCALAR_7);
+
+    add_transfer(t, &ctx.vault, col - treasury_fee - caller_fee);
+    if treasury_fee > 0 { add_transfer(t, &ctx.treasury, treasury_fee); }
+    if caller_fee > 0 { add_transfer(t, caller, caller_fee); }
+
+    Liquidation {
+        feed_id: position.feed,
+        user: position.user.clone(),
+        position_id,
+        price: ctx.price,
+        base_fee: s.base_fee,
+        impact_fee: s.impact_fee,
+        funding: s.funding,
+        borrowing_fee: s.borrowing_fee,
+        liq_fee,
+    }
+    .publish(e);
+}
+
+/// Fill a pending limit order.
 fn apply_fill(
     e: &Env,
-    t: &mut Transfers,
-    market: &mut Market,
+    t: &mut Map<Address, i128>,
+    ctx: &mut Context,
     caller: &Address,
     position: &mut Position,
     position_id: u32,
@@ -155,26 +223,26 @@ fn apply_fill(
     }
 
     let can_fill = if position.long {
-        market.price <= position.entry_price
+        ctx.price <= position.entry_price
     } else {
-        market.price >= position.entry_price
+        ctx.price >= position.entry_price
     };
     if !can_fill {
-        panic_with_error!(e, TradingError::LimitOrderNotFillable);
+        panic_with_error!(e, TradingError::NotActionable);
     }
 
-    position.entry_price = market.price;
+    position.entry_price = ctx.price;
 
-    let (base_fee, impact_fee) = market.open(e, position, position_id);
+    let (base_fee, impact_fee) = ctx.open(e, position, position_id);
     let total_fee = base_fee + impact_fee;
-    let treasury_fee = market.treasury_fee(e, total_fee);
+    let treasury_fee = ctx.treasury_fee(e, total_fee);
     let caller_fee = total_fee
-        .fixed_mul_floor(e, &market.trading_config.caller_rate, &SCALAR_7);
+        .fixed_mul_floor(e, &ctx.trading_config.caller_rate, &SCALAR_7);
     let vault_fee = total_fee - treasury_fee - caller_fee;
 
-    t.add(&market.vault, vault_fee);
-    if treasury_fee > 0 { t.add(&market.treasury, treasury_fee); }
-    if caller_fee > 0 { t.add(caller, caller_fee); }
+    add_transfer(t, &ctx.vault, vault_fee);
+    if treasury_fee > 0 { add_transfer(t, &ctx.treasury, treasury_fee); }
+    if caller_fee > 0 { add_transfer(t, caller, caller_fee); }
 
     FillLimit {
         feed_id: position.feed,
@@ -182,109 +250,6 @@ fn apply_fill(
         position_id,
         base_fee,
         impact_fee,
-    }
-    .publish(e);
-}
-
-/// Trigger stop loss on a position
-fn apply_stop_loss(
-    e: &Env,
-    t: &mut Transfers,
-    market: &mut Market,
-    caller: &Address,
-    position: &mut Position,
-    position_id: u32,
-) {
-    if !position.check_stop_loss(market.price) {
-        panic_with_error!(e, TradingError::StopLossNotTriggered);
-    }
-
-    let s = handle_close(e, t, market, caller, position, position_id);
-
-    StopLoss {
-        feed_id: position.feed,
-        user: position.user.clone(),
-        position_id,
-        price: market.price,
-        pnl: s.net_pnl(position.col),
-        base_fee: s.base_fee,
-        impact_fee: s.impact_fee,
-        funding: s.funding,
-        borrowing_fee: s.borrowing_fee,
-    }
-    .publish(e);
-}
-
-/// Trigger take profit on a position
-fn apply_take_profit(
-    e: &Env,
-    t: &mut Transfers,
-    market: &mut Market,
-    caller: &Address,
-    position: &mut Position,
-    position_id: u32,
-) {
-    if !position.check_take_profit(market.price) {
-        panic_with_error!(e, TradingError::TakeProfitNotTriggered);
-    }
-
-    let s = handle_close(e, t, market, caller, position, position_id);
-
-    TakeProfit {
-        feed_id: position.feed,
-        user: position.user.clone(),
-        position_id,
-        price: market.price,
-        pnl: s.net_pnl(position.col),
-        base_fee: s.base_fee,
-        impact_fee: s.impact_fee,
-        funding: s.funding,
-        borrowing_fee: s.borrowing_fee,
-    }
-    .publish(e);
-}
-
-/// Liquidate an underwater position
-fn apply_liquidation(
-    e: &Env,
-    t: &mut Transfers,
-    market: &mut Market,
-    caller: &Address,
-    position: &mut Position,
-    position_id: u32,
-) {
-    position.require_liquidatable(e, market.publish_time);
-
-    let col = position.col;
-    let s = market.close(e, position, position_id);
-    let liq_threshold = position.notional.fixed_mul_floor(e, &market.config.liq_fee, &SCALAR_7);
-    let equity = s.equity(col);
-
-    if equity >= liq_threshold {
-        panic_with_error!(e, TradingError::PositionNotLiquidatable);
-    }
-
-    // User gets nothing — liq bonus is whatever equity remains
-    let liq_fee = equity.max(0);
-    let revenue = (s.protocol_fee() + liq_fee).min(col);
-    let treasury_fee = market.treasury_fee(e, revenue);
-    let caller_fee = (s.trading_fee() + liq_fee).min(col)
-        .fixed_mul_floor(e, &market.trading_config.caller_rate, &SCALAR_7);
-
-    t.add(&market.vault, col - treasury_fee - caller_fee);
-    if treasury_fee > 0 { t.add(&market.treasury, treasury_fee); }
-    if caller_fee > 0 { t.add(caller, caller_fee); }
-
-    Liquidation {
-        feed_id: position.feed,
-        user: position.user.clone(),
-        position_id,
-        price: market.price,
-        base_fee: s.base_fee,
-        impact_fee: s.impact_fee,
-        funding: s.funding,
-        borrowing_fee: s.borrowing_fee,
-        liq_fee,
     }
     .publish(e);
 }
@@ -297,7 +262,6 @@ mod tests {
         setup_contract, setup_env, BTC_FEED_ID, BTC_PRICE, PRICE_SCALAR,
     };
     use crate::dependencies::PriceData;
-    use crate::types::{ExecuteRequest, ExecuteRequestType};
     use soroban_sdk::testutils::Address as _;
     use soroban_sdk::{vec, Address};
 
@@ -310,7 +274,6 @@ mod tests {
         }
     }
 
-    /// Helper: create a pending long position and return its id
     fn create_pending_long(
         e: &soroban_sdk::Env,
         contract: &Address,
@@ -353,14 +316,8 @@ mod tests {
 
         let pd = btc_price_data(&e, BTC_PRICE);
         e.as_contract(&contract, || {
-            let requests = vec![
-                &e,
-                ExecuteRequest {
-                    request_type: ExecuteRequestType::Fill as u32,
-                    position_id: id,
-                },
-            ];
-            super::execute_trigger(&e, &caller, requests, &pd);
+            let ids = vec![&e, id];
+            super::execute_trigger(&e, &caller, ids, &pd);
 
             let pos = storage::get_position(&e, id);
             assert!(pos.filled);
@@ -384,14 +341,8 @@ mod tests {
 
         let pd = btc_price_data(&e, BTC_PRICE);
         e.as_contract(&contract, || {
-            let requests = vec![
-                &e,
-                ExecuteRequest {
-                    request_type: ExecuteRequestType::Fill as u32,
-                    position_id: id,
-                },
-            ];
-            super::execute_trigger(&e, &caller, requests, &pd);
+            let ids = vec![&e, id];
+            super::execute_trigger(&e, &caller, ids, &pd);
         });
     }
 
@@ -407,14 +358,8 @@ mod tests {
 
         let pd = btc_price_data(&e, BTC_PRICE);
         e.as_contract(&contract, || {
-            let requests = vec![
-                &e,
-                ExecuteRequest {
-                    request_type: ExecuteRequestType::Fill as u32,
-                    position_id: id,
-                },
-            ];
-            super::execute_trigger(&e, &caller, requests, &pd);
+            let ids = vec![&e, id];
+            super::execute_trigger(&e, &caller, ids, &pd);
 
             let pos = storage::get_position(&e, id);
             assert!(pos.filled);
@@ -433,29 +378,19 @@ mod tests {
 
         let pd = btc_price_data(&e, BTC_PRICE);
         e.as_contract(&contract, || {
-            let requests = vec![
-                &e,
-                ExecuteRequest {
-                    request_type: ExecuteRequestType::Fill as u32,
-                    position_id: id,
-                },
-            ];
-            super::execute_trigger(&e, &caller, requests, &pd);
+            // Fill first
+            let ids = vec![&e, id];
+            super::execute_trigger(&e, &caller, ids, &pd);
 
+            // Price crashes — contract auto-detects liquidation
             let crash_pd = btc_price_data(&e, 9_800_000_000_000_i128);
-            let requests = vec![
-                &e,
-                ExecuteRequest {
-                    request_type: ExecuteRequestType::Liquidate as u32,
-                    position_id: id,
-                },
-            ];
-            super::execute_trigger(&e, &caller, requests, &crash_pd);
+            let ids = vec![&e, id];
+            super::execute_trigger(&e, &caller, ids, &crash_pd);
         });
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #746)")]
+    #[should_panic(expected = "Error(Contract, #747)")]
     fn test_liquidation_healthy_position() {
         let e = setup_env();
         let (contract, token_client) = setup_contract(&e);
@@ -467,23 +402,12 @@ mod tests {
 
         let pd = btc_price_data(&e, BTC_PRICE);
         e.as_contract(&contract, || {
-            let requests = vec![
-                &e,
-                ExecuteRequest {
-                    request_type: ExecuteRequestType::Fill as u32,
-                    position_id: id,
-                },
-            ];
-            super::execute_trigger(&e, &caller, requests, &pd);
+            let ids = vec![&e, id];
+            super::execute_trigger(&e, &caller, ids, &pd);
 
-            let requests = vec![
-                &e,
-                ExecuteRequest {
-                    request_type: ExecuteRequestType::Liquidate as u32,
-                    position_id: id,
-                },
-            ];
-            super::execute_trigger(&e, &caller, requests, &pd);
+            // Price unchanged, no SL/TP set — no action should be possible
+            let ids = vec![&e, id];
+            super::execute_trigger(&e, &caller, ids, &pd);
         });
     }
 
@@ -510,26 +434,14 @@ mod tests {
 
         let pd = btc_price_data(&e, BTC_PRICE);
         e.as_contract(&contract, || {
-            let requests = vec![
-                &e,
-                ExecuteRequest {
-                    request_type: ExecuteRequestType::Fill as u32,
-                    position_id: id,
-                },
-            ];
-            super::execute_trigger(&e, &caller, requests, &pd);
+            let ids = vec![&e, id];
+            super::execute_trigger(&e, &caller, ids, &pd);
 
-            jump(&e, 1000 + 31); // advance past MIN_OPEN_TIME
+            jump(&e, 1000 + 31);
 
             let sl_pd = btc_price_data(&e, 9_400_000_000_000_i128);
-            let requests = vec![
-                &e,
-                ExecuteRequest {
-                    request_type: ExecuteRequestType::StopLoss as u32,
-                    position_id: id,
-                },
-            ];
-            super::execute_trigger(&e, &caller, requests, &sl_pd);
+            let ids = vec![&e, id];
+            super::execute_trigger(&e, &caller, ids, &sl_pd);
         });
     }
 
@@ -556,26 +468,14 @@ mod tests {
 
         let pd = btc_price_data(&e, BTC_PRICE);
         e.as_contract(&contract, || {
-            let requests = vec![
-                &e,
-                ExecuteRequest {
-                    request_type: ExecuteRequestType::Fill as u32,
-                    position_id: id,
-                },
-            ];
-            super::execute_trigger(&e, &caller, requests, &pd);
+            let ids = vec![&e, id];
+            super::execute_trigger(&e, &caller, ids, &pd);
 
-            jump(&e, 1000 + 31); // advance past MIN_OPEN_TIME
+            jump(&e, 1000 + 31);
 
             let tp_pd = btc_price_data(&e, 11_500_000_000_000_i128);
-            let requests = vec![
-                &e,
-                ExecuteRequest {
-                    request_type: ExecuteRequestType::TakeProfit as u32,
-                    position_id: id,
-                },
-            ];
-            super::execute_trigger(&e, &caller, requests, &tp_pd);
+            let ids = vec![&e, id];
+            super::execute_trigger(&e, &caller, ids, &tp_pd);
         });
     }
 
@@ -592,23 +492,13 @@ mod tests {
 
         let pd = btc_price_data(&e, BTC_PRICE);
         e.as_contract(&contract, || {
-            let requests = vec![
-                &e,
-                ExecuteRequest {
-                    request_type: ExecuteRequestType::Fill as u32,
-                    position_id: id1,
-                },
-                ExecuteRequest {
-                    request_type: ExecuteRequestType::Fill as u32,
-                    position_id: id2,
-                },
-            ];
-            super::execute_trigger(&e, &caller, requests, &pd);
+            let ids = vec![&e, id1, id2];
+            super::execute_trigger(&e, &caller, ids, &pd);
         });
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #733)")]
+    #[should_panic(expected = "Error(Contract, #747)")]
     fn test_fill_already_filled_panics() {
         let e = setup_env();
         let (contract, token_client) = setup_contract(&e);
@@ -620,23 +510,12 @@ mod tests {
 
         let pd = btc_price_data(&e, BTC_PRICE);
         e.as_contract(&contract, || {
-            let requests = vec![
-                &e,
-                ExecuteRequest {
-                    request_type: ExecuteRequestType::Fill as u32,
-                    position_id: id,
-                },
-            ];
-            super::execute_trigger(&e, &caller, requests, &pd);
+            let ids = vec![&e, id];
+            super::execute_trigger(&e, &caller, ids, &pd);
 
-            let requests = vec![
-                &e,
-                ExecuteRequest {
-                    request_type: ExecuteRequestType::Fill as u32,
-                    position_id: id,
-                },
-            ];
-            super::execute_trigger(&e, &caller, requests, &pd);
+            // Already filled, no SL/TP, not liquidatable — should panic
+            let ids = vec![&e, id];
+            super::execute_trigger(&e, &caller, ids, &pd);
         });
     }
 }

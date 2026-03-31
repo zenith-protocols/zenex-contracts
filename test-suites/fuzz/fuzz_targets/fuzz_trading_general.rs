@@ -158,13 +158,7 @@ fuzz_target!(|input: FuzzInput| {
                     // Fill the pending limit order immediately
                     let fill_result = fixture.trading.try_execute(
                         user,
-                        &svec![
-                            &fixture.env,
-                            trading::ExecuteRequest {
-                                request_type: 0, // Fill
-                                position_id: pos_id,
-                            },
-                        ],
+                        &svec![&fixture.env, pos_id],
                     );
                     verify_no_host_error(&fill_result, "FillPosition");
 

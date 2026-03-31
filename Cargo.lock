@@ -598,7 +598,6 @@ name = "factory"
 version = "0.0.0"
 dependencies = [
  "soroban-sdk",
- "trading",
 ]
 
 [[package]]
@@ -1814,7 +1813,6 @@ dependencies = [
 name = "treasury"
 version = "0.0.0"
 dependencies = [
- "soroban-fixed-point-math",
  "soroban-sdk",
  "stellar-access",
  "stellar-macros",

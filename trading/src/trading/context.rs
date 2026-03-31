@@ -1,0 +1,185 @@
+use crate::constants::SCALAR_7;
+use crate::dependencies::{VaultClient, TreasuryClient};
+use crate::errors::TradingError;
+use crate::storage;
+use crate::trading::position::{Position, Settlement};
+use crate::types::{MarketConfig, MarketData, TradingConfig};
+use crate::dependencies::{PriceData, scalar_from_exponent};
+use soroban_fixed_point_math::SorobanFixedPoint;
+use soroban_sdk::{panic_with_error, Address, Env};
+
+/// Full context needed for any market operation.
+///
+/// Bundles per-market state (config, data, price) with global state (trading config,
+/// vault balance, token/vault/treasury addresses). Loaded once at the start of an
+/// operation via [`Context::load`], mutated in-place, then persisted via [`Context::store`].
+///
+/// auto-accrue on load every Context::load call accrues borrowing and funding
+/// indices to the current timestamp, so all subsequent operations see up-to-date
+/// cumulative rates without the caller needing to remember to accrue first.
+pub struct Context {
+    // Per-market
+    pub feed_id:      u32,
+    pub price:        i128,
+    pub price_scalar: i128,
+    pub publish_time: u64,
+    pub config:       MarketConfig,
+    pub data:         MarketData,
+    // Global
+    pub trading_config: TradingConfig,
+    pub vault:          Address,
+    pub vault_balance:  i128,
+    pub token:          Address,
+    pub treasury:       Address,
+    pub total_notional: i128,
+}
+
+impl Context {
+    /// Load full market context from storage and accrue indices to current timestamp.
+    ///
+    /// # Parameters
+    /// - `price_data` - Verified price data from the oracle (contains feed_id, price, exponent)
+    ///
+    /// # Side effects
+    /// - Calls `MarketData::accrue()` to advance borrowing and funding indices
+    /// - Computes `price_scalar = 10^(-exponent)` from Pyth exponent
+    ///
+    /// WHY: price_scalar is computed per-call rather than stored because the exponent
+    /// comes from the oracle and could theoretically change between feed updates.
+    /// Computing it fresh avoids stale scalar bugs.
+    pub fn load(e: &Env, price_data: &PriceData) -> Self {
+        let feed_id = price_data.feed_id;
+        let trading_config = storage::get_config(e);
+        let vault = storage::get_vault(e);
+        let vault_balance = VaultClient::new(e, &vault).total_assets();
+        let token = storage::get_token(e);
+        let treasury = storage::get_treasury(e);
+        let total_notional = storage::get_total_notional(e);
+        let mut data = storage::get_market_data(e, feed_id);
+        let config = storage::get_market_config(e, feed_id);
+        data.accrue(
+            e,
+            trading_config.r_base,
+            trading_config.r_var,
+            config.r_var_market,
+            vault_balance,
+            total_notional,
+            trading_config.max_util,
+            config.max_util,
+        );
+        Context {
+            feed_id,
+            price: price_data.price,
+            price_scalar: scalar_from_exponent(price_data.exponent),
+            publish_time: price_data.publish_time,
+            config,
+            data,
+            trading_config,
+            vault,
+            vault_balance,
+            token,
+            treasury,
+            total_notional,
+        }
+    }
+
+    /// Panics if per-market or global utilization exceeds caps.
+    fn require_within_util(&self, e: &Env) {
+        if self.vault_balance <= 0 {
+            panic_with_error!(e, TradingError::UtilizationExceeded);
+        }
+        let market_notional = self.data.l_notional + self.data.s_notional;
+        let market_util = market_notional.fixed_div_ceil(e, &self.vault_balance, &SCALAR_7);
+        if market_util > self.config.max_util {
+            panic_with_error!(e, TradingError::UtilizationExceeded);
+        }
+        let global_util = self.total_notional.fixed_div_ceil(e, &self.vault_balance, &SCALAR_7);
+        if global_util > self.trading_config.max_util {
+            panic_with_error!(e, TradingError::UtilizationExceeded);
+        }
+    }
+
+    pub(crate) fn treasury_fee(&self, e: &Env, revenue: i128) -> i128 {
+        if revenue > 0 {
+            let rate = TreasuryClient::new(e, &self.treasury).get_rate();
+            if rate > 0 {
+                revenue.fixed_mul_floor(e, &rate, &SCALAR_7)
+            } else {
+                0
+            }
+        } else {
+            0
+        }
+    }
+
+    /// Open a position: compute fees, deduct from collateral, fill, and update market stats.
+    ///
+    /// # Parameters
+    /// - `position` - Mutable position to fill (collateral reduced by fees)
+    /// - `position_id` - Storage key for the position
+    ///
+    /// # Returns
+    /// `(base_fee, impact_fee)` -- both in token_decimals.
+    ///
+    /// # Fee logic
+    /// - `base_fee`: dominant-side openings pay `fee_dom`, non-dominant pay `fee_non_dom`
+    ///   (SCALAR_7 fraction of notional). WHY: opening on the dominant side worsens
+    ///   market imbalance, so the higher fee disincentivizes that.
+    /// - `impact_fee`: `notional / impact` (SCALAR_7), simulates price impact.
+    ///
+    /// # Panics
+    /// - `TradingError::UtilizationExceeded` (791) if position pushes utilization past caps
+    /// - All panics from `Position::validate()`
+    pub fn open(&mut self, e: &Env, position: &mut Position, position_id: u32) -> (i128, i128) {
+        let base_fee = if self.data.is_dominant(position.long, position.notional) {
+            // WHY: ceil rounding on fees -- protocol never under-charges
+            position.notional.fixed_mul_ceil(e, &self.trading_config.fee_dom, &SCALAR_7)
+        } else {
+            position.notional.fixed_mul_ceil(e, &self.trading_config.fee_non_dom, &SCALAR_7)
+        };
+        let impact_fee = position.notional.fixed_div_ceil(e, &self.config.impact, &SCALAR_7);
+
+        // WHY: fees deducted from collateral before validation -- ensures post-fee
+        // collateral still meets margin requirements, preventing under-collateralized positions.
+        position.col -= base_fee + impact_fee;
+        position.validate(e, self.config.status, self.trading_config.min_notional, self.trading_config.max_notional, self.config.margin);
+        position.fill(e, &self.data);
+        storage::set_position(e, position_id, position);
+
+        // WHY: entry_wt (entry-weighted aggregate) tracks Sigma(notional/entry_price) per side.
+        // This enables O(1) PnL calculation for the entire side during ADL checks,
+        // without iterating over every position.
+        // floor rounding on entry_wt -- conservative (slightly understates aggregate weight).
+        let ew_delta = position.notional.fixed_div_floor(e, &position.entry_price, &self.price_scalar);
+        self.data.update_stats(position.long, position.notional, ew_delta);
+        self.total_notional += position.notional;
+        self.require_within_util(e);
+
+        (base_fee, impact_fee)
+    }
+
+    /// Close a position: settle PnL and all accrued fees, update market stats, remove from storage.
+    ///
+    /// # Parameters
+    /// - `position` - Mutable position to settle (notional may be reduced by ADL)
+    /// - `position_id` - Storage key (position + user tracking removed)
+    ///
+    /// # Returns
+    /// [`Settlement`] with broken-down PnL and fee components.
+    pub fn close(&mut self, e: &Env, position: &mut Position, position_id: u32) -> Settlement {
+        let s = position.settle(e, self);
+        let ew_delta = position.notional.fixed_div_floor(e, &position.entry_price, &self.price_scalar);
+        self.data.update_stats(position.long, -position.notional, ew_delta);
+        self.total_notional -= position.notional;
+        storage::remove_user_position(e, &position.user, position_id);
+        storage::remove_position(e, position_id);
+        s
+    }
+
+    /// Write mutable state back to storage.
+    pub fn store(&self, e: &Env) {
+        storage::set_market_data(e, self.feed_id, &self.data);
+        storage::set_total_notional(e, self.total_notional);
+    }
+}
+

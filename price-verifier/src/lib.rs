@@ -26,12 +26,8 @@ pub struct PriceData {
     pub publish_time: u64,
 }
 
-/// Pyth Lazer price verification contract.
-///
-/// Verifies Ed25519 signatures on Pyth Lazer binary payloads before exposing
-/// price data to other contracts. Enforces staleness and confidence bounds.
-///
-/// See: Protocol Spec -- `docs/audit/PROTOCOL-SPEC.md`
+/// Pyth Lazer price verification. Verifies Ed25519 signatures and enforces
+/// staleness and confidence bounds before exposing price data.
 #[contract]
 pub struct PriceVerifier;
 

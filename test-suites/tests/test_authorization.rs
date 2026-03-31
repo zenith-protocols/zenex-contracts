@@ -421,7 +421,7 @@ fn test_update_max_staleness_rejects_non_owner() {
 
 // ================================================================
 // Governance/Timelock Admin — #[only_owner] (4 tests)
-// Direct deployment: register TimelockContract with e.register()
+// Direct deployment: register GovernanceContract with e.register()
 // ================================================================
 
 #[test]
@@ -435,10 +435,10 @@ fn test_timelock_queue_rejects_non_owner() {
     let delay: u64 = 86400;
 
     let gov_id = e.register(
-        governance::TimelockContract,
+        governance::GovernanceContract,
         (owner.clone(), delay),
     );
-    let gov_client = governance::TimelockClient::new(&e, &gov_id);
+    let gov_client = governance::GovernanceClient::new(&e, &gov_id);
 
     let fn_name = Symbol::new(&e, "set_config");
     let args = Vec::<Val>::new(&e);
@@ -472,10 +472,10 @@ fn test_timelock_cancel_rejects_non_owner() {
     let delay: u64 = 86400;
 
     let gov_id = e.register(
-        governance::TimelockContract,
+        governance::GovernanceContract,
         (owner.clone(), delay),
     );
-    let gov_client = governance::TimelockClient::new(&e, &gov_id);
+    let gov_client = governance::GovernanceClient::new(&e, &gov_id);
 
     // First queue something as owner (so there's something to cancel)
     let fn_name = Symbol::new(&e, "set_config");
@@ -511,10 +511,10 @@ fn test_timelock_set_status_rejects_non_owner() {
     let delay: u64 = 86400;
 
     let gov_id = e.register(
-        governance::TimelockContract,
+        governance::GovernanceContract,
         (owner.clone(), delay),
     );
-    let gov_client = governance::TimelockClient::new(&e, &gov_id);
+    let gov_client = governance::GovernanceClient::new(&e, &gov_id);
 
     e.mock_auths(&[MockAuth {
         address: &non_owner,
@@ -543,10 +543,10 @@ fn test_timelock_set_delay_rejects_non_owner() {
     let delay: u64 = 86400;
 
     let gov_id = e.register(
-        governance::TimelockContract,
+        governance::GovernanceContract,
         (owner.clone(), delay),
     );
-    let gov_client = governance::TimelockClient::new(&e, &gov_id);
+    let gov_client = governance::GovernanceClient::new(&e, &gov_id);
 
     let new_delay: u64 = 172800; // 2 days
 
@@ -703,7 +703,7 @@ fn test_factory_deploy_rejects_wrong_admin() {
     let salt = BytesN::<32>::random(&e);
     let token = Address::generate(&e);
     let pv = Address::generate(&e);
-    let config = default_config();
+    let config = test_suites::to_factory_config(&default_config());
 
     // Mock auth for wrong_admin, but the deploy call passes real_admin as the admin param
     e.mock_auths(&[MockAuth {

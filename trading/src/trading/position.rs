@@ -1,29 +1,20 @@
 use crate::constants::{MIN_OPEN_TIME, SCALAR_7, SCALAR_18};
 use crate::errors::TradingError;
 use crate::storage;
-use crate::trading::market::Market;
-use crate::types::MarketData;
+use crate::trading::context::Context;
+use crate::types::{MarketData, MarketStatus};
 pub(crate) use crate::types::Position;
 use soroban_fixed_point_math::SorobanFixedPoint;
 use soroban_sdk::{panic_with_error, Address, Env};
-// ── Result structs ──────────────────────────────────────────────────
 
 /// Breakdown of PnL and all fee components for a closed/settled position.
-///
-/// All amounts are in token_decimals. PnL and funding can be negative (loss/payment).
-/// Fees (base, impact, borrowing) are always >= 0.
+/// All amounts in token_decimals.
 pub struct Settlement {
-    /// Raw price PnL: (exit_price - entry_price) / entry_price * notional.
-    /// Positive = profit, negative = loss. Does not include fees.
-    pub pnl: i128,
-    /// Base trading fee charged at close (notional * fee_rate, SCALAR_7 fraction).
-    pub base_fee: i128,
-    /// Price-impact fee (notional / impact_divisor, SCALAR_7 fraction).
-    pub impact_fee: i128,
-    /// Accrued funding since position open. Positive = owed (dominant side), negative = earned.
-    pub funding: i128,
-    /// Accrued borrowing fee since position open. Always >= 0.
-    pub borrowing_fee: i128,
+    pub pnl:           i128, // raw price PnL, positive = profit
+    pub base_fee:      i128, // base trading fee at close
+    pub impact_fee:    i128, // price-impact fee
+    pub funding:       i128, // accrued funding, positive = owed, negative = earned
+    pub borrowing_fee: i128, // accrued borrowing fee, always >= 0
 }
 
 impl Settlement {
@@ -36,7 +27,7 @@ impl Settlement {
     }
 
     /// Net PnL: raw PnL minus all fees, clamped to `-col` (user can never lose more than collateral).
-    /// WHY: clamped to protect against fee accumulation exceeding collateral, which would
+    /// clamped to protect against fee accumulation exceeding collateral, which would
     /// cause an underflow. The vault absorbs the shortfall in that case.
     pub fn net_pnl(&self, col: i128) -> i128 {
         (self.pnl - self.total_fee()).max(-col)
@@ -53,9 +44,6 @@ impl Settlement {
         self.base_fee + self.impact_fee + self.borrowing_fee
     }
 }
-
-
-// ── Position methods ────────────────────────────────────────────────
 
 impl Position {
     /// Create a new position, persist it, and register it under the user.
@@ -95,25 +83,21 @@ impl Position {
     /// Validate position parameters against trading and market constraints.
     ///
     /// # Parameters
-    /// - `enabled` - Whether the market is accepting new positions
+    /// - `market_status` - MarketStatus as u32 (0=Active, 1=Halted, 2=Delisting)
     /// - `min_notional` / `max_notional` - Notional bounds (token_decimals)
     /// - `margin` - Initial margin requirement (SCALAR_7, e.g. 1e6 = 10% = 10x max leverage)
     ///
     /// # Panics
     /// - `TradingError::NegativeValueNotAllowed` (735) if notional, price, or col <= 0
-    /// - `TradingError::MarketDisabled` (712) if market is not enabled
+    /// - `TradingError::MarketNotActive` (712) if market is not Active
     /// - `TradingError::NotionalBelowMinimum` (736) / `NotionalAboveMaximum` (737)
     /// - `TradingError::LeverageAboveMaximum` (739) if `notional * margin > col`
-    ///
-    /// WHY: `margin` constraint ensures `leverage = notional / col <= 1 / margin`.
-    /// Margin check uses ceil rounding to prevent users from sneaking above max leverage
-    /// via rounding.
-    pub fn validate(&self, e: &Env, enabled: bool, min_notional: i128, max_notional: i128, margin: i128) {
+    pub fn validate(&self, e: &Env, market_status: u32, min_notional: i128, max_notional: i128, margin: i128) {
         if self.notional <= 0 || self.entry_price <= 0 || self.col <= 0 || self.tp < 0 || self.sl < 0 {
             panic_with_error!(e, TradingError::NegativeValueNotAllowed);
         }
-        if !enabled {
-            panic_with_error!(e, TradingError::MarketDisabled);
+        if MarketStatus::from_u32(e, market_status) != MarketStatus::Active {
+            panic_with_error!(e, TradingError::MarketNotActive);
         }
         if self.notional < min_notional {
             panic_with_error!(e, TradingError::NotionalBelowMinimum);
@@ -152,10 +136,8 @@ impl Position {
         if !self.filled {
             panic_with_error!(e, TradingError::ActionNotAllowedForStatus);
         }
-        // Guard: price must be at least as recent as position open.
+        // price must be at least as recent as position open.
         // Prevents manipulation with stale prices predating the position.
-        // Uses StalePrice (749) not PositionTooNew (748) -- semantically distinct:
-        // PositionTooNew = "opened too recently to close", StalePrice = "price data is too old"
         if price_publish_time < self.created_at {
             panic_with_error!(e, TradingError::StalePrice);
         }
@@ -213,18 +195,18 @@ impl Position {
     ///
     /// # Returns
     /// [`Settlement`] with all components broken out.
-    pub fn settle(&mut self, e: &Env, market: &Market) -> Settlement {
+    pub fn settle(&mut self, e: &Env, market: &Context) -> Settlement {
         let (funding_index, borrowing_index, adl_index) = market.data.indices(self.long);
 
         // Apply ADL: scale down notional by the ratio of current/original ADL index.
-        // WHY: floor rounding on ADL reduction -- conservative for the position holder
+        // floor rounding on ADL reduction conservative for the position holder
         // (slightly less notional = slightly less exposure = safer for the vault).
         if self.adl_idx != adl_index {
             self.notional = self.notional.fixed_mul_floor(e, &adl_index, &self.adl_idx);
             self.adl_idx = adl_index;
         }
 
-        // PnL: floor rounding -- conservative for the trader (vault keeps rounding dust).
+        // PnL: floor rounding conservative for the trader (vault keeps rounding dust).
         let price_diff = if self.long {
             market.price - self.entry_price
         } else {
@@ -237,7 +219,7 @@ impl Position {
             self.notional.fixed_mul_floor(e, &ratio, &market.price_scalar)
         };
 
-        // WHY: Closing from the dominant side rebalances the market (reduces imbalance),
+        // Closing from the dominant side rebalances the market (reduces imbalance),
         // so it gets the lower non-dom fee. Closing from non-dominant side worsens
         // imbalance, so it pays the higher dom fee. This mirrors open-side fee logic.
         let base_fee = if market.data.is_dominant(self.long, -self.notional) {
@@ -247,7 +229,7 @@ impl Position {
         };
         let impact_fee = self.notional.fixed_div_ceil(e, &market.config.impact, &SCALAR_7);
 
-        // WHY: funding uses floor (conservative for receiver), borrowing uses ceil
+        // funding uses floor (conservative for receiver), borrowing uses ceil
         // (protocol never under-collects).
         let funding = self.notional.fixed_mul_floor(e, &(funding_index - self.fund_idx), &SCALAR_18);
         let borrowing_fee = self.notional.fixed_mul_ceil(e, &(borrowing_index - self.borr_idx), &SCALAR_18);
@@ -290,7 +272,7 @@ impl Position {
 mod tests {
     use super::*;
     use crate::constants::{SCALAR_7, SCALAR_18};
-    use crate::trading::market::Market;
+    use crate::trading::context::Context;
     use crate::testutils::{create_trading, default_config, default_market, default_market_data, BTC_FEED_ID};
     use soroban_sdk::{testutils::Address as _, Address, Env};
 
@@ -312,9 +294,9 @@ mod tests {
         }
     }
 
-    fn test_market(data: MarketData) -> Market {
+    fn test_market(data: MarketData) -> Context {
         let e = Env::default();
-        Market {
+        Context {
             feed_id: BTC_FEED_ID,
             price: 100_000 * SCALAR_7,
             price_scalar: SCALAR_7,
@@ -330,9 +312,9 @@ mod tests {
         }
     }
 
-    fn test_market_at(price: i128, data: MarketData) -> Market {
+    fn test_market_at(price: i128, data: MarketData) -> Context {
         let e = Env::default();
-        Market {
+        Context {
             feed_id: BTC_FEED_ID,
             price,
             price_scalar: SCALAR_7,

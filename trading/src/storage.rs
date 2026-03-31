@@ -7,11 +7,10 @@ use soroban_sdk::{
     IntoVal, TryFromVal, Val, Vec,
 };
 
-// ── Ledger Thresholds ───────────────────────────────────────────────
-//
-// WHY: Three TTL tiers based on access frequency and expected lifetime:
+
+// Three TTL tiers based on access frequency and expected lifetime:
 // - Instance (30/31d): Core state bumped every single transaction. Short threshold
-//   is fine because it's extended on every call.
+//   is fine because it's extended on every call (hourly at least for funding updates).
 // - Market (45/52d): Config and data are touched on every position action but not
 //   every tx. Longer threshold provides buffer for idle markets.
 // - Position (14/21d): Perp positions are short-lived (most close within days).
@@ -28,8 +27,6 @@ const LEDGER_BUMP_MARKET: u32 = LEDGER_THRESHOLD_MARKET + 7 * ONE_DAY_LEDGERS; /
 const LEDGER_THRESHOLD_POSITION: u32 = ONE_DAY_LEDGERS * 14;      // ~14 days
 const LEDGER_BUMP_POSITION: u32 = LEDGER_THRESHOLD_POSITION + 7 * ONE_DAY_LEDGERS; // ~21 days
 
-/********** Storage Keys **********/
-
 #[derive(Clone)]
 #[contracttype]
 pub enum TradingStorageKey {
@@ -44,14 +41,12 @@ pub enum TradingStorageKey {
     TotalNotional,
     LastFundingUpdate,
     // Persistent storage (per-entity)
-    Markets,
+    Markets, // Rarely accessed only during ADL and adding markets.
     MarketConfig(u32),
     MarketData(u32),
     UserPositions(Address),
     Position(u32),
 }
-
-/********** Storage **********/
 
 /// Bump the instance rent for the contract
 pub fn extend_instance(e: &Env) {
@@ -77,8 +72,6 @@ fn get_persistent_default<K: IntoVal<Env, Val>, V: TryFromVal<Env, Val>, F: FnOn
         default()
     }
 }
-
-/********** Instance — Core Contract State **********/
 
 pub fn get_config(e: &Env) -> TradingConfig {
     e.storage()
@@ -191,8 +184,6 @@ pub fn set_last_funding_update(e: &Env, timestamp: u64) {
         .set(&TradingStorageKey::LastFundingUpdate, &timestamp);
 }
 
-/********** Persistent — Market **********/
-
 pub fn get_markets(e: &Env) -> Vec<u32> {
     let key = TradingStorageKey::Markets;
     let result = e
@@ -257,8 +248,6 @@ pub fn set_market_data(e: &Env, feed_id: u32, data: &MarketData) {
         .persistent()
         .extend_ttl(&key, LEDGER_THRESHOLD_MARKET, LEDGER_BUMP_MARKET);
 }
-
-/********** Persistent — Position **********/
 
 pub fn get_position(e: &Env, position_id: u32) -> Position {
     let key = TradingStorageKey::Position(position_id);

@@ -3,7 +3,7 @@
 use soroban_sdk::{contractclient, Address, Env};
 
 /// Vault client interface - manually defined to avoid duplicate type conflicts
-/// from OpenZeppelin's stellar-tokens library
+/// from OpenZeppelin's library
 #[allow(dead_code)] // Trait is used by the generated Client via #[contractclient]
 #[contractclient(name = "Client")]
 pub trait VaultInterface {

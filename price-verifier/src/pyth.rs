@@ -18,7 +18,7 @@
 //!       [1..]   value: i64 LE (price/confidence) or i16 LE (exponent)
 //! ```
 //!
-//! WHY: Signature is verified BEFORE parsing any feed data (defense in depth).
+//! Signature is verified BEFORE parsing any feed data (defense in depth).
 //! An attacker cannot craft a payload that passes parsing but has an invalid signature
 //! because verification happens first.
 

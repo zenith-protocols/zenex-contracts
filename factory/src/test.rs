@@ -1,16 +1,30 @@
 use crate::storage::FactoryInitMeta;
+use crate::TradingConfig;
 use crate::{FactoryClient, FactoryContract};
 
 use soroban_sdk::{
     testutils::{Address as _, BytesN as _},
     Address, BytesN, Env, String,
 };
-use trading::testutils::default_config;
 
 const TRADING_WASM: &[u8] =
     include_bytes!("../../target/wasm32v1-none/release/trading.wasm");
 const VAULT_WASM: &[u8] =
     include_bytes!("../../target/wasm32v1-none/release/strategy_vault.wasm");
+
+fn default_config() -> TradingConfig {
+    TradingConfig {
+        caller_rate: 1_000_000,
+        min_notional: 100_000_000,
+        max_notional: 100_000_000_000_000,
+        fee_dom: 5_000,
+        fee_non_dom: 1_000,
+        max_util: 100_000_000,
+        r_funding: 10_000_000_000_000,
+        r_base: 10_000_000_000_000,
+        r_var: 10_000_000_000_000,
+    }
+}
 
 fn setup_factory(e: &Env) -> (Address, FactoryClient<'_>) {
     let trading_hash = e.deployer().upload_contract_wasm(TRADING_WASM);
@@ -39,7 +53,7 @@ fn test_factory_deploy() {
     let (_factory_address, factory) = setup_factory(&e);
     let admin = Address::generate(&e);
     let token = create_token(&e, &admin);
-    let price_verifier = Address::generate(&e); // mock, won't be called during deploy
+    let price_verifier = Address::generate(&e);
     let salt = BytesN::<32>::random(&e);
 
     let trading_address = factory.deploy(
@@ -54,11 +68,9 @@ fn test_factory_deploy() {
         &300u64,
     );
 
-    // Verify the deployed addresses are valid and tracked
     assert!(factory.is_deployed(&trading_address));
     assert!(!factory.is_deployed(&Address::generate(&e)));
 
-    // Verify second deploy with different salt produces different addresses
     let salt2 = BytesN::<32>::random(&e);
     let trading_2 = factory.deploy(
         &admin,

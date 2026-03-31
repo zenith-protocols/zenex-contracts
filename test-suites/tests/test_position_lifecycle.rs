@@ -4,7 +4,6 @@ use test_suites::setup::create_fixture_with_data;
 use test_suites::test_fixture::{AssetIndex, TestFixture};
 use test_suites::SCALAR_7;
 use trading::testutils::{BTC_FEED_ID, PRICE_SCALAR};
-use trading::ExecuteRequest;
 
 const SECONDS_PER_WEEK: u64 = 604800;
 
@@ -178,14 +177,8 @@ fn test_long_take_profit_trigger() {
     fixture.jump(31);
     let tp_price = fixture.btc_price(111_000 * PRICE_SCALAR as i64);
 
-    let requests = svec![
-        &fixture.env,
-        ExecuteRequest {
-            request_type: 2, // TakeProfit
-            position_id,
-        },
-    ];
-    fixture.trading.execute(&keeper, &requests, &tp_price);
+    let ids = svec![&fixture.env, position_id];
+    fixture.trading.execute(&keeper, &ids, &tp_price);
     assert!(!fixture.position_exists(position_id));
 }
 
@@ -206,14 +199,8 @@ fn test_long_stop_loss_trigger() {
     fixture.jump(31);
     let sl_price = fixture.btc_price(94_000 * PRICE_SCALAR as i64);
 
-    let requests = svec![
-        &fixture.env,
-        ExecuteRequest {
-            request_type: 1, // StopLoss
-            position_id,
-        },
-    ];
-    fixture.trading.execute(&keeper, &requests, &sl_price);
+    let ids = svec![&fixture.env, position_id];
+    fixture.trading.execute(&keeper, &ids, &sl_price);
     assert!(!fixture.position_exists(position_id));
 }
 
@@ -234,14 +221,8 @@ fn test_short_take_profit_trigger() {
     fixture.jump(31);
     let tp_price = fixture.btc_price(89_000 * PRICE_SCALAR as i64);
 
-    let requests = svec![
-        &fixture.env,
-        ExecuteRequest {
-            request_type: 2, // TakeProfit
-            position_id,
-        },
-    ];
-    fixture.trading.execute(&keeper, &requests, &tp_price);
+    let ids = svec![&fixture.env, position_id];
+    fixture.trading.execute(&keeper, &ids, &tp_price);
     assert!(!fixture.position_exists(position_id));
 }
 
@@ -262,14 +243,8 @@ fn test_short_stop_loss_trigger() {
     fixture.jump(31);
     let sl_price = fixture.btc_price(106_000 * PRICE_SCALAR as i64);
 
-    let requests = svec![
-        &fixture.env,
-        ExecuteRequest {
-            request_type: 1, // StopLoss
-            position_id,
-        },
-    ];
-    fixture.trading.execute(&keeper, &requests, &sl_price);
+    let ids = svec![&fixture.env, position_id];
+    fixture.trading.execute(&keeper, &ids, &sl_price);
     assert!(!fixture.position_exists(position_id));
 }
 
@@ -295,14 +270,8 @@ fn test_limit_order_place_fill_close() {
 
     // Price drops to entry -- fillable for long limit
     let fill_price = fixture.btc_price(101_000 * PRICE_SCALAR as i64);
-    let requests = svec![
-        &fixture.env,
-        ExecuteRequest {
-            request_type: 0, // Fill
-            position_id,
-        },
-    ];
-    fixture.trading.execute(&keeper, &requests, &fill_price);
+    let ids = svec![&fixture.env, position_id];
+    fixture.trading.execute(&keeper, &ids, &fill_price);
     assert!(fixture.trading.get_position(&position_id).filled);
 
     // Price rises for profit, close
@@ -349,14 +318,8 @@ fn test_limit_order_not_fillable_at_price() {
 
     // Price moves up to $105k (above entry) -- NOT fillable for a long limit
     let bad_price = fixture.btc_price(105_000 * PRICE_SCALAR as i64);
-    let requests = svec![
-        &fixture.env,
-        ExecuteRequest {
-            request_type: 0,
-            position_id,
-        },
-    ];
-    fixture.trading.execute(&keeper, &requests, &bad_price);
+    let ids = svec![&fixture.env, position_id];
+    fixture.trading.execute(&keeper, &ids, &bad_price);
 }
 
 // ==========================================
@@ -425,14 +388,8 @@ fn test_execute_keeper_triggers_when_on_ice() {
     fixture.jump(31);
     let tp_price = fixture.btc_price(111_000 * PRICE_SCALAR as i64);
 
-    let requests = svec![
-        &fixture.env,
-        ExecuteRequest {
-            request_type: 2, // TakeProfit
-            position_id,
-        },
-    ];
-    fixture.trading.execute(&keeper, &requests, &tp_price);
+    let ids = svec![&fixture.env, position_id];
+    fixture.trading.execute(&keeper, &ids, &tp_price);
     assert!(!fixture.position_exists(position_id));
 }
 

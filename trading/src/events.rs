@@ -1,7 +1,5 @@
 use soroban_sdk::{contractevent, Address};
 
-// ── Configuration Events ────────────────────────────────────────────
-
 /// Emitted when the global trading configuration is updated via `set_config`.
 #[contractevent]
 #[derive(Clone)]
@@ -21,8 +19,6 @@ pub struct SetMarket {
 pub struct SetStatus {
     pub status: u32,
 }
-
-// ── Position Events ─────────────────────────────────────────────────
 
 /// Emitted when a pending limit order is created via `place_limit`.
 #[contractevent]

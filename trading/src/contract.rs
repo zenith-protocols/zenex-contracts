@@ -1,43 +1,288 @@
 #![allow(clippy::too_many_arguments)]
 
-use crate::errors::TradingError;
-use crate::interface::Trading;
 use crate::dependencies::PriceVerifierClient;
-use crate::trading::ExecuteRequest;
+use crate::errors::TradingError;
 use crate::types::{MarketConfig, MarketData, Position, TradingConfig};
 use crate::{storage, trading, ContractStatus};
 use crate::validation::require_valid_config;
-use soroban_sdk::{contract, contractimpl, panic_with_error, Address, Bytes, Env, Vec};
+use soroban_sdk::{contract, contractclient, contractimpl, panic_with_error, Address, Bytes, Env, Vec};
 use soroban_sdk::unwrap::UnwrapOptimized;
 use stellar_access::ownable::{self as ownable, Ownable};
 use stellar_contract_utils::upgradeable::UpgradeableInternal;
 use stellar_macros::{only_owner, Upgradeable};
 
-use crate::dependencies::PriceData;
-
+/// Perpetual futures trading contract. Leveraged long/short positions with
+/// limit/market orders, funding rates, borrowing fees, and auto-deleveraging.
 #[derive(Upgradeable)]
 #[contract]
 pub struct TradingContract;
 
-/// Verify a single price feed via the price-verifier contract.
-///
-/// Delegates to `verify_prices` and extracts the first result.
-///
-/// # Panics
-/// - `TradingError::InvalidPrice` (720) if the batch is empty or verification fails.
-fn verify_price(e: &Env, price: &Bytes) -> PriceData {
-    PriceVerifierClient::new(e, &storage::get_price_verifier(e))
-        .verify_prices(price)
-        .get(0)
-        .unwrap_or_else(|| panic_with_error!(e, TradingError::InvalidPrice))
-}
+#[contractclient(name = "TradingClient")]
+pub trait Trading {
+    /// (Owner only) Replace the global trading configuration.
+    ///
+    /// # Parameters
+    /// - `config` - New [`TradingConfig`]
+    ///
+    /// # Panics
+    /// - `TradingError::Unauthorized` (1) if caller is not the owner
+    /// - `TradingError::InvalidConfig` (702) if bounds check fails
+    /// - `TradingError::NegativeValueNotAllowed` (735) if any rate/fee is negative
+    fn set_config(e: Env, config: TradingConfig);
 
-/// Verify one or more price feeds via the price-verifier contract.
-///
-/// Returns a `Vec<PriceData>` with verified (feed_id, price, exponent, publish_time)
-/// for each feed in the binary payload.
-fn verify_prices(e: &Env, price: &Bytes) -> Vec<PriceData> {
-    PriceVerifierClient::new(e, &storage::get_price_verifier(e)).verify_prices(price)
+    /// (Owner only) Register a new market or update an existing market's configuration.
+    ///
+    /// On first call for a `feed_id`, initializes `MarketData` with zero notional and
+    /// ADL indices at `SCALAR_18`.
+    ///
+    /// # Parameters
+    /// - `feed_id` - feed identifier (u32)
+    /// - `config` - Per-market parameters (see [`MarketConfig`])
+    ///
+    /// # Panics
+    /// - `TradingError::Unauthorized` (1) if caller is not the owner
+    /// - `TradingError::MaxMarketsReached` (770) if `MAX_ENTRIES` markets exist
+    /// - `TradingError::InvalidConfig` (702) if market config bounds fail
+    /// - `TradingError::NegativeValueNotAllowed` (735) if any rate/fee is negative
+    fn set_market(e: Env, feed_id: u32, config: MarketConfig);
+
+    /// (Owner only) Remove a market. Allows delisting when remaining OI is
+    /// below `min_notional` (ADL rounding dust won't block removal).
+    ///
+    /// # Parameters
+    /// - `feed_id` - Market to remove
+    ///
+    /// # Panics
+    /// - `TradingError::Unauthorized` (1) if caller is not the owner
+    /// - `TradingError::MarketNotFound` (710) if feed_id not registered
+    /// - `TradingError::MarketHasOpenPositions` (771) if either side >= min_notional
+    fn del_market(e: Env, feed_id: u32);
+
+    /// (Owner only) Set contract status to an admin-level state.
+    ///
+    /// Valid targets: `Active` (0), `AdminOnIce` (2), `Frozen` (3).
+    ///
+    /// # Panics
+    /// - `TradingError::Unauthorized` (1) if caller is not the owner
+    /// - `TradingError::InvalidStatus` (760) if status is `OnIce`
+    fn set_status(e: Env, status: u32);
+
+    /// Permissionless circuit breaker and ADL trigger.
+    ///
+    /// Anyone can call with current price data for all markets.
+    /// - **Active**: PnL >= 95% → set `OnIce`. PnL > 100% → also run ADL.
+    /// - **OnIce**: PnL < 90% → restore `Active`. PnL > 100% → run ADL.
+    /// - **AdminOnIce**: PnL > 100% → run ADL (status stays AdminOnIce).
+    /// - **Frozen**: panics.
+    ///
+    /// # Parameters
+    /// - `price` - Binary-encoded Pyth Lazer price payload covering all registered markets
+    ///
+    /// # Panics
+    /// - `TradingError::ThresholdNotMet` (780) if PnL below trigger threshold
+    /// - `TradingError::InvalidStatus` (760) if contract is Frozen
+    /// - `TradingError::InvalidPrice` (720) if feeds don't match registered markets
+    fn update_status(e: Env, price: Bytes);
+
+    /// Place a pending limit order. Collateral is transferred to the contract immediately.
+    /// The order is filled later by a keeper via `execute` when the market price
+    /// reaches the specified `entry_price`.
+    ///
+    /// # Parameters
+    /// - `user` - Position owner (must `require_auth`)
+    /// - `feed_id` - Market feed identifier
+    /// - `collateral` - Collateral amount (token_decimals)
+    /// - `notional_size` - Position notional (token_decimals)
+    /// - `is_long` - `true` for long, `false` for short
+    /// - `entry_price` - Desired fill price (price_scalar units)
+    /// - `take_profit` - TP trigger price, 0 = not set (price_scalar units)
+    /// - `stop_loss` - SL trigger price, 0 = not set (price_scalar units)
+    ///
+    /// # Returns
+    /// Position ID.
+    ///
+    /// # Panics
+    /// - `TradingError::ContractOnIce` (761) if contract is not Active
+    /// - `TradingError::NegativeValueNotAllowed` (735) if any value <= 0
+    /// - `TradingError::NotionalBelowMinimum` (736) / `NotionalAboveMaximum` (737)
+    /// - `TradingError::LeverageAboveMaximum` (739) if notional * margin > collateral
+    /// - `TradingError::MarketNotActive` (712) if market is not Active
+    fn place_limit(
+        e: Env,
+        user: Address,
+        feed_id: u32,
+        collateral: i128,
+        notional_size: i128,
+        is_long: bool,
+        entry_price: i128,
+        take_profit: i128,
+        stop_loss: i128,
+    ) -> u32;
+
+    /// Open a market order, filled immediately at the current oracle price.
+    ///
+    /// Fees (base + impact) are deducted from collateral before validation.
+    /// Market indices are accrued, and the position snapshots current funding/borrowing
+    /// indices at fill time.
+    ///
+    /// # Parameters
+    /// - `user` - Position owner (must `require_auth`)
+    /// - `feed_id` - Market feed identifier (must match the verified price feed)
+    /// - `collateral` - Collateral amount (token_decimals)
+    /// - `notional_size` - Position notional (token_decimals)
+    /// - `is_long` - `true` for long, `false` for short
+    /// - `take_profit` - TP trigger price, 0 = not set (price_scalar units)
+    /// - `stop_loss` - SL trigger price, 0 = not set (price_scalar units)
+    /// - `price` - Binary-encoded price payload
+    ///
+    /// # Returns
+    /// Position ID.
+    ///
+    /// # Panics
+    /// - `TradingError::ContractOnIce` (761) if contract is not Active
+    /// - `TradingError::NegativeValueNotAllowed` (735) if any value <= 0
+    /// - `TradingError::NotionalBelowMinimum` (736) / `NotionalAboveMaximum` (737)
+    /// - `TradingError::LeverageAboveMaximum` (739) if notional * margin > collateral
+    /// - `TradingError::MarketNotActive` (712) if market is not Active
+    /// - `TradingError::InvalidPrice` (720) if feed_id mismatch
+    /// - `TradingError::UtilizationExceeded` (791) if per-market or global cap exceeded
+    fn open_market(
+        e: Env,
+        user: Address,
+        feed_id: u32,
+        collateral: i128,
+        notional_size: i128,
+        is_long: bool,
+        take_profit: i128,
+        stop_loss: i128,
+        price: Bytes,
+    ) -> u32;
+
+    /// Cancel a pending (unfilled) limit order. Returns full collateral to user.
+    ///
+    /// # Parameters
+    /// - `position_id` - ID of the pending limit order
+    ///
+    /// # Returns
+    /// Collateral amount returned to the user (token_decimals).
+    ///
+    /// # Panics
+    /// - `TradingError::ContractFrozen` (762) if contract is Frozen
+    /// - `TradingError::PositionNotPending` (733) if position is already filled
+    /// - `TradingError::PositionNotFound` (730) if position_id is invalid
+    fn cancel_limit(e: Env, position_id: u32) -> i128;
+
+    /// Close a filled position at the current oracle price. Settles PnL and all
+    /// accrued fees (funding, borrowing, base, impact).
+    ///
+    /// # Parameters
+    /// - `position_id` - ID of the filled position
+    /// - `price` - Binary-encoded price payload
+    ///
+    /// # Returns
+    /// User payout (token_decimals).
+    ///
+    /// # Panics
+    /// - `TradingError::ContractFrozen` (762) if contract is Frozen
+    /// - `TradingError::PositionTooNew` (748) if MIN_OPEN_TIME not elapsed
+    /// - `TradingError::InvalidPrice` (720) if feed_id mismatch
+    fn close_position(e: Env, position_id: u32, price: Bytes) -> i128;
+
+    /// Add or withdraw collateral on an open (filled) position.
+    ///
+    /// Adding: transfers additional collateral from user to contract.
+    /// Withdrawing: checks that remaining equity stays above margin requirement,
+    /// then transfers difference back to user.
+    ///
+    /// # Parameters
+    /// - `position_id` - ID of the filled position
+    /// - `new_collateral` - Desired collateral amount after modification (token_decimals)
+    /// - `price` - Binary-encoded Pyth Lazer price payload (needed for margin check on withdrawal)
+    ///
+    /// # Panics
+    /// - `TradingError::ContractFrozen` (762) if contract is Frozen
+    /// - `TradingError::ActionNotAllowedForStatus` (750) if position is not filled
+    /// - `TradingError::CollateralUnchanged` (740) if new_collateral == current
+    /// - `TradingError::WithdrawalBreaksMargin` (741) if withdrawal leaves insufficient margin
+    fn modify_collateral(e: Env, position_id: u32, new_collateral: i128, price: Bytes);
+
+    /// Update take-profit and stop-loss trigger prices on an existing position.
+    ///
+    /// Set a trigger to 0 to clear it. Validates that TP > entry for longs
+    /// (TP < entry for shorts), and SL < entry for longs (SL > entry for shorts).
+    ///
+    /// # Parameters
+    /// - `position_id` - ID of the position
+    /// - `take_profit` - New TP price, 0 = clear (price_scalar units)
+    /// - `stop_loss` - New SL price, 0 = clear (price_scalar units)
+    ///
+    /// # Panics
+    /// - `TradingError::ContractFrozen` (762) if contract is Frozen
+    /// - `TradingError::InvalidTakeProfitPrice` (742) if TP on wrong side of entry
+    /// - `TradingError::InvalidStopLossPrice` (743) if SL on wrong side of entry
+    fn set_triggers(e: Env, position_id: u32, take_profit: i128, stop_loss: i128);
+
+    /// Execute a batch of keeper actions for positions in a single market.
+    ///
+    /// The contract auto-detects the action for each position:
+    /// - **Not filled** → fill limit order (if price crossed entry)
+    /// - **Filled** → priority: liquidate > stop-loss > take-profit
+    ///
+    /// All positions must be in the same market as the provided price.
+    ///
+    /// # Parameters
+    /// - `caller` - Keeper address (receives `caller_rate` share of trading fees)
+    /// - `position_ids` - Position IDs to process
+    /// - `price` - Binary-encoded price payload (single feed)
+    ///
+    /// # Panics
+    /// - `TradingError::ContractFrozen` (762) if contract is Frozen
+    /// - `TradingError::InvalidPrice` (720) if position feed doesn't match price feed
+    /// - `TradingError::NotActionable` (747) if no valid action for the position
+    fn execute(e: Env, caller: Address, position_ids: Vec<u32>, price: Bytes);
+
+    /// Recalculate and store funding rates for all markets. Permissionless, callable
+    /// once per hour.
+    ///
+    /// Accrues borrowing + funding indices for each market to current timestamp,
+    /// then recalculates funding rates based on current OI imbalance.
+    ///
+    /// # Panics
+    /// - `TradingError::FundingTooEarly` (790) if < 1 hour since last call
+    fn apply_funding(e: Env);
+
+    /// Returns the position for the given ID.
+    fn get_position(e: Env, position_id: u32) -> Position;
+
+    /// Returns all position IDs owned by the given user.
+    fn get_user_positions(e: Env, user: Address) -> Vec<u32>;
+
+    /// Returns the market configuration for the given feed.
+    fn get_market_config(e: Env, feed_id: u32) -> MarketConfig;
+
+    /// Returns the mutable market data (notionals, indices) for the given feed.
+    fn get_market_data(e: Env, feed_id: u32) -> MarketData;
+
+    /// Returns all registered market feed IDs.
+    fn get_markets(e: Env) -> Vec<u32>;
+
+    /// Returns the global trading configuration.
+    fn get_config(e: Env) -> TradingConfig;
+
+    /// Returns the current contract status (0=Active, 1=OnIce, 2=AdminOnIce, 3=Frozen).
+    fn get_status(e: Env) -> u32;
+
+    /// Returns the strategy-vault address.
+    fn get_vault(e: Env) -> Address;
+
+    /// Returns the price-verifier contract address.
+    fn get_price_verifier(e: Env) -> Address;
+
+    /// Returns the treasury contract address.
+    fn get_treasury(e: Env) -> Address;
+
+    /// Returns the collateral token address.
+    fn get_token(e: Env) -> Address;
 }
 
 #[contractimpl]
@@ -46,9 +291,9 @@ impl TradingContract {
     ///
     /// # Parameters
     /// - `owner` - Admin address (receives `#[only_owner]` privileges)
-    /// - `token` - Collateral token address (e.g. USDC, 7 decimals)
+    /// - `token` - Collateral token address
     /// - `vault` - Strategy-vault address (holds collateral, ERC-4626)
-    /// - `price_verifier` - Pyth Lazer price-verifier contract address
+    /// - `price_verifier` - price-verifier contract address
     /// - `treasury` - Treasury contract for protocol fee collection
     /// - `config` - Global trading parameters (see [`TradingConfig`])
     ///
@@ -77,7 +322,6 @@ impl TradingContract {
 
 #[contractimpl]
 impl Trading for TradingContract {
-    /// See [`Trading::set_config`]. Owner-only.
     #[only_owner]
     fn set_config(e: Env, config: TradingConfig) {
         storage::extend_instance(&e);
@@ -104,7 +348,8 @@ impl Trading for TradingContract {
 
     fn update_status(e: Env, price: Bytes) {
         storage::extend_instance(&e);
-        trading::execute_update_status(&e, &verify_prices(&e, &price));
+        let pv = PriceVerifierClient::new(&e, &storage::get_price_verifier(&e));
+        trading::execute_update_status(&e, &pv.verify_prices(&price));
     }
 
     fn place_limit(
@@ -137,7 +382,8 @@ impl Trading for TradingContract {
         price: Bytes,
     ) -> u32 {
         storage::extend_instance(&e);
-        let pd = verify_price(&e, &price);
+        let pv = PriceVerifierClient::new(&e, &storage::get_price_verifier(&e));
+        let pd = pv.verify_price(&price);
         if pd.feed_id != feed_id {
             panic_with_error!(e, TradingError::InvalidPrice);
         }
@@ -154,12 +400,14 @@ impl Trading for TradingContract {
 
     fn close_position(e: Env, position_id: u32, price: Bytes) -> i128 {
         storage::extend_instance(&e);
-        trading::execute_close_position(&e, position_id, &verify_price(&e, &price))
+        let pv = PriceVerifierClient::new(&e, &storage::get_price_verifier(&e));
+        trading::execute_close_position(&e, position_id, &pv.verify_price(&price))
     }
 
     fn modify_collateral(e: Env, position_id: u32, new_collateral: i128, price: Bytes) {
         storage::extend_instance(&e);
-        trading::execute_modify_collateral(&e, position_id, new_collateral, &verify_price(&e, &price));
+        let pv = PriceVerifierClient::new(&e, &storage::get_price_verifier(&e));
+        trading::execute_modify_collateral(&e, position_id, new_collateral, &pv.verify_price(&price));
     }
 
     fn set_triggers(e: Env, position_id: u32, take_profit: i128, stop_loss: i128) {
@@ -167,9 +415,10 @@ impl Trading for TradingContract {
         trading::execute_set_triggers(&e, position_id, take_profit, stop_loss);
     }
 
-    fn execute(e: Env, caller: Address, requests: Vec<ExecuteRequest>, price: Bytes) {
+    fn execute(e: Env, caller: Address, position_ids: Vec<u32>, price: Bytes) {
         storage::extend_instance(&e);
-        trading::execute_trigger(&e, &caller, requests, &verify_price(&e, &price));
+        let pv = PriceVerifierClient::new(&e, &storage::get_price_verifier(&e));
+        trading::execute_trigger(&e, &caller, position_ids, &pv.verify_price(&price));
     }
 
     fn apply_funding(e: Env) {
@@ -228,7 +477,7 @@ impl Ownable for TradingContract {}
 impl UpgradeableInternal for TradingContract {
     fn _require_auth(e: &Env, operator: &Address) {
         operator.require_auth();
-        // SAFETY: owner is always set in __constructor; cannot reach this without initialization
+        //owner is always set in __constructor; cannot reach this without initialization
         let owner = ownable::get_owner(e).unwrap_optimized();
         if *operator != owner {
             panic_with_error!(e, TradingError::Unauthorized)

@@ -5,7 +5,6 @@ use test_suites::setup::create_fixture_with_data;
 use test_suites::test_fixture::{AssetIndex, TestFixture};
 use test_suites::SCALAR_7;
 use trading::testutils::{BTC_FEED_ID, PRICE_SCALAR};
-use trading::ExecuteRequest;
 
 const SECONDS_PER_WEEK: u64 = 604800;
 
@@ -20,11 +19,8 @@ fn setup_fixture() -> TestFixture<'static> {
     create_fixture_with_data()
 }
 
-fn liquidation_request(position_id: u32) -> trading::ExecuteRequest {
-    ExecuteRequest {
-        request_type: 3, // Liquidate
-        position_id,
-    }
+fn position_ids(env: &soroban_sdk::Env, id: u32) -> soroban_sdk::Vec<u32> {
+    svec![env, id]
 }
 
 // ==========================================
@@ -54,8 +50,8 @@ fn test_liquidation_underwater_position() {
     fixture.jump(31); // past MIN_OPEN_TIME for the position to be closable
     let crash_price = fixture.btc_price(98_000 * PRICE_SCALAR as i64);
 
-    let requests = svec![&fixture.env, liquidation_request(position_id)];
-    fixture.trading.execute(&keeper, &requests, &crash_price);
+    let ids = position_ids(&fixture.env, position_id);
+    fixture.trading.execute(&keeper, &ids, &crash_price);
 
     assert!(
         !fixture.position_exists(position_id),
@@ -64,7 +60,7 @@ fn test_liquidation_underwater_position() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #746)")]
+#[should_panic(expected = "Error(Contract, #747)")]
 fn test_liquidation_healthy_position_rejected() {
     let fixture = setup_fixture();
     let user = Address::generate(&fixture.env);
@@ -87,10 +83,10 @@ fn test_liquidation_healthy_position_rejected() {
     // Equity = col + pnl - fees = ~1000 + (-500) - fees > liq_threshold (0.5% of 10k = 50)
     let mild_drop = fixture.btc_price(95_000 * PRICE_SCALAR as i64);
 
-    let requests = svec![&fixture.env, liquidation_request(position_id)];
+    let ids = position_ids(&fixture.env, position_id);
     fixture
         .trading
-        .execute(&keeper, &requests, &mild_drop); // should panic #746
+        .execute(&keeper, &ids, &mild_drop); // should panic #751
 }
 
 #[test]
@@ -118,8 +114,8 @@ fn test_liquidation_keeper_receives_fee() {
     fixture.jump(31);
     let crash_price = fixture.btc_price(97_000 * PRICE_SCALAR as i64);
 
-    let requests = svec![&fixture.env, liquidation_request(position_id)];
-    fixture.trading.execute(&keeper, &requests, &crash_price);
+    let ids = position_ids(&fixture.env, position_id);
+    fixture.trading.execute(&keeper, &ids, &crash_price);
 
     let keeper_balance_after = fixture.token.balance(&keeper);
     assert!(
@@ -171,10 +167,10 @@ fn test_liquidation_stale_price_rejected() {
     // Try liquidation with stale price (publish_time=99 < created_at=100)
     // Price verifier passes (abs_diff(100, 99) = 1 < max_staleness=60)
     // But trading contract's require_liquidatable rejects: StalePrice (749)
-    let requests = svec![&fixture.env, liquidation_request(position_id)];
+    let ids = position_ids(&fixture.env, position_id);
     fixture
         .trading
-        .execute(&keeper, &requests, &stale_price); // should panic #749
+        .execute(&keeper, &ids, &stale_price); // should panic #749
 }
 
 // ==========================================
@@ -212,8 +208,8 @@ fn test_liquidation_after_interest_accrual() {
     // With a week of interest: accrued fees reduce equity below threshold
     let moderate_drop = fixture.btc_price(90_710 * PRICE_SCALAR as i64);
 
-    let requests = svec![&fixture.env, liquidation_request(position_id)];
-    fixture.trading.execute(&keeper, &requests, &moderate_drop);
+    let ids = position_ids(&fixture.env, position_id);
+    fixture.trading.execute(&keeper, &ids, &moderate_drop);
 
     assert!(
         !fixture.position_exists(position_id),
@@ -299,8 +295,8 @@ fn test_liquidation_after_adl() {
     );
     fixture.jump(31);
 
-    let requests = svec![&fixture.env, liquidation_request(position_id)];
-    fixture.trading.execute(&keeper, &requests, &crash_price);
+    let ids = position_ids(&fixture.env, position_id);
+    fixture.trading.execute(&keeper, &ids, &crash_price);
 
     assert!(
         !fixture.position_exists(position_id),
@@ -346,7 +342,7 @@ fn test_liquidation_works_when_frozen() {
     // Note: execute() uses require_can_manage which blocks Frozen.
     // However, liquidation is critical for protocol safety -- if this test fails,
     // it means T-DOS-05 (position trapping) is NOT mitigated and must be flagged.
-    let result = fixture.trading.try_execute(&keeper, &svec![&fixture.env, liquidation_request(position_id)], &crash_price);
+    let result = fixture.trading.try_execute(&keeper, &position_ids(&fixture.env, position_id), &crash_price);
 
     // If execute is blocked by Frozen (#762), this documents the current behavior
     // and the threat model notes it as an accepted risk that admin must lift freeze.

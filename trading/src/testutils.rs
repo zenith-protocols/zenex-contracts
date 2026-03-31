@@ -57,8 +57,25 @@ impl MockPriceVerifier {
             .set(&MockPVKey::Prices, &prices);
     }
 
+    /// Verify single price feed (mock: returns first stored price).
+    pub fn verify_price(e: Env, _update_data: Bytes) -> MockPriceData {
+        let prices: Map<u32, i128> = e
+            .storage()
+            .instance()
+            .get(&MockPVKey::Prices)
+            .expect("no prices configured");
+        let feed_id = prices.keys().get(0).unwrap();
+        let price = prices.get(feed_id).unwrap();
+        MockPriceData {
+            feed_id,
+            price,
+            exponent: -8,
+            publish_time: e.ledger().timestamp(),
+        }
+    }
+
     /// Verify price feeds (mock: ignores price bytes, returns all stored prices).
-    pub fn verify_prices(e: Env, _price: Bytes) -> Vec<MockPriceData> {
+    pub fn verify_prices(e: Env, _update_data: Bytes) -> Vec<MockPriceData> {
         let prices: Map<u32, i128> = e
             .storage()
             .instance()
@@ -120,16 +137,6 @@ pub struct MockTreasury;
 impl MockTreasury {
     pub fn get_rate(_e: Env) -> i128 {
         500_000 // 5% protocol fee
-    }
-
-    pub fn get_fee(e: Env, total_fee: i128) -> i128 {
-        use soroban_fixed_point_math::SorobanFixedPoint;
-        let rate = 500_000_i128;
-        if total_fee > 0 {
-            total_fee.fixed_mul_floor(&e, &rate, &SCALAR_7)
-        } else {
-            0
-        }
     }
 }
 
@@ -203,15 +210,15 @@ pub fn default_config() -> TradingConfig {
         max_util: 10 * SCALAR_7,                          // 10x vault
         r_funding: 10_000_000_000_000,             // 0.001% per hour in SCALAR_18
         r_base: 10_000_000_000_000,                // 0.001% per hour in SCALAR_18
-        r_var: SCALAR_7,                           // 1× multiplier: at full util, rate doubles
+        r_var: 10_000_000_000_000,                 // 0.001%/hr vault variable rate (SCALAR_18)
     }
 }
 
 pub fn default_market(_e: &Env) -> MarketConfig {
     MarketConfig {
-        enabled: true,
+        status: 0, // MarketStatus::Active
         max_util: 5 * SCALAR_7,                           // 5x vault per market
-        r_borrow: SCALAR_7,                        // 1× (no adjustment)
+        r_var_market: 10_000_000_000_000,           // 0.001%/hr per-market variable rate (SCALAR_18)
         margin: 100_000,                           // 1%
         liq_fee: 50_000,                           // 0.5%
         impact: 8_000_000_000 * SCALAR_7,

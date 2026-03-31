@@ -33,11 +33,11 @@ const DELAY: u64 = 86400;
 
 /// A self-contained test environment with trading, governance, and support contracts.
 #[allow(dead_code)]
-struct TimelockFixture<'a> {
+struct GovernanceFixture<'a> {
     env: Env,
     owner: Address,
     trading: TradingClient<'a>,
-    gov: governance::TimelockClient<'a>,
+    gov: governance::GovernanceClient<'a>,
 }
 
 fn create_token<'a>(e: &Env, admin: &Address) -> (Address, StellarAssetClient<'a>) {
@@ -55,7 +55,7 @@ fn create_token<'a>(e: &Env, admin: &Address) -> (Address, StellarAssetClient<'a
 /// 2. Deploy vault + trading via factory (owner = `admin`)
 /// 3. Deploy governance with `admin` as owner
 /// 4. Transfer trading ownership from `admin` to governance (2-step)
-fn setup<'a>() -> TimelockFixture<'a> {
+fn setup<'a>() -> GovernanceFixture<'a> {
     let e = Env::default();
     e.cost_estimate().budget().reset_unlimited();
     e.mock_all_auths_allowing_non_root_auth();
@@ -94,7 +94,7 @@ fn setup<'a>() -> TimelockFixture<'a> {
     let factory_id = e.register(factory::FactoryContract {}, (init_meta,));
     let factory_client = factory::FactoryClient::new(&e, &factory_id);
 
-    let config = default_config();
+    let config = test_suites::to_factory_config(&default_config());
     let salt = BytesN::<32>::random(&e);
     let trading_id = factory_client.deploy(
         &admin,
@@ -128,10 +128,10 @@ fn setup<'a>() -> TimelockFixture<'a> {
 
     // Deploy governance with admin as owner (generic timelock, no trading address at construction)
     let gov_id = e.register(
-        governance::TimelockContract,
+        governance::GovernanceContract,
         (admin.clone(), DELAY),
     );
-    let gov_client = governance::TimelockClient::new(&e, &gov_id);
+    let gov_client = governance::GovernanceClient::new(&e, &gov_id);
 
     // Transfer trading ownership from admin to governance (2-step)
     // Step 1: admin initiates transfer
@@ -161,7 +161,7 @@ fn setup<'a>() -> TimelockFixture<'a> {
     );
     assert_eq!(owner_opt, Some(gov_id.clone()), "governance should be trading owner");
 
-    TimelockFixture {
+    GovernanceFixture {
         env: e,
         owner: admin,
         trading: trading_client,

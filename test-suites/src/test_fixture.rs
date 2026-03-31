@@ -83,7 +83,7 @@ impl TestFixture<'_> {
         let factory_client = FactoryClient::new(&e, &factory_id);
 
         // Deploy trading + vault atomically via factory
-        let config = default_config();
+        let config = crate::to_factory_config(&default_config());
         let salt = BytesN::<32>::random(&e);
         let trading_id = factory_client.deploy(
             &owner,
