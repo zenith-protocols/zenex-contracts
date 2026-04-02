@@ -88,6 +88,9 @@ impl GovernanceContract {
     /// - `owner` - Admin address authorized to queue/cancel calls and set status
     /// - `delay` - Mandatory waiting period in seconds before queued calls can execute
     pub fn __constructor(e: Env, owner: Address, delay: u64) {
+        if delay == 0 {
+            panic_with_error!(&e, GovernanceError::InvalidDelay);
+        }
         ownable::set_owner(&e, &owner);
         storage::set_delay(&e, delay);
     }
@@ -158,6 +161,9 @@ impl Governance for GovernanceContract {
 
     #[only_owner]
     fn set_delay(e: Env, new_delay: u64) {
+        if new_delay == 0 {
+            panic_with_error!(&e, GovernanceError::InvalidDelay);
+        }
         let current_delay = storage::get_delay(&e);
         let unlock_time = e.ledger().timestamp() + current_delay;
         let pending = storage::PendingDelay {

@@ -23,45 +23,53 @@
 //! because verification happens first.
 
 use soroban_sdk::{panic_with_error, BytesN, Bytes, Env, Vec};
-use soroban_sdk::unwrap::UnwrapOptimized;
 
 use crate::error::PriceVerifierError;
 use crate::PriceData;
 
-const SOLANA_FORMAT_MAGIC: u32 = 0x821A01B9;
-const PAYLOAD_FORMAT_MAGIC: u32 = 0x93C7D375;
-const PROP_PRICE: u8 = 0;
-const PROP_EXPONENT: u8 = 4;
-const PROP_CONFIDENCE: u8 = 5;
-/// Maximum buffer size for price update payloads (prevents excessive memory usage in WASM).
-const MAX_BUF: usize = 1024;
+const SOLANA_FORMAT_MAGIC: [u8; 4] = 0x821A01B9_u32.to_le_bytes();
+const PAYLOAD_FORMAT_MAGIC: [u8; 4] = 0x93C7D375_u32.to_le_bytes();
+const PROP_PRICE: u8 = 0;      // i64 LE (8 bytes)
+const PROP_EXPONENT: u8 = 4;   // i16 LE (2 bytes)
+const PROP_CONFIDENCE: u8 = 5; // i64 LE (8 bytes)
+
+// Envelope layout offsets
+const OFF_SIG: usize = 4;       // [4..68]   Ed25519 signature
+const OFF_PUBKEY: usize = 68;   // [68..100] Ed25519 public key
+const OFF_PAYLOAD_LEN: usize = 100; // [100..102] payload length (u16 LE)
+const ENVELOPE_HEADER: usize = 102;  // total envelope header size
+
+// Payload layout offsets (relative to payload start)
+const OFF_PUBLISH_TIME: usize = 4;  // [4..12] publish_time (u64 LE, microseconds)
+const OFF_NUM_FEEDS: usize = 13;    // [13]    number of price feeds
+const PAYLOAD_HEADER: usize = 14;   // minimum payload size (magic + time + padding + count)
+
+// Feed layout sizes
+const FEED_HEADER: usize = 5; // feed_id (4) + num_props (1)
+
+/// Maximum buffer size for price update payloads.
+/// Derived from: 102 (envelope) + 14 (payload header) + 50 feeds × 32 bytes/feed = 1716.
+/// Validated against real Pyth Lazer API: 50 feeds × 3 props = 1416 bytes.
+const MAX_BUF: usize = 2048;
 
 fn read_u16(buf: &[u8], off: usize) -> u16 {
-    u16::from_le_bytes([buf[off], buf[off + 1]])
-}
-
-fn read_u32(buf: &[u8], off: usize) -> u32 {
-    u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]])
+    u16::from_le_bytes(buf[off..off + 2].try_into().unwrap())
 }
 
 fn read_u64(buf: &[u8], off: usize) -> u64 {
-    let mut a = [0u8; 8];
-    a.copy_from_slice(&buf[off..off + 8]);
-    u64::from_le_bytes(a)
+    u64::from_le_bytes(buf[off..off + 8].try_into().unwrap())
 }
 
 /// Check that a price is not stale relative to the current ledger timestamp.
 ///
-/// WHY: Uses `abs_diff` instead of `now - publish_time` for clock-skew tolerance.
-/// In some network conditions, the oracle publish_time may be slightly ahead of the
-/// ledger timestamp. `abs_diff` handles both directions without underflow.
+/// Rejects future publish times, the oracle always publishes before the transaction
+/// is included in a block, so `publish_time > now` indicates a malformed payload.
 ///
 /// # Panics
-/// - `PriceVerifierError::PriceStale` if `|now - publish_time| > max_staleness`
+/// - `PriceVerifierError::PriceStale` if price is older than `max_staleness` or in the future
 pub fn check_staleness(env: &Env, price: &PriceData, max_staleness: u64) {
     let now = env.ledger().timestamp();
-    let age = now.abs_diff(price.publish_time);
-    if age > max_staleness {
+    if price.publish_time > now || now - price.publish_time > max_staleness {
         panic_with_error!(env, PriceVerifierError::PriceStale);
     }
 }
@@ -87,80 +95,86 @@ pub fn verify_and_extract(
 ) -> Vec<PriceData> {
     let trusted_signer = crate::storage::get_signer(env);
     let max_confidence_bps = crate::storage::get_max_confidence_bps(env);
+    // Copy update_data to native buffer for parsing
     let len = update_data.len() as usize;
     if len > MAX_BUF { panic_with_error!(env, PriceVerifierError::InvalidData); }
     let mut buf = [0u8; MAX_BUF];
-    #[allow(clippy::needless_range_loop)]
-    for i in 0..len {
-        // SAFETY: i < len where len = update_data.len(); index always valid
-        // Note: Soroban Vec::get() requires u32 index; iter_mut().enumerate() would
-        // lose the direct buf[i] = val assignment pattern needed here.
-        buf[i] = update_data.get(i as u32).unwrap_optimized();
-    }
+    update_data.copy_into_slice(&mut buf[..len]);
 
-    if len < 102 { panic_with_error!(env, PriceVerifierError::InvalidData); }
-
-    if read_u32(&buf, 0) != SOLANA_FORMAT_MAGIC {
+    // --- Envelope validation ---
+    if len < ENVELOPE_HEADER { panic_with_error!(env, PriceVerifierError::InvalidData); }
+    if buf[0..4] != SOLANA_FORMAT_MAGIC {
         panic_with_error!(env, PriceVerifierError::InvalidData);
     }
 
-    let sig = BytesN::<64>::from_array(env, &core::array::from_fn(|i| buf[4 + i]));
-    let pubkey = BytesN::<32>::from_array(env, &core::array::from_fn(|i| buf[68 + i]));
+    // Extract signature and public key from fixed envelope positions
+    let sig = BytesN::<64>::from_array(env, &core::array::from_fn(|i| buf[OFF_SIG + i]));
+    let pubkey = BytesN::<32>::from_array(env, &core::array::from_fn(|i| buf[OFF_PUBKEY + i]));
 
     if pubkey != trusted_signer {
         panic_with_error!(env, PriceVerifierError::InvalidData);
     }
 
-    let payload_len = read_u16(&buf, 100) as usize;
-    let ps = 102; // payload start
-    if len < ps + payload_len { panic_with_error!(env, PriceVerifierError::InvalidData); }
-
-    let payload = Bytes::from_slice(env, &buf[ps..ps + payload_len]);
-    env.crypto().ed25519_verify(&pubkey, &payload, &sig);
-
-    if payload_len < 14 { panic_with_error!(env, PriceVerifierError::InvalidData); }
-
-    if read_u32(&buf, ps) != PAYLOAD_FORMAT_MAGIC {
+    // --- Signature verification (before any payload parsing) ---
+    let payload_len = read_u16(&buf, OFF_PAYLOAD_LEN) as usize;
+    if len < ENVELOPE_HEADER + payload_len {
         panic_with_error!(env, PriceVerifierError::InvalidData);
     }
 
-    let publish_time = read_u64(&buf, ps + 4) / 1_000_000;
-    let num_feeds = buf[ps + 13];
+    // Slice the original host Bytes (avoids round-trip through native buf)
+    let payload = update_data.slice(ENVELOPE_HEADER as u32..(ENVELOPE_HEADER + payload_len) as u32);
+    env.crypto().ed25519_verify(&pubkey, &payload, &sig);
 
-    let mut off = ps + 14;
+    // --- Payload parsing (signature verified, data is trusted) ---
+    if payload_len < PAYLOAD_HEADER {
+        panic_with_error!(env, PriceVerifierError::InvalidData);
+    }
+    let ps = ENVELOPE_HEADER; // payload start offset in buf
+    if buf[ps..ps + 4] != PAYLOAD_FORMAT_MAGIC {
+        panic_with_error!(env, PriceVerifierError::InvalidData);
+    }
+
+    // publish_time is microseconds in the wire format, convert to seconds
+    let publish_time = read_u64(&buf, ps + OFF_PUBLISH_TIME) / 1_000_000;
+    let num_feeds = buf[ps + OFF_NUM_FEEDS];
+
+    let mut off = ps + PAYLOAD_HEADER;
     let mut results: Vec<PriceData> = Vec::new(env);
 
+    // --- Parse each feed ---
     for _ in 0..num_feeds {
-        if off + 5 > len { panic_with_error!(env, PriceVerifierError::InvalidData); }
-        let feed_id = read_u32(&buf, off);
+        if off + FEED_HEADER > len { panic_with_error!(env, PriceVerifierError::InvalidData); }
+        let feed_id = u32::from_le_bytes(buf[off..off + 4].try_into().unwrap());
         let num_props = buf[off + 4];
-        off += 5;
+        off += FEED_HEADER;
 
         let mut price: Option<i64> = None;
         let mut confidence: Option<i64> = None;
         let mut exponent: Option<i32> = None;
 
+        // Parse variable-length properties (type tag + value)
         for _ in 0..num_props {
             if off >= len { panic_with_error!(env, PriceVerifierError::InvalidData); }
             match buf[off] {
                 PROP_PRICE | PROP_CONFIDENCE => {
                     let prop = buf[off];
-                    off += 1;
+                    off += 1; // skip type tag
                     if off + 8 > len { panic_with_error!(env, PriceVerifierError::InvalidData); }
                     let val = read_u64(&buf, off) as i64;
-                    off += 8;
+                    off += 8; // i64 value
                     if prop == PROP_PRICE { price = Some(val); } else { confidence = Some(val); }
                 }
                 PROP_EXPONENT => {
-                    off += 1;
+                    off += 1; // skip type tag
                     if off + 2 > len { panic_with_error!(env, PriceVerifierError::InvalidData); }
                     exponent = Some(read_u16(&buf, off) as i16 as i32);
-                    off += 2;
+                    off += 2; // i16 value
                 }
                 _ => panic_with_error!(env, PriceVerifierError::InvalidData),
             }
         }
 
+        // All three properties are required
         let exp = match exponent {
             Some(e) => e,
             None => panic_with_error!(env, PriceVerifierError::InvalidPrice),
@@ -169,11 +183,15 @@ pub fn verify_and_extract(
             Some(p) => p as i128,
             None => panic_with_error!(env, PriceVerifierError::InvalidPrice),
         };
-        if let Some(raw_conf) = confidence {
-            let raw_conf = raw_conf as i128;
-            if raw_conf * 10_000 > raw_price.abs() * max_confidence_bps as i128 {
-                panic_with_error!(env, PriceVerifierError::InvalidPrice);
-            }
+        let raw_conf = match confidence {
+            Some(c) => c as i128,
+            None => panic_with_error!(env, PriceVerifierError::InvalidPrice),
+        };
+
+        // Reject if confidence interval is too wide relative to price
+        // e.g. max_confidence_bps=200 means confidence must be < 2% of price
+        if raw_conf * 10_000 > raw_price.abs() * max_confidence_bps as i128 {
+            panic_with_error!(env, PriceVerifierError::InvalidPrice);
         }
         results.push_back(PriceData {
             feed_id,

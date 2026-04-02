@@ -42,8 +42,8 @@ pub fn execute_set_market(e: &Env, feed_id: u32, config: &MarketConfig) {
     SetMarket { feed_id }.publish(e);
 }
 
-/// Remove a market. Allows delisting when remaining OI is below min_notional
-/// (ADL floor-rounding can leave dust that never reaches zero).
+/// Remove a market. Subtracts remaining OI from total_notional and cleans up
+/// market storage. Existing positions are refunded via cancel_position.
 pub fn execute_del_market(e: &Env, feed_id: u32) {
     let mut markets = storage::get_markets(e);
     let idx = markets
@@ -51,16 +51,18 @@ pub fn execute_del_market(e: &Env, feed_id: u32) {
         .position(|id| id == feed_id)
         .unwrap_or_else(|| panic_with_error!(e, TradingError::MarketNotFound));
 
-    let config = storage::get_config(e);
+    // Subtract this market's OI from total_notional
     let data = storage::get_market_data(e, feed_id);
-    // Enforce zero or near-zero open interest to prevent stranded positions.
-    // We accept small positions below min_notional to allow delisting when ADL floor-rounding prevents reaching exactly zero.
-    if data.l_notional >= config.min_notional || data.s_notional >= config.min_notional {
-        panic_with_error!(e, TradingError::MarketHasOpenPositions);
+    let market_notional = data.l_notional + data.s_notional;
+    if market_notional > 0 {
+        let total = storage::get_total_notional(e) - market_notional;
+        storage::set_total_notional(e, total);
     }
 
     markets.remove(idx as u32);
     storage::set_markets(e, &markets);
+    storage::remove_market_config(e, feed_id);
+    storage::remove_market_data(e, feed_id);
     DelMarket { feed_id }.publish(e);
 }
 
@@ -139,7 +141,7 @@ mod tests {
             assert_eq!(markets.len(), 1);
             assert_eq!(markets.get(0).unwrap(), BTC_FEED_ID);
             let stored = storage::get_market_config(&e, BTC_FEED_ID);
-            assert_eq!(stored.status, market_config.status);
+            assert_eq!(stored.enabled, true);
 
             let data = storage::get_market_data(&e, BTC_FEED_ID);
             assert_eq!(data.l_notional, 0);
@@ -160,31 +162,20 @@ mod tests {
         e.as_contract(&contract, || {
             let market_config = default_market(&e);
             super::execute_set_market(&e, BTC_FEED_ID, &market_config);
-            assert_eq!(storage::get_markets(&e).len(), 1);
+            assert!(storage::has_market(&e, BTC_FEED_ID));
 
-            super::execute_del_market(&e, BTC_FEED_ID);
-            assert_eq!(storage::get_markets(&e).len(), 0);
-        });
-    }
-
-    #[test]
-    #[should_panic(expected = "Error(Contract, #771)")]
-    fn test_del_market_with_open_positions() {
-        let e = Env::default();
-        e.mock_all_auths();
-        jump(&e, 1000);
-
-        let (contract, _owner) = create_trading(&e);
-
-        e.as_contract(&contract, || {
-            let market_config = default_market(&e);
-            super::execute_set_market(&e, BTC_FEED_ID, &market_config);
-
+            // Set OI to verify total_notional adjustment on deletion
             let mut data = storage::get_market_data(&e, BTC_FEED_ID);
             data.l_notional = 10_000_000_000;
+            data.s_notional = 5_000_000_000;
             storage::set_market_data(&e, BTC_FEED_ID, &data);
+            storage::set_total_notional(&e, 15_000_000_000);
 
             super::execute_del_market(&e, BTC_FEED_ID);
+
+            assert_eq!(storage::get_markets(&e).len(), 0);
+            assert!(!storage::has_market(&e, BTC_FEED_ID));
+            assert_eq!(storage::get_total_notional(&e), 0);
         });
     }
 
@@ -209,38 +200,21 @@ mod tests {
     }
 
     #[test]
-    fn test_set_market_status_transitions() {
+    #[should_panic(expected = "Error(Contract, #740)")]
+    fn test_set_status_onice_rejected() {
         let e = Env::default();
         e.mock_all_auths();
         jump(&e, 1000);
 
         let (contract, _owner) = create_trading(&e);
+        let client = crate::TradingClient::new(&e, &contract);
 
-        e.as_contract(&contract, || {
-            let mut mc = default_market(&e);
-            super::execute_set_market(&e, BTC_FEED_ID, &mc);
-            assert_eq!(storage::get_market_config(&e, BTC_FEED_ID).status, 0);
-
-            // Active -> Halted
-            mc.status = 1;
-            super::execute_set_market(&e, BTC_FEED_ID, &mc);
-            assert_eq!(storage::get_market_config(&e, BTC_FEED_ID).status, 1);
-
-            // Halted -> Delisting
-            mc.status = 2;
-            super::execute_set_market(&e, BTC_FEED_ID, &mc);
-            assert_eq!(storage::get_market_config(&e, BTC_FEED_ID).status, 2);
-
-            // Delisting -> Active (restore)
-            mc.status = 0;
-            super::execute_set_market(&e, BTC_FEED_ID, &mc);
-            assert_eq!(storage::get_market_config(&e, BTC_FEED_ID).status, 0);
-        });
+        // OnIce is reserved for circuit breaker (update_status), admin can't set it directly
+        client.set_status(&(ContractStatus::OnIce as u32));
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #760)")]
-    fn test_set_market_invalid_status() {
+    fn test_set_market_enabled_toggle() {
         let e = Env::default();
         e.mock_all_auths();
         jump(&e, 1000);
@@ -249,8 +223,18 @@ mod tests {
 
         e.as_contract(&contract, || {
             let mut mc = default_market(&e);
-            mc.status = 99; // invalid
             super::execute_set_market(&e, BTC_FEED_ID, &mc);
+            assert!(storage::get_market_config(&e, BTC_FEED_ID).enabled);
+
+            // Disable
+            mc.enabled = false;
+            super::execute_set_market(&e, BTC_FEED_ID, &mc);
+            assert!(!storage::get_market_config(&e, BTC_FEED_ID).enabled);
+
+            // Re-enable
+            mc.enabled = true;
+            super::execute_set_market(&e, BTC_FEED_ID, &mc);
+            assert!(storage::get_market_config(&e, BTC_FEED_ID).enabled);
         });
     }
 }

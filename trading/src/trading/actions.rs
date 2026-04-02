@@ -1,12 +1,11 @@
 use crate::constants::{ONE_HOUR_SECONDS, SCALAR_7};
 use crate::dependencies::VaultClient;
 use crate::errors::TradingError;
-use crate::events::{ApplyFunding, CancelLimit, ClosePosition, ModifyCollateral, OpenMarket, PlaceLimit, SetTriggers};
+use crate::events::{ApplyFunding, ClosePosition, ModifyCollateral, OpenMarket, PlaceLimit, RefundPosition, SetTriggers};
 use crate::storage;
 use crate::trading::context::Context;
 use crate::trading::position::Position;
 use crate::dependencies::PriceData;
-use crate::types::MarketStatus;
 use crate::validation::{require_active, require_can_manage};
 use soroban_fixed_point_math::SorobanFixedPoint;
 use soroban_sdk::token::TokenClient;
@@ -14,7 +13,7 @@ use soroban_sdk::{panic_with_error, Address, Env};
 
 /// Create a pending limit order. Validates parameters, stores position, transfers collateral.
 ///
-/// The order is not filled immediately -- a keeper calls `execute` with the position ID
+/// The order is not filled immediately, a keeper calls `execute` with the position ID
 /// when the market price reaches `entry_price`.
 #[allow(clippy::too_many_arguments)]
 pub fn execute_create_limit(
@@ -34,7 +33,7 @@ pub fn execute_create_limit(
     let config = storage::get_config(e);
     let market_config = storage::get_market_config(e, feed_id);
     let (id, position) = Position::create(e, user, feed_id, is_long, entry_price, collateral, notional_size, stop_loss, take_profit);
-    position.validate(e, market_config.status, config.min_notional, config.max_notional, market_config.margin);
+    position.validate(e, market_config.enabled, config.min_notional, config.max_notional, market_config.margin);
     storage::set_position(e, id, &position);
 
     let token_client = TokenClient::new(e, &storage::get_token(e));
@@ -53,29 +52,48 @@ pub fn execute_create_limit(
 /// Cancel a pending (unfilled) limit order. Returns collateral to user.
 ///
 /// No fees are charged on cancellation since the order was never filled.
-pub fn execute_cancel_limit(e: &Env, position_id: u32) -> i128 {
+/// Cancel a position and refund collateral. No oracle price needed.
+///
+/// - **Pending** (not filled): requires user auth, cancels the limit order.
+/// - **Filled + market deleted**: permissionless (anyone can clean up stranded positions).
+/// - **Filled + market exists**: panics (use `close_position` for settlement).
+pub fn execute_cancel_position(e: &Env, position_id: u32) -> i128 {
     require_can_manage(e);
     let position = storage::get_position(e, position_id);
-    position.user.require_auth();
 
     if position.filled {
-        panic_with_error!(e, TradingError::PositionNotPending);
+        // Filled positions can only be cancelled if the market was deleted
+        if storage::has_market(e, position.feed) {
+            panic_with_error!(e, TradingError::PositionNotPending);
+        }
+        // Permissionless: anyone can clean up stranded positions on deleted markets
+    } else {
+        position.user.require_auth();
     }
 
-    let token_client = TokenClient::new(e, &storage::get_token(e));
-    token_client.transfer(&e.current_contract_address(), &position.user, &position.col);
+    let payout = position.col;
+    if payout > 0 {
+        let token_client = TokenClient::new(e, &storage::get_token(e));
+        token_client.transfer(&e.current_contract_address(), &position.user, &payout);
+    }
+
+    if position.filled {
+        let total = storage::get_total_notional(e) - position.notional;
+        storage::set_total_notional(e, total);
+    }
 
     storage::remove_user_position(e, &position.user, position_id);
     storage::remove_position(e, position_id);
 
-    CancelLimit {
+    RefundPosition {
         feed_id: position.feed,
         user: position.user.clone(),
         position_id,
+        amount: payout,
     }
-        .publish(e);
+    .publish(e);
 
-    position.col
+    payout
 }
 
 /// Create and immediately fill a market order at the current oracle price.
@@ -128,30 +146,26 @@ pub fn execute_create_market(
     id
 }
 
-/// Close a filled position at the current oracle price.
+/// Close a filled position at the current oracle price with full settlement.
 ///
-/// Settles all accrued fees (funding, borrowing) and PnL. User receives
-/// `max(equity, 0)`. If the position is underwater, user gets nothing and
-/// the vault absorbs the remainder. Treasury receives its fee cut.
+/// Requires a valid price feed. For deleted markets or pending positions,
+/// use `cancel_position` instead.
 ///
 /// # Returns
 /// User payout amount (token_decimals), >= 0.
-pub fn execute_close_position(e: &Env, position_id: u32, price_data: &PriceData) -> i128 {
+pub fn execute_close_position(e: &Env, position_id: u32, price: soroban_sdk::Bytes) -> i128 {
     require_can_manage(e);
+    let pv = crate::dependencies::PriceVerifierClient::new(e, &storage::get_price_verifier(e));
+    let price_data = pv.verify_price(&price);
+
     let mut position = storage::get_position(e, position_id);
-
-    // Delisting: anyone can close any position (payout still goes to position.user)
-    let market_config = storage::get_market_config(e, position.feed);
-    if MarketStatus::from_u32(e, market_config.status) != MarketStatus::Delisting {
-        position.user.require_auth();
-    }
-
+    position.user.require_auth();
     position.require_closable(e);
     if price_data.feed_id != position.feed {
         panic_with_error!(e, TradingError::InvalidPrice);
     }
 
-    let mut market = Context::load(e, price_data);
+    let mut market = Context::load(e, &price_data);
     let col = position.col;
     let s = market.close(e, &mut position, position_id);
 
@@ -201,7 +215,6 @@ pub fn execute_modify_collateral(e: &Env, position_id: u32, new_collateral: i128
     let mut position = storage::get_position(e, position_id);
     position.user.require_auth();
 
-    // No fees have been charged recreate position instead of modifying collateral
     if !position.filled {
         panic_with_error!(e, TradingError::ActionNotAllowedForStatus);
     }
@@ -214,7 +227,6 @@ pub fn execute_modify_collateral(e: &Env, position_id: u32, new_collateral: i128
         panic_with_error!(e, TradingError::CollateralUnchanged);
     }
     position.col = new_collateral;
-
 
     if collateral_diff > 0 {
         let token_client = TokenClient::new(e, &storage::get_token(e));
@@ -320,7 +332,13 @@ mod tests {
     };
     use crate::dependencies::PriceData;
     use soroban_sdk::testutils::Address as _;
-    use soroban_sdk::Address;
+    use soroban_sdk::{Address, Bytes};
+
+    /// Dummy price bytes — mock price verifier ignores content,
+    /// returns stored price instead.
+    fn dummy_price_bytes(e: &soroban_sdk::Env) -> Bytes {
+        Bytes::new(e)
+    }
 
     /// Helper: create a pending long limit order
     fn place_limit_long(e: &soroban_sdk::Env, contract: &Address, user: &Address, collateral: i128, notional: i128) -> u32 {
@@ -428,7 +446,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #735)")]
+    #[should_panic(expected = "Error(Contract, #723)")]
     fn test_create_limit_zero_collateral() {
         let e = setup_env();
         let (contract, token_client) = setup_contract(&e);
@@ -439,7 +457,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #736)")]
+    #[should_panic(expected = "Error(Contract, #724)")]
     fn test_create_limit_below_min_notional() {
         let e = setup_env();
         let (contract, token_client) = setup_contract(&e);
@@ -467,7 +485,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #790)")]
+    #[should_panic(expected = "Error(Contract, #752)")]
     fn test_apply_funding_too_early() {
         use crate::testutils::jump;
 
@@ -482,7 +500,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cancel_limit() {
+    fn test_cancel_position() {
         let e = setup_env();
         let (contract, token_client) = setup_contract(&e);
         let user = Address::generate(&e);
@@ -492,7 +510,7 @@ mod tests {
         let id = place_limit_long(&e, &contract, &user, 1_000 * SCALAR_7, 10_000 * SCALAR_7);
 
         e.as_contract(&contract, || {
-            super::execute_cancel_limit(&e, id);
+            super::execute_cancel_position(&e, id);
 
             let positions = storage::get_user_positions(&e, &user);
             assert_eq!(positions.len(), 0);
@@ -504,8 +522,8 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #733)")]
-    fn test_cancel_limit_filled_panics() {
+    #[should_panic(expected = "Error(Contract, #721)")]
+    fn test_cancel_position_filled_panics() {
         let e = setup_env();
         let (contract, token_client) = setup_contract(&e);
         let user = Address::generate(&e);
@@ -526,7 +544,7 @@ mod tests {
         });
 
         e.as_contract(&contract, || {
-            super::execute_cancel_limit(&e, id);
+            super::execute_cancel_position(&e, id);
         });
     }
 
@@ -555,7 +573,7 @@ mod tests {
 
         let balance_before = token_client.balance(&user);
         e.as_contract(&contract, || {
-            let payout = super::execute_close_position(&e, id, &pd);
+            let payout = super::execute_close_position(&e, id, dummy_price_bytes(&e));
             assert!(payout > 0);
 
             let positions = storage::get_user_positions(&e, &user);
@@ -627,7 +645,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #740)")]
+    #[should_panic(expected = "Error(Contract, #727)")]
     fn test_modify_collateral_unchanged_panics() {
         let e = setup_env();
         let (contract, token_client) = setup_contract(&e);
@@ -715,17 +733,16 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #712)")]
-    fn test_create_limit_halted() {
+    #[should_panic(expected = "Error(Contract, #702)")]
+    fn test_create_limit_disabled() {
         let e = setup_env();
         let (contract, token_client) = setup_contract(&e);
         let user = Address::generate(&e);
         token_client.mint(&user, &(100_000 * SCALAR_7));
 
-        // Set market to Halted
         e.as_contract(&contract, || {
             let mut mc = storage::get_market_config(&e, BTC_FEED_ID);
-            mc.status = 1; // MarketStatus::Halted
+            mc.enabled = false;
             storage::set_market_config(&e, BTC_FEED_ID, &mc);
         });
 
@@ -733,17 +750,16 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #712)")]
-    fn test_create_market_delisting() {
+    #[should_panic(expected = "Error(Contract, #702)")]
+    fn test_create_market_disabled() {
         let e = setup_env();
         let (contract, token_client) = setup_contract(&e);
         let user = Address::generate(&e);
         token_client.mint(&user, &(100_000 * SCALAR_7));
 
-        // Set market to Delisting
         e.as_contract(&contract, || {
             let mut mc = storage::get_market_config(&e, BTC_FEED_ID);
-            mc.status = 2; // MarketStatus::Delisting
+            mc.enabled = false;
             storage::set_market_config(&e, BTC_FEED_ID, &mc);
         });
 
@@ -762,7 +778,7 @@ mod tests {
     }
 
     #[test]
-    fn test_close_position_delisting_no_auth() {
+    fn test_close_position_disabled_settles_normally() {
         use crate::testutils::jump;
         let e = setup_env();
         let (contract, token_client) = setup_contract(&e);
@@ -776,35 +792,101 @@ mod tests {
             publish_time: e.ledger().timestamp(),
         };
 
-        // Open a position
+        // Open a filled market position
         let id = e.as_contract(&contract, || {
             super::execute_create_market(
                 &e, &user, 1_000 * SCALAR_7, 10_000 * SCALAR_7, true, 0, 0, &pd,
             )
         });
 
-        jump(&e, 1000 + 31);
-
-        // Set market to Delisting
+        // Disable market
         e.as_contract(&contract, || {
             let mut mc = storage::get_market_config(&e, BTC_FEED_ID);
-            mc.status = 2; // MarketStatus::Delisting
+            mc.enabled = false;
             storage::set_market_config(&e, BTC_FEED_ID, &mc);
         });
 
-        // Close without position owner auth -- should succeed in Delisting mode
+        jump(&e, 1000 + 31);
+
+        // Close settles normally (price unchanged → payout = col - fees)
         let balance_before = token_client.balance(&user);
         e.as_contract(&contract, || {
-            let payout = super::execute_close_position(&e, id, &pd);
+            let payout = super::execute_close_position(&e, id, dummy_price_bytes(&e));
             assert!(payout > 0);
 
             let positions = storage::get_user_positions(&e, &user);
             assert_eq!(positions.len(), 0);
         });
 
-        // User still gets paid
         let balance_after = token_client.balance(&user);
         assert!(balance_after > balance_before);
+    }
+
+    #[test]
+    fn test_cancel_position_deleted_market_refund() {
+        let e = setup_env();
+        let (contract, token_client) = setup_contract(&e);
+        let user = Address::generate(&e);
+        token_client.mint(&user, &(100_000 * SCALAR_7));
+
+        let pd = PriceData {
+            feed_id: BTC_FEED_ID,
+            price: BTC_PRICE,
+            exponent: -8,
+            publish_time: e.ledger().timestamp(),
+        };
+
+        // Create filled position, then delete the market
+        let id = e.as_contract(&contract, || {
+            super::execute_create_market(
+                &e, &user, 1_000 * SCALAR_7, 10_000 * SCALAR_7, true, 0, 0, &pd,
+            )
+        });
+
+        let col = e.as_contract(&contract, || {
+            storage::get_position(&e, id).col
+        });
+
+        e.as_contract(&contract, || {
+            crate::trading::execute_del_market(&e, BTC_FEED_ID);
+        });
+
+        // cancel_position works for filled positions when market is deleted
+        let balance_before = token_client.balance(&user);
+        e.as_contract(&contract, || {
+            let payout = super::execute_cancel_position(&e, id);
+            assert_eq!(payout, col);
+        });
+
+        let balance_after = token_client.balance(&user);
+        assert_eq!(balance_after - balance_before, col);
+    }
+
+    #[test]
+    fn test_cancel_position_pending_disabled() {
+        let e = setup_env();
+        let (contract, token_client) = setup_contract(&e);
+        let user = Address::generate(&e);
+        token_client.mint(&user, &(100_000 * SCALAR_7));
+
+        let collateral = 1_000 * SCALAR_7;
+        let id = place_limit_long(&e, &contract, &user, collateral, 10_000 * SCALAR_7);
+
+        // Disable market — pending position can still be cancelled
+        e.as_contract(&contract, || {
+            let mut mc = storage::get_market_config(&e, BTC_FEED_ID);
+            mc.enabled = false;
+            storage::set_market_config(&e, BTC_FEED_ID, &mc);
+        });
+
+        let balance_before = token_client.balance(&user);
+        e.as_contract(&contract, || {
+            let payout = super::execute_cancel_position(&e, id);
+            assert_eq!(payout, collateral);
+        });
+
+        let balance_after = token_client.balance(&user);
+        assert_eq!(balance_after - balance_before, collateral);
     }
 
 }

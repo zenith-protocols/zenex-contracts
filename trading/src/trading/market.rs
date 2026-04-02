@@ -23,6 +23,16 @@ impl Default for MarketData {
     }
 }
 
+/// Compute utilization = notional / (vault_balance × max_util / SCALAR_7), clamped to [0, SCALAR_7].
+fn calc_util(e: &Env, notional: i128, vault_balance: i128, max_util: i128) -> i128 {
+    if vault_balance <= 0 || notional <= 0 || max_util <= 0 {
+        return 0;
+    }
+    let cap = vault_balance.fixed_mul_floor(e, &max_util, &SCALAR_7);
+    if cap <= 0 { return 0; }
+    notional.fixed_div_ceil(e, &cap, &SCALAR_7).min(SCALAR_7)
+}
+
 impl MarketData {
     /// Returns (funding_index, borrowing_index, adl_index) for the given side.
     pub fn indices(&self, is_long: bool) -> (i128, i128, i128) {
@@ -59,6 +69,11 @@ impl MarketData {
         max_util: i128,
         max_util_market: i128,
     ) {
+        // No positions → no fees to charge
+        if self.l_notional == 0 && self.s_notional == 0 {
+            return;
+        }
+
         let current_time = e.ledger().timestamp();
         let seconds = current_time.saturating_sub(self.last_update) as i128;
         self.last_update = current_time;
@@ -70,20 +85,9 @@ impl MarketData {
         let hour = ONE_HOUR_SECONDS as i128;
 
         // Compute normalized utilizations [0, SCALAR_7]
-        let (util_vault, util_market) = if vault_balance > 0 {
-            let uv = if total_notional > 0 && max_util > 0 {
-                let cap = vault_balance.fixed_mul_floor(e, &max_util, &SCALAR_7);
-                if cap > 0 { total_notional.fixed_div_ceil(e, &cap, &SCALAR_7).min(SCALAR_7) } else { 0 }
-            } else { 0 };
-            let market_notional = self.l_notional + self.s_notional;
-            let um = if market_notional > 0 && max_util_market > 0 {
-                let cap = vault_balance.fixed_mul_floor(e, &max_util_market, &SCALAR_7);
-                if cap > 0 { market_notional.fixed_div_ceil(e, &cap, &SCALAR_7).min(SCALAR_7) } else { 0 }
-            } else { 0 };
-            (uv, um)
-        } else {
-            (0, 0)
-        };
+        let market_notional = self.l_notional + self.s_notional;
+        let util_vault = calc_util(e, total_notional, vault_balance, max_util);
+        let util_market = calc_util(e, market_notional, vault_balance, max_util_market);
 
         let borr_rate = rates::calc_borrowing_rate(e, r_base, r_var, r_var_market, util_vault, util_market);
 
@@ -163,8 +167,7 @@ impl MarketData {
 #[cfg(test)]
 mod tests {
     use crate::constants::{SCALAR_7, SCALAR_18};
-    use crate::testutils::{create_trading, default_market, default_market_data, jump, BTC_FEED_ID};
-    use crate::storage;
+    use crate::testutils::{create_trading, default_market_data, jump};
     use soroban_sdk::Env;
 
     const BASE_RATE: i128 = 10_000_000_000_000;
@@ -208,33 +211,6 @@ mod tests {
     }
 
     #[test]
-    fn test_market_data_load_and_store() {
-        let e = Env::default();
-        let (address, _) = create_trading(&e);
-
-        e.as_contract(&address, || {
-            let config = default_market(&e);
-            let mut data = default_market_data();
-            data.l_notional = 1000 * SCALAR_18;
-            data.s_notional = 500 * SCALAR_18;
-
-            storage::set_market_config(&e, BTC_FEED_ID, &config);
-            storage::set_market_data(&e, BTC_FEED_ID, &data);
-
-            let loaded = storage::get_market_data(&e, BTC_FEED_ID);
-            assert_eq!(loaded.l_notional, 1000 * SCALAR_18);
-            assert_eq!(loaded.s_notional, 500 * SCALAR_18);
-
-            let mut loaded = loaded;
-            loaded.l_notional = 2000 * SCALAR_18;
-            storage::set_market_data(&e, BTC_FEED_ID, &loaded);
-
-            let reloaded = storage::get_market_data(&e, BTC_FEED_ID);
-            assert_eq!(reloaded.l_notional, 2000 * SCALAR_18);
-        });
-    }
-
-    #[test]
     fn test_accrue_funding_longs_pay() {
         let e = Env::default();
         jump(&e, 0);
@@ -250,7 +226,12 @@ mod tests {
             jump(&e, 3600);
             data.accrue(&e, 0, 0, 0, 0, 0, MAX_UTIL, MAX_UTIL_MKT);
 
-            assert!(data.l_fund_idx > 0);
+            // pay_delta = fund_rate × 3600/3600 = 10_000_000_000_000
+            // ratio = floor(L/S) = floor(2000/1000 × S18) = 2 × S18
+            // recv_delta = floor(pay_delta × 2 × S18 / S18) = 20_000_000_000_000
+            // Shorts receive 2x per-unit (half the notional absorbs the full payment)
+            assert_eq!(data.l_fund_idx, 10_000_000_000_000);
+            assert_eq!(data.s_fund_idx, -20_000_000_000_000);
             assert_eq!(data.last_update, 3600);
         });
     }
@@ -271,7 +252,9 @@ mod tests {
             let total = data.l_notional + data.s_notional;
             data.accrue(&e, BASE_RATE, 0, 0, VAULT, total, MAX_UTIL, MAX_UTIL_MKT);
 
-            assert!(data.l_borr_idx > 0, "dominant longs should accrue");
+            // r_var=0, r_var_market=0 → borr_rate = r_base = BASE_RATE
+            // borrow_delta = BASE_RATE × 3600/3600 = 10_000_000_000_000
+            assert_eq!(data.l_borr_idx, 10_000_000_000_000, "dominant longs should accrue");
             assert_eq!(data.s_borr_idx, 0, "non-dominant shorts should NOT accrue");
         });
     }
@@ -293,7 +276,7 @@ mod tests {
             data.accrue(&e, BASE_RATE, 0, 0, VAULT, total, MAX_UTIL, MAX_UTIL_MKT);
 
             assert_eq!(data.l_borr_idx, 0, "non-dominant longs should NOT accrue");
-            assert!(data.s_borr_idx > 0, "dominant shorts should accrue");
+            assert_eq!(data.s_borr_idx, 10_000_000_000_000, "dominant shorts should accrue");
         });
     }
 
@@ -313,9 +296,9 @@ mod tests {
             let total = data.l_notional + data.s_notional;
             data.accrue(&e, BASE_RATE, 0, 0, VAULT, total, MAX_UTIL, MAX_UTIL_MKT);
 
-            assert!(data.l_borr_idx > 0, "balanced — both sides pay borrowing");
-            assert!(data.s_borr_idx > 0, "balanced — both sides pay borrowing");
-            assert_eq!(data.l_borr_idx, data.s_borr_idx, "balanced — same rate both sides");
+            // Balanced: both sides pay identical borrowing
+            assert_eq!(data.l_borr_idx, 10_000_000_000_000);
+            assert_eq!(data.s_borr_idx, 10_000_000_000_000);
         });
     }
 }

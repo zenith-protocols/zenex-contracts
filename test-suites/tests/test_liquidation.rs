@@ -60,7 +60,7 @@ fn test_liquidation_underwater_position() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #747)")]
+#[should_panic(expected = "Error(Contract, #731)")]
 fn test_liquidation_healthy_position_rejected() {
     let fixture = setup_fixture();
     let user = Address::generate(&fixture.env);
@@ -129,7 +129,7 @@ fn test_liquidation_keeper_receives_fee() {
 // ==========================================
 
 #[test]
-#[should_panic(expected = "Error(Contract, #749)")]
+#[should_panic(expected = "Error(Contract, #711)")]
 fn test_liquidation_stale_price_rejected() {
     let fixture = setup_fixture();
     let user = Address::generate(&fixture.env);

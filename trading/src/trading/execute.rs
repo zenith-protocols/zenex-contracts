@@ -20,15 +20,9 @@ fn add_transfer(map: &mut Map<Address, i128>, address: &Address, amount: i128) {
 
 /// Execute a batch of keeper triggers for a single market.
 ///
-/// The contract auto-detects the action for each position:
+/// Auto-detects the action for each position:
 /// - **Not filled** → fill limit order (if price crossed entry)
 /// - **Filled** → priority order: liquidate > stop-loss > take-profit
-///
-/// # Transfer order
-/// 1. Process all positions, accumulating transfers
-/// 2. Vault pays out (strategy_withdraw for winning positions)
-/// 3. Contract distributes to users/treasury/caller
-/// 4. Contract pays vault (collateral from losing positions)
 pub fn execute_trigger(
     e: &Env,
     caller: &Address,
@@ -115,7 +109,7 @@ fn apply_close(
     // Priority 2: Stop-loss if trigger price hit, requires open time
     else if position.check_stop_loss(ctx.price) {
         position.require_closable(e);
-        settle_close(e, t, ctx, caller, position, position_id, col, &s);
+        settle_close(e, t, ctx, caller, position, col, &s);
         StopLoss {
             feed_id: position.feed,
             user: position.user.clone(),
@@ -132,7 +126,7 @@ fn apply_close(
     // Priority 3: Take-profit if trigger price hit, requires open time
     else if position.check_take_profit(ctx.price) {
         position.require_closable(e);
-        settle_close(e, t, ctx, caller, position, position_id, col, &s);
+        settle_close(e, t, ctx, caller, position, col, &s);
         TakeProfit {
             feed_id: position.feed,
             user: position.user.clone(),
@@ -152,19 +146,18 @@ fn apply_close(
 
 /// Distribute transfers for a normal close (SL/TP).
 fn settle_close(
-    _e: &Env,
+    e: &Env,
     t: &mut Map<Address, i128>,
     ctx: &Context,
     caller: &Address,
     position: &Position,
-    _position_id: u32,
     col: i128,
     s: &Settlement,
 ) {
     let user_payout = s.equity(col).max(0);
-    let treasury_fee = ctx.treasury_fee(_e, s.protocol_fee());
+    let treasury_fee = ctx.treasury_fee(e, s.protocol_fee());
     let caller_fee = s.trading_fee()
-        .fixed_mul_floor(_e, &ctx.trading_config.caller_rate, &SCALAR_7);
+        .fixed_mul_floor(e, &ctx.trading_config.caller_rate, &SCALAR_7);
     let vault_transfer = col - user_payout - treasury_fee - caller_fee;
 
     if user_payout > 0 { add_transfer(t, &position.user, user_payout); }
@@ -315,17 +308,24 @@ mod tests {
         let id = create_pending_long(&e, &contract, &user, 1_000 * SCALAR_7, 10_000 * SCALAR_7, BTC_PRICE);
 
         let pd = btc_price_data(&e, BTC_PRICE);
+        let caller_before = token_client.balance(&caller);
         e.as_contract(&contract, || {
             let ids = vec![&e, id];
             super::execute_trigger(&e, &caller, ids, &pd);
 
             let pos = storage::get_position(&e, id);
             assert!(pos.filled);
+            // base_fee = ceil(10_000*S7 × 5_000 / S7) = 50_000_000
+            // impact_fee = ceil(10_000*S7 × S7 / (8B*S7)) = 13
+            // pos.col = 1_000*S7 - 50_000_013 = 9_949_999_987
+            assert_eq!(pos.col, 9_949_999_987);
         });
+        // caller_fee = floor(50_000_013 × 1_000_000 / S7) = 5_000_001
+        assert_eq!(token_client.balance(&caller) - caller_before, 5_000_001);
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #747)")]
+    #[should_panic(expected = "Error(Contract, #731)")]
     fn test_fill_long_limit_not_fillable() {
         let e = setup_env();
         let (contract, token_client) = setup_contract(&e);
@@ -363,6 +363,8 @@ mod tests {
 
             let pos = storage::get_position(&e, id);
             assert!(pos.filled);
+            // Same fees as long (first position on short side, also dominant)
+            assert_eq!(pos.col, 9_949_999_987);
         });
     }
 
@@ -376,21 +378,27 @@ mod tests {
 
         let id = create_pending_long(&e, &contract, &user, 1_100 * SCALAR_7, 100_000 * SCALAR_7, BTC_PRICE);
 
+        let balance_after_create = token_client.balance(&user);
         let pd = btc_price_data(&e, BTC_PRICE);
         e.as_contract(&contract, || {
-            // Fill first
             let ids = vec![&e, id];
             super::execute_trigger(&e, &caller, ids, &pd);
 
-            // Price crashes — contract auto-detects liquidation
+            // Price crashes -2% on 100x leverage → underwater
             let crash_pd = btc_price_data(&e, 9_800_000_000_000_i128);
             let ids = vec![&e, id];
             super::execute_trigger(&e, &caller, ids, &crash_pd);
+
+            // Position removed
+            let positions = storage::get_user_positions(&e, &user);
+            assert_eq!(positions.len(), 0);
         });
+        // User gets nothing back (underwater liquidation)
+        assert_eq!(token_client.balance(&user), balance_after_create);
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #747)")]
+    #[should_panic(expected = "Error(Contract, #731)")]
     fn test_liquidation_healthy_position() {
         let e = setup_env();
         let (contract, token_client) = setup_contract(&e);
@@ -436,13 +444,23 @@ mod tests {
         e.as_contract(&contract, || {
             let ids = vec![&e, id];
             super::execute_trigger(&e, &caller, ids, &pd);
+        });
 
-            jump(&e, 1000 + 31);
+        jump(&e, 1000 + 31);
 
+        let balance_before_sl = token_client.balance(&user);
+        e.as_contract(&contract, || {
+            // Price drops to $94k (-6%), triggers SL at $95k
             let sl_pd = btc_price_data(&e, 9_400_000_000_000_i128);
             let ids = vec![&e, id];
             super::execute_trigger(&e, &caller, ids, &sl_pd);
+
+            let positions = storage::get_user_positions(&e, &user);
+            assert_eq!(positions.len(), 0);
         });
+        // User gets partial collateral back (lost 6% on 10x = 60% of notional)
+        let balance_after_sl = token_client.balance(&user);
+        assert!(balance_after_sl > balance_before_sl, "user should receive SL payout");
     }
 
     #[test]
@@ -470,13 +488,24 @@ mod tests {
         e.as_contract(&contract, || {
             let ids = vec![&e, id];
             super::execute_trigger(&e, &caller, ids, &pd);
+        });
 
-            jump(&e, 1000 + 31);
+        jump(&e, 1000 + 31);
 
+        let balance_before_tp = token_client.balance(&user);
+        e.as_contract(&contract, || {
+            // Price rises to $115k (+15%), triggers TP at $110k
             let tp_pd = btc_price_data(&e, 11_500_000_000_000_i128);
             let ids = vec![&e, id];
             super::execute_trigger(&e, &caller, ids, &tp_pd);
+
+            let positions = storage::get_user_positions(&e, &user);
+            assert_eq!(positions.len(), 0);
         });
+        // User profits: 15% on 10x leverage = 150% gain on collateral
+        let balance_after_tp = token_client.balance(&user);
+        assert!(balance_after_tp > balance_before_tp + 1_000 * SCALAR_7,
+            "TP payout should exceed original collateral");
     }
 
     #[test]
@@ -490,15 +519,23 @@ mod tests {
         let id1 = create_pending_long(&e, &contract, &user, 1_000 * SCALAR_7, 10_000 * SCALAR_7, BTC_PRICE);
         let id2 = create_pending_short(&e, &contract, &user, 1_000 * SCALAR_7, 10_000 * SCALAR_7, BTC_PRICE);
 
+        let caller_before = token_client.balance(&caller);
         let pd = btc_price_data(&e, BTC_PRICE);
         e.as_contract(&contract, || {
             let ids = vec![&e, id1, id2];
             super::execute_trigger(&e, &caller, ids, &pd);
+
+            let pos1 = storage::get_position(&e, id1);
+            let pos2 = storage::get_position(&e, id2);
+            assert!(pos1.filled);
+            assert!(pos2.filled);
         });
+        // Caller earned fees from both fills
+        assert!(token_client.balance(&caller) > caller_before);
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #747)")]
+    #[should_panic(expected = "Error(Contract, #731)")]
     fn test_fill_already_filled_panics() {
         let e = setup_env();
         let (contract, token_client) = setup_contract(&e);
@@ -518,4 +555,5 @@ mod tests {
             super::execute_trigger(&e, &caller, ids, &pd);
         });
     }
+
 }

@@ -9,9 +9,9 @@ use crate::storage;
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum StrategyVaultError {
-    InvalidAmount = 420,
-    SharesLocked = 421,
-    UnauthorizedStrategy = 422,
+    InvalidAmount = 790,
+    SharesLocked = 791,
+    UnauthorizedStrategy = 792,
 }
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]

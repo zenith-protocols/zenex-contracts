@@ -54,6 +54,9 @@ impl TreasuryContract {
     /// - `owner` - Admin address for rate changes and withdrawals
     /// - `rate` - Protocol fee rate (SCALAR_7 fraction)
     pub fn __constructor(e: Env, owner: Address, rate: i128) {
+        if rate < 0 || rate > SCALAR_7 / 2 {
+            panic_with_error!(&e, TreasuryError::InvalidRate);
+        }
         ownable::set_owner(&e, &owner);
         storage::set_rate(&e, rate);
     }

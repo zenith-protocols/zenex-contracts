@@ -71,7 +71,7 @@ fn test_queue_and_execute() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #602)")]
+#[should_panic(expected = "Error(Contract, #771)")]
 fn test_execute_before_delay_fails() {
     let (e, _owner, gov_id, target_id) = setup_env();
     let client = GovernanceClient::new(&e, &gov_id);
@@ -98,7 +98,7 @@ fn test_cancel_removes_queued() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #601)")]
+#[should_panic(expected = "Error(Contract, #770)")]
 fn test_cancel_nonexistent_fails() {
     let (e, _owner, gov_id, _target_id) = setup_env();
     let client = GovernanceClient::new(&e, &gov_id);
@@ -224,7 +224,7 @@ fn test_set_delay_through_timelock() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #601)")]
+#[should_panic(expected = "Error(Contract, #770)")]
 fn test_apply_delay_without_pending_fails() {
     let (e, _owner, gov_id, _target_id) = setup_env();
     let client = GovernanceClient::new(&e, &gov_id);
@@ -283,7 +283,7 @@ fn test_multiple_queue_execute() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #601)")]
+#[should_panic(expected = "Error(Contract, #770)")]
 fn test_get_queued_nonexistent_panics() {
     let (e, _owner, gov_id, _target_id) = setup_env();
     let client = GovernanceClient::new(&e, &gov_id);

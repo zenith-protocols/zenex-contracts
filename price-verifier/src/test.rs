@@ -12,16 +12,8 @@ const TRUSTED_SIGNER: [u8; 32] = [
     0xdf, 0xa3, 0x29, 0x50, 0x82, 0x0c, 0x2e, 0x6c,
 ];
 
-// Real Lazer update: BTC/USD (feed 1) + ETH/USD (feed 2).
-// publish_time = 1772647347
-// BTC: raw price=7324803585261, exponent=-8
-// ETH: raw price=214644436210,  exponent=-8
-const UPDATE_HEX: &str = "b9011a82f6d7f6e0b98555f2b0785ec8ad2162c5e19d09de0742f4f1129e3aeaf3899124e2187bf7bf1d31b381079260ce1aae766e395d9476f9ea1628699ee9f830eb0080efc1f480c5615af3fb673d42287e993da9fbc3506b6e41dfa32950820c2e6c420075d3c793402d749f364c06000302010000000300edd45070a906000004f8ff055af7284b00000000020000000300f22ccef93100000004f8ff05789fb60100000000";
-
-// publish_time from the test vector
-const PUBLISH_TIME: u64 = 1772647347;
-
-// Default max staleness for tests (10 seconds)
+// All blobs share the same publish_time (fetched concurrently from Pyth Lazer REST API)
+const PUBLISH_TIME: u64 = 1_775_140_467;
 const MAX_STALENESS: u64 = 10;
 
 fn hex_to_bytes(env: &Env, hex: &str) -> Bytes {
@@ -47,6 +39,18 @@ fn hex_to_bytes(env: &Env, hex: &str) -> Bytes {
     bytes
 }
 
+fn load_1_feed(env: &Env) -> Bytes {
+    hex_to_bytes(env, include_str!("testdata/1_feed.hex").trim())
+}
+
+fn load_2_feeds(env: &Env) -> Bytes {
+    hex_to_bytes(env, include_str!("testdata/2_feeds.hex").trim())
+}
+
+fn load_50_feeds(env: &Env) -> Bytes {
+    hex_to_bytes(env, include_str!("testdata/50_feeds.hex").trim())
+}
+
 fn setup_env() -> (Env, PriceVerifierClient<'static>) {
     let env = Env::default();
     env.mock_all_auths();
@@ -65,16 +69,27 @@ fn test_constructor() {
 }
 
 #[test]
+fn test_verify_single_feed() {
+    let (env, client) = setup_env();
+    env.ledger().with_mut(|li| li.timestamp = PUBLISH_TIME);
+
+    let feed = client.verify_price(&load_1_feed(&env));
+    assert_eq!(feed.feed_id, 1);
+    assert_eq!(feed.price, 6_651_333_675_616_i128);
+    assert_eq!(feed.exponent, -8);
+    assert_eq!(feed.publish_time, PUBLISH_TIME);
+}
+
+#[test]
 fn test_verify_btc_usd() {
     let (env, client) = setup_env();
     env.ledger().with_mut(|li| li.timestamp = PUBLISH_TIME);
 
-    let data = hex_to_bytes(&env, UPDATE_HEX);
-    let feeds = client.verify_prices(&data);
+    let feeds = client.verify_prices(&load_2_feeds(&env));
     let feed = feeds.get(0).unwrap();
 
     assert_eq!(feed.feed_id, 1);
-    assert_eq!(feed.price, 7_324_803_585_261_i128);
+    assert_eq!(feed.price, 6_651_333_675_616_i128);
     assert_eq!(feed.exponent, -8);
     assert_eq!(feed.publish_time, PUBLISH_TIME);
 }
@@ -84,12 +99,11 @@ fn test_verify_eth_usd() {
     let (env, client) = setup_env();
     env.ledger().with_mut(|li| li.timestamp = PUBLISH_TIME);
 
-    let data = hex_to_bytes(&env, UPDATE_HEX);
-    let feeds = client.verify_prices(&data);
-    let feed = feeds.get(1).unwrap(); // ETH is second feed in blob
+    let feeds = client.verify_prices(&load_2_feeds(&env));
+    let feed = feeds.get(1).unwrap();
 
     assert_eq!(feed.feed_id, 2);
-    assert_eq!(feed.price, 214_644_436_210_i128);
+    assert_eq!(feed.price, 205_033_408_168_i128);
     assert_eq!(feed.exponent, -8);
 }
 
@@ -98,45 +112,51 @@ fn test_verify_multi() {
     let (env, client) = setup_env();
     env.ledger().with_mut(|li| li.timestamp = PUBLISH_TIME);
 
-    let data = hex_to_bytes(&env, UPDATE_HEX);
-    let feeds = client.verify_prices(&data);
+    let feeds = client.verify_prices(&load_2_feeds(&env));
     assert_eq!(feeds.len(), 2);
-    assert_eq!(feeds.get(0).unwrap().price, 7_324_803_585_261_i128);
-    assert_eq!(feeds.get(1).unwrap().price, 214_644_436_210_i128);
+    assert_eq!(feeds.get(0).unwrap().feed_id, 1);
+    assert_eq!(feeds.get(1).unwrap().feed_id, 2);
+}
+
+#[test]
+fn test_verify_50_feeds() {
+    let (env, client) = setup_env();
+    env.ledger().with_mut(|li| li.timestamp = PUBLISH_TIME);
+
+    let feeds = client.verify_prices(&load_50_feeds(&env));
+    assert_eq!(feeds.len(), 50);
+    assert_eq!(feeds.get(0).unwrap().feed_id, 1);
+    assert_eq!(feeds.get(49).unwrap().feed_id, 51);
 }
 
 #[test]
 fn test_verify_within_staleness() {
     let (env, client) = setup_env();
-    // Ledger time is MAX_STALENESS seconds after publish — still valid
     env.ledger().with_mut(|li| li.timestamp = PUBLISH_TIME + MAX_STALENESS);
 
-    let data = hex_to_bytes(&env, UPDATE_HEX);
-    let feeds = client.verify_prices(&data);
+    let feeds = client.verify_prices(&load_2_feeds(&env));
     assert_eq!(feeds.len(), 2);
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #820)")]
+#[should_panic(expected = "Error(Contract, #782)")]
 fn test_rejects_stale_price() {
     let (env, client) = setup_env();
-    // Ledger time is MAX_STALENESS + 1 seconds after publish — stale
     env.ledger().with_mut(|li| li.timestamp = PUBLISH_TIME + MAX_STALENESS + 1);
 
-    let data = hex_to_bytes(&env, UPDATE_HEX);
-    client.verify_prices(&data);
+    client.verify_prices(&load_2_feeds(&env));
 }
 
 #[test]
 #[should_panic]
 fn test_rejects_wrong_signer() {
     let env = Env::default();
+    env.mock_all_auths();
     let admin = soroban_sdk::Address::generate(&env);
     let wrong = BytesN::from_array(&env, &[0xAA; 32]);
     let id = env.register(PriceVerifier, (&admin, &wrong, &200u32, &MAX_STALENESS));
     let client = PriceVerifierClient::new(&env, &id);
 
     env.ledger().with_mut(|li| li.timestamp = PUBLISH_TIME);
-    let data = hex_to_bytes(&env, UPDATE_HEX);
-    client.verify_prices(&data);
+    client.verify_prices(&load_2_feeds(&env));
 }

@@ -133,34 +133,35 @@ mod tests {
     fn test_long_dominant_2x() {
         let e = Env::default();
         let rate = calc_funding_rate(&e, 2000 * SCALAR_18, 1000 * SCALAR_18, BASE_RATE);
-        let expected = BASE_RATE.fixed_mul_ceil(&e, &SCALAR_18, &(3 * SCALAR_18));
-        assert_eq!(rate, expected);
+        // imbalance=1000, total=3000 → fraction=1/3
+        // ceil(10_000_000_000_000 / 3) = 3_333_333_333_334
+        assert_eq!(rate, 3_333_333_333_334);
     }
 
     #[test]
     fn test_short_dominant_2x() {
         let e = Env::default();
         let rate = calc_funding_rate(&e, 1000 * SCALAR_18, 2000 * SCALAR_18, BASE_RATE);
-        let expected = BASE_RATE.fixed_mul_ceil(&e, &SCALAR_18, &(3 * SCALAR_18));
-        assert_eq!(rate, -expected);
+        // Same magnitude as long_dominant_2x, negative sign (shorts pay)
+        assert_eq!(rate, -3_333_333_333_334);
     }
 
     #[test]
     fn test_long_dominant_high_ratio() {
         let e = Env::default();
         let rate = calc_funding_rate(&e, 10000 * SCALAR_18, 1000 * SCALAR_18, BASE_RATE);
-        let fraction = (9 * SCALAR_18).fixed_div_ceil(&e, &(11 * SCALAR_18), &SCALAR_18);
-        let expected = BASE_RATE.fixed_mul_ceil(&e, &fraction, &SCALAR_18);
-        assert_eq!(rate, expected);
+        // imbalance=9000, total=11000 → fraction=9/11
+        // ceil(9e18/11) = 818_181_818_181_818_182
+        // ceil(10_000_000_000_000 × 818_181_818_181_818_182 / 1e18) = 8_181_818_181_819
+        assert_eq!(rate, 8_181_818_181_819);
     }
 
     #[test]
     fn test_short_dominant_high_ratio() {
         let e = Env::default();
         let rate = calc_funding_rate(&e, 1000 * SCALAR_18, 10000 * SCALAR_18, BASE_RATE);
-        let fraction = (9 * SCALAR_18).fixed_div_ceil(&e, &(11 * SCALAR_18), &SCALAR_18);
-        let expected = BASE_RATE.fixed_mul_ceil(&e, &fraction, &SCALAR_18);
-        assert_eq!(rate, -expected);
+        // Same magnitude as long_dominant_high_ratio, negative sign
+        assert_eq!(rate, -8_181_818_181_819);
     }
 
     #[test]
@@ -171,7 +172,7 @@ mod tests {
         assert!(rate > BASE_RATE * 999 / 1000);
     }
 
-    // ── Borrowing rate tests ──
+    //Borrowing rate tests
 
     #[test]
     fn test_borrowing_zero_utilization() {
@@ -202,19 +203,21 @@ mod tests {
     #[test]
     fn test_borrowing_half_vault_util() {
         let e = Env::default();
-        // 0.5^5 ≈ 0.03125 → vault_term ≈ 0.03125 * BASE_RATE
+        // 0.5^5 = 0.03125 → u5 = 312_500 (in SCALAR_7)
+        // vault_term = BASE_RATE × 312_500 / SCALAR_7 = 312_500_000_000
+        // total = 10_000_000_000_000 + 312_500_000_000 = 10_312_500_000_000
         let rate = calc_borrowing_rate(&e, BASE_RATE, BASE_RATE, 0, HALF, 0);
-        assert!(rate > BASE_RATE);
-        assert!(rate < BASE_RATE + BASE_RATE / 10); // < 1.1× base
+        assert_eq!(rate, 10_312_500_000_000);
     }
 
     #[test]
     fn test_borrowing_half_market_util() {
         let e = Env::default();
-        // 0.5^3 = 0.125 → market_term = 0.125 * BASE_RATE
+        // 0.5^3 = 0.125 → u3 = 1_250_000 (in SCALAR_7)
+        // market_term = BASE_RATE × 1_250_000 / SCALAR_7 = 1_250_000_000_000
+        // total = 10_000_000_000_000 + 1_250_000_000_000 = 11_250_000_000_000
         let rate = calc_borrowing_rate(&e, BASE_RATE, 0, BASE_RATE, 0, HALF);
-        assert!(rate > BASE_RATE);
-        assert!(rate < BASE_RATE + BASE_RATE / 4); // < 1.25× base
+        assert_eq!(rate, 11_250_000_000_000);
     }
 
     #[test]
@@ -229,8 +232,10 @@ mod tests {
         let nine = 9 * SCALAR_7 / 10; // 90%
         let one = SCALAR_7 / 10;      // 10%
         let rate = calc_borrowing_rate(&e, BASE_RATE, BASE_RATE, BASE_RATE, nine, one);
-        // 0.9^5 ≈ 0.59, 0.1^3 = 0.001 → vault term dominates
-        assert!(rate > BASE_RATE + BASE_RATE / 2);
+        // 0.9^5 = 0.59049 → vault_term = 5_904_900_000_000
+        // 0.1^3 = 0.001   → market_term = 10_000_000_000
+        // total = 10_000_000_000_000 + 5_904_900_000_000 + 10_000_000_000 = 15_914_900_000_000
+        assert_eq!(rate, 15_914_900_000_000);
     }
 
     #[test]
@@ -239,8 +244,10 @@ mod tests {
         let nine = 9 * SCALAR_7 / 10;
         let one = SCALAR_7 / 10;
         let rate = calc_borrowing_rate(&e, BASE_RATE, BASE_RATE, BASE_RATE, one, nine);
-        // 0.1^5 ≈ 0.00001, 0.9^3 = 0.729 → market term dominates
-        assert!(rate > BASE_RATE + BASE_RATE * 7 / 10);
+        // 0.1^5 = 0.00001 → vault_term = 100_000_000
+        // 0.9^3 = 0.729   → market_term = 7_290_000_000_000
+        // total = 10_000_000_000_000 + 100_000_000 + 7_290_000_000_000 = 17_290_100_000_000
+        assert_eq!(rate, 17_290_100_000_000);
     }
 
     #[test]

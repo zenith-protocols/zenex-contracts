@@ -234,7 +234,7 @@ fn test_price_verifier_real_signature_verification() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #800)")]
+#[should_panic(expected = "Error(Contract, #780)")]
 fn test_price_verifier_wrong_signer_rejected() {
     let e = Env::default();
     e.cost_estimate().budget().reset_unlimited();
@@ -263,7 +263,7 @@ fn test_price_verifier_wrong_signer_rejected() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #820)")]
+#[should_panic(expected = "Error(Contract, #782)")]
 fn test_price_verifier_stale_price_rejected() {
     let e = Env::default();
     e.cost_estimate().budget().reset_unlimited();
@@ -327,7 +327,7 @@ fn test_price_verifier_multi_feed_verification() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #810)")]
+#[should_panic(expected = "Error(Contract, #781)")]
 fn test_price_verifier_confidence_too_wide_rejected() {
     let e = Env::default();
     e.cost_estimate().budget().reset_unlimited();

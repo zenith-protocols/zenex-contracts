@@ -7,7 +7,8 @@ use stellar_tokens::{
 use crate::{storage, strategy::StrategyVault};
 
 /// ERC-4626 tokenized vault with deposit locking. Backs trader positions with
-/// depositor collateral. Only the strategy (trading contract) can withdraw.
+/// depositor collateral. Depositors withdraw via ERC-4626 after the lock period.
+/// The strategy (trading contract) withdraws via `strategy_withdraw`.
 #[contract]
 pub struct StrategyVaultContract;
 

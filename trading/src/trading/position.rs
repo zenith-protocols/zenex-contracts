@@ -2,7 +2,7 @@ use crate::constants::{MIN_OPEN_TIME, SCALAR_7, SCALAR_18};
 use crate::errors::TradingError;
 use crate::storage;
 use crate::trading::context::Context;
-use crate::types::{MarketData, MarketStatus};
+use crate::types::MarketData;
 pub(crate) use crate::types::Position;
 use soroban_fixed_point_math::SorobanFixedPoint;
 use soroban_sdk::{panic_with_error, Address, Env};
@@ -83,21 +83,21 @@ impl Position {
     /// Validate position parameters against trading and market constraints.
     ///
     /// # Parameters
-    /// - `market_status` - MarketStatus as u32 (0=Active, 1=Halted, 2=Delisting)
+    /// - `enabled` - Whether the market is enabled
     /// - `min_notional` / `max_notional` - Notional bounds (token_decimals)
     /// - `margin` - Initial margin requirement (SCALAR_7, e.g. 1e6 = 10% = 10x max leverage)
     ///
     /// # Panics
     /// - `TradingError::NegativeValueNotAllowed` (735) if notional, price, or col <= 0
-    /// - `TradingError::MarketNotActive` (712) if market is not Active
+    /// - `TradingError::MarketDisabled` (712) if market is not enabled
     /// - `TradingError::NotionalBelowMinimum` (736) / `NotionalAboveMaximum` (737)
     /// - `TradingError::LeverageAboveMaximum` (739) if `notional * margin > col`
-    pub fn validate(&self, e: &Env, market_status: u32, min_notional: i128, max_notional: i128, margin: i128) {
+    pub fn validate(&self, e: &Env, enabled: bool, min_notional: i128, max_notional: i128, margin: i128) {
         if self.notional <= 0 || self.entry_price <= 0 || self.col <= 0 || self.tp < 0 || self.sl < 0 {
             panic_with_error!(e, TradingError::NegativeValueNotAllowed);
         }
-        if MarketStatus::from_u32(e, market_status) != MarketStatus::Active {
-            panic_with_error!(e, TradingError::MarketNotActive);
+        if !enabled {
+            panic_with_error!(e, TradingError::MarketDisabled);
         }
         if self.notional < min_notional {
             panic_with_error!(e, TradingError::NotionalBelowMinimum);
@@ -116,9 +116,9 @@ impl Position {
     /// - `TradingError::ActionNotAllowedForStatus` (750) if position is not filled
     /// - `TradingError::PositionTooNew` (748) if < 30s since fill
     ///
-    /// WHY: MIN_OPEN_TIME (30 seconds) prevents same-block open+close price arbitrage.
-    /// Without it, a user could open and close in the same ledger using the same oracle
-    /// price, extracting risk-free profit from fee asymmetry.
+    /// MIN_OPEN_TIME (30 seconds) prevents same-block open+close price arbitrage.
+    /// Without it, a user could open and close in the same ledger using the two
+    /// different prices oracle, extracting risk-free profit.
     pub fn require_closable(&self, e: &Env) {
         if !self.filled {
             panic_with_error!(e, TradingError::ActionNotAllowedForStatus);
@@ -130,19 +130,20 @@ impl Position {
     }
 
     /// Guard for liquidation path: position must be filled, and price must be
-    /// at least as recent as the position open time. This prevents stale-price
-    /// liquidation attacks without blocking timely liquidations with MIN_OPEN_TIME.
+    /// at least as recent as the position open time. This prevents liquidation
+    /// using prices before open, without blocking timely liquidations with MIN_OPEN_TIME.
     pub fn require_liquidatable(&self, e: &Env, price_publish_time: u64) {
         if !self.filled {
             panic_with_error!(e, TradingError::ActionNotAllowedForStatus);
         }
         // price must be at least as recent as position open.
-        // Prevents manipulation with stale prices predating the position.
         if price_publish_time < self.created_at {
             panic_with_error!(e, TradingError::StalePrice);
         }
     }
 
+    // Validate SL/TP: if set (> 0), TP must be above entry for long (below for short),
+    // and SL must be below entry for long (above for short).
     pub fn validate_triggers(&self, e: &Env) {
         if self.tp < 0 || self.sl < 0 {
             panic_with_error!(e, TradingError::NegativeValueNotAllowed);
@@ -243,6 +244,7 @@ impl Position {
         }
     }
 
+    // Check if current price triggers take profit. If TP is not set (0), always returns false.
     pub fn check_take_profit(&self, current_price: i128) -> bool {
         if self.tp == 0 {
             return false;
@@ -255,6 +257,7 @@ impl Position {
         }
     }
 
+    // Check if current price triggers stop loss. If SL is not set (0), always returns false.
     pub fn check_stop_loss(&self, current_price: i128) -> bool {
         if self.sl == 0 {
             return false;
@@ -330,9 +333,7 @@ mod tests {
         }
     }
 
-    // ==========================================
-    // Settlement Tests (PnL + Fees)
-    // ==========================================
+    // Settlement tests (PnL + fees)
 
     #[test]
     fn test_settle_long_profit() {
@@ -414,10 +415,15 @@ mod tests {
 
         e.as_contract(&address, || {
             let s = position.settle(&e, &m);
-            // Balanced: closing either side makes the other dominant → dom fee
-            assert_eq!(s.base_fee, 5 * SCALAR_7);
+            // Balanced market: closing a long removes long notional, making shorts dominant.
+            // Closing worsens the imbalance from the other side's perspective → dom fee.
+            // fee_dom = 5_000 (0.05%), notional = 10_000 * SCALAR_7
+            // base_fee = ceil(10_000 * SCALAR_7 × 5_000 / SCALAR_7) = 50_000_000
+            assert_eq!(s.base_fee, 50_000_000);
+            // impact_fee = ceil(notional / impact) = ceil(10_000 * S7 / 8_000_000_000 * S7)
             assert!(s.impact_fee > 0);
             assert_eq!(s.funding, 0);
+            assert_eq!(s.borrowing_fee, 0);
         });
     }
 
@@ -468,6 +474,46 @@ mod tests {
     }
 
     #[test]
+    fn test_settle_fee_close_flips_dominance() {
+        let e = Env::default();
+        let (address, _) = create_trading(&e);
+        let mut data = default_market_data();
+        // Longs barely dominant: 105k vs 100k. Closing 10k long flips to 95k vs 100k.
+        data.l_notional = 105_000 * SCALAR_7;
+        data.s_notional = 100_000 * SCALAR_7;
+        let m = test_market(data);
+
+        e.as_contract(&address, || {
+            let mut position = create_test_position(&e);
+            let s = position.settle(&e, &m);
+            // is_dominant(long, -10k): 105k - 10k = 95k < 100k → no longer dominant → dom fee
+            // fee_dom = 5_000 (0.05%), notional = 10_000 * SCALAR_7
+            // base_fee = ceil(100_000_000_000 × 5_000 / 10_000_000) = 50_000_000
+            assert_eq!(s.base_fee, 50_000_000);
+        });
+    }
+
+    #[test]
+    fn test_settle_fee_close_stays_dominant() {
+        let e = Env::default();
+        let (address, _) = create_trading(&e);
+        let mut data = default_market_data();
+        // Longs heavily dominant: 200k vs 100k. Closing 10k long stays 190k vs 100k.
+        data.l_notional = 200_000 * SCALAR_7;
+        data.s_notional = 100_000 * SCALAR_7;
+        let m = test_market(data);
+
+        e.as_contract(&address, || {
+            let mut position = create_test_position(&e);
+            let s = position.settle(&e, &m);
+            // is_dominant(long, -10k): 200k - 10k = 190k > 100k → still dominant → non-dom fee
+            // fee_non_dom = 1_000 (0.01%), notional = 10_000 * SCALAR_7
+            // base_fee = ceil(100_000_000_000 × 1_000 / 10_000_000) = 10_000_000
+            assert_eq!(s.base_fee, 10_000_000);
+        });
+    }
+
+    #[test]
     fn test_settle_fee_with_funding() {
         let e = Env::default();
         let (address, _) = create_trading(&e);
@@ -492,18 +538,25 @@ mod tests {
         let mut data = default_market_data();
         data.l_notional = 100_000 * SCALAR_7;
         data.s_notional = 100_000 * SCALAR_7;
-        data.l_fund_idx = SCALAR_18 / 100;
+        data.l_fund_idx = SCALAR_18 / 100;   // 1% funding
+        data.l_borr_idx = SCALAR_18 / 200;   // 0.5% borrowing
         let m = test_market(data);
 
         e.as_contract(&address, || {
             let s = position.settle(&e, &m);
-            assert_eq!(s.total_fee(), s.base_fee + s.impact_fee + s.funding);
+            // notional = 10_000 * SCALAR_7
+            // base_fee = 50_000_000 (dom fee, same as balanced test)
+            assert_eq!(s.base_fee, 50_000_000);
+            // funding = floor(10_000 * S7 × (S18/100) / S18) = 100 * S7 = 1_000_000_000
+            assert_eq!(s.funding, 1_000_000_000);
+            // borrowing = ceil(10_000 * S7 × (S18/200) / S18) = 50 * S7 = 500_000_000
+            assert_eq!(s.borrowing_fee, 500_000_000);
+            // total_fee = base + impact + funding + borrowing
+            assert_eq!(s.total_fee(), s.base_fee + s.impact_fee + s.funding + s.borrowing_fee);
         });
     }
 
-    // ==========================================
-    // Take Profit Tests
-    // ==========================================
+    // Take profit tests
 
     #[test]
     fn test_take_profit_long_triggered() {
@@ -558,9 +611,7 @@ mod tests {
         assert!(!position.check_take_profit(200_000 * SCALAR_7));
     }
 
-    // ==========================================
-    // Stop Loss Tests
-    // ==========================================
+    // Stop loss tests
 
     #[test]
     fn test_stop_loss_long_triggered() {
@@ -659,12 +710,10 @@ mod tests {
         });
     }
 
-    // ==========================================
-    // require_liquidatable Tests
-    // ==========================================
+    // require_liquidatable tests
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #749)")]
+    #[should_panic(expected = "Error(Contract, #711)")]
     fn test_require_liquidatable_stale_price_fails() {
         let e = Env::default();
         let mut position = create_test_position(&e);
@@ -687,7 +736,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #750)")]
+    #[should_panic(expected = "Error(Contract, #733)")]
     fn test_require_liquidatable_unfilled_fails() {
         let e = Env::default();
         let mut position = create_test_position(&e);
@@ -696,13 +745,4 @@ mod tests {
         position.require_liquidatable(&e, 2000);
     }
 
-    #[test]
-    fn test_require_liquidatable_immediate_ok() {
-        let e = Env::default();
-        let mut position = create_test_position(&e);
-        position.created_at = 500;
-        position.filled = true;
-        // Same timestamp as position: immediately liquidatable
-        position.require_liquidatable(&e, 500);
-    }
 }

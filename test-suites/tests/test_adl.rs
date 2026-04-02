@@ -122,7 +122,7 @@ fn trigger_adl(fixture: &TestFixture, btc_price_raw: i64) {
 // ==========================================
 
 #[test]
-#[should_panic(expected = "Error(Contract, #780)")]
+#[should_panic(expected = "Error(Contract, #750)")]
 fn test_adl_threshold_not_met_reverts() {
     let fixture = setup_fixture();
     let user = Address::generate(&fixture.env);

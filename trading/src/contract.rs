@@ -11,8 +11,6 @@ use stellar_access::ownable::{self as ownable, Ownable};
 use stellar_contract_utils::upgradeable::UpgradeableInternal;
 use stellar_macros::{only_owner, Upgradeable};
 
-/// Perpetual futures trading contract. Leveraged long/short positions with
-/// limit/market orders, funding rates, borrowing fees, and auto-deleveraging.
 #[derive(Upgradeable)]
 #[contract]
 pub struct TradingContract;
@@ -25,7 +23,6 @@ pub trait Trading {
     /// - `config` - New [`TradingConfig`]
     ///
     /// # Panics
-    /// - `TradingError::Unauthorized` (1) if caller is not the owner
     /// - `TradingError::InvalidConfig` (702) if bounds check fails
     /// - `TradingError::NegativeValueNotAllowed` (735) if any rate/fee is negative
     fn set_config(e: Env, config: TradingConfig);
@@ -40,22 +37,20 @@ pub trait Trading {
     /// - `config` - Per-market parameters (see [`MarketConfig`])
     ///
     /// # Panics
-    /// - `TradingError::Unauthorized` (1) if caller is not the owner
     /// - `TradingError::MaxMarketsReached` (770) if `MAX_ENTRIES` markets exist
     /// - `TradingError::InvalidConfig` (702) if market config bounds fail
     /// - `TradingError::NegativeValueNotAllowed` (735) if any rate/fee is negative
     fn set_market(e: Env, feed_id: u32, config: MarketConfig);
 
-    /// (Owner only) Remove a market. Allows delisting when remaining OI is
-    /// below `min_notional` (ADL rounding dust won't block removal).
+    /// (Owner only) Remove a market. Subtracts remaining OI from total_notional
+    /// and cleans up market storage. Existing positions are refunded via
+    /// `close_position` or `execute`.
     ///
     /// # Parameters
     /// - `feed_id` - Market to remove
     ///
     /// # Panics
-    /// - `TradingError::Unauthorized` (1) if caller is not the owner
     /// - `TradingError::MarketNotFound` (710) if feed_id not registered
-    /// - `TradingError::MarketHasOpenPositions` (771) if either side >= min_notional
     fn del_market(e: Env, feed_id: u32);
 
     /// (Owner only) Set contract status to an admin-level state.
@@ -63,7 +58,6 @@ pub trait Trading {
     /// Valid targets: `Active` (0), `AdminOnIce` (2), `Frozen` (3).
     ///
     /// # Panics
-    /// - `TradingError::Unauthorized` (1) if caller is not the owner
     /// - `TradingError::InvalidStatus` (760) if status is `OnIce`
     fn set_status(e: Env, status: u32);
 
@@ -106,7 +100,7 @@ pub trait Trading {
     /// - `TradingError::NegativeValueNotAllowed` (735) if any value <= 0
     /// - `TradingError::NotionalBelowMinimum` (736) / `NotionalAboveMaximum` (737)
     /// - `TradingError::LeverageAboveMaximum` (739) if notional * margin > collateral
-    /// - `TradingError::MarketNotActive` (712) if market is not Active
+    /// - `TradingError::MarketDisabled` (712) if market is not enabled
     fn place_limit(
         e: Env,
         user: Address,
@@ -143,7 +137,7 @@ pub trait Trading {
     /// - `TradingError::NegativeValueNotAllowed` (735) if any value <= 0
     /// - `TradingError::NotionalBelowMinimum` (736) / `NotionalAboveMaximum` (737)
     /// - `TradingError::LeverageAboveMaximum` (739) if notional * margin > collateral
-    /// - `TradingError::MarketNotActive` (712) if market is not Active
+    /// - `TradingError::MarketDisabled` (712) if market is not enabled
     /// - `TradingError::InvalidPrice` (720) if feed_id mismatch
     /// - `TradingError::UtilizationExceeded` (791) if per-market or global cap exceeded
     fn open_market(
@@ -168,24 +162,24 @@ pub trait Trading {
     ///
     /// # Panics
     /// - `TradingError::ContractFrozen` (762) if contract is Frozen
-    /// - `TradingError::PositionNotPending` (733) if position is already filled
+    /// - `TradingError::PositionNotPending` (733) if position is filled and market exists
     /// - `TradingError::PositionNotFound` (730) if position_id is invalid
-    fn cancel_limit(e: Env, position_id: u32) -> i128;
+    fn cancel_position(e: Env, position_id: u32) -> i128;
 
-    /// Close a filled position at the current oracle price. Settles PnL and all
-    /// accrued fees (funding, borrowing, base, impact).
+    /// Close a filled position at the current oracle price with full settlement.
+    /// For deleted markets or pending positions, use `cancel_position` instead.
     ///
     /// # Parameters
-    /// - `position_id` - ID of the filled position
-    /// - `price` - Binary-encoded price payload
+    /// - `position_id` - ID of the position
+    /// - `price` - Binary-encoded price payload (ignored for disabled/deleted markets)
     ///
     /// # Returns
     /// User payout (token_decimals).
     ///
     /// # Panics
     /// - `TradingError::ContractFrozen` (762) if contract is Frozen
-    /// - `TradingError::PositionTooNew` (748) if MIN_OPEN_TIME not elapsed
-    /// - `TradingError::InvalidPrice` (720) if feed_id mismatch
+    /// - `TradingError::PositionTooNew` (748) if MIN_OPEN_TIME not elapsed (normal path only)
+    /// - `TradingError::InvalidPrice` (720) if feed_id mismatch (normal path only)
     fn close_position(e: Env, position_id: u32, price: Bytes) -> i128;
 
     /// Add or withdraw collateral on an open (filled) position.
@@ -197,7 +191,7 @@ pub trait Trading {
     /// # Parameters
     /// - `position_id` - ID of the filled position
     /// - `new_collateral` - Desired collateral amount after modification (token_decimals)
-    /// - `price` - Binary-encoded Pyth Lazer price payload (needed for margin check on withdrawal)
+    /// - `price` - Binary-encoded price payload (needed for margin check on withdrawal)
     ///
     /// # Panics
     /// - `TradingError::ContractFrozen` (762) if contract is Frozen
@@ -393,15 +387,14 @@ impl Trading for TradingContract {
         )
     }
 
-    fn cancel_limit(e: Env, position_id: u32) -> i128 {
+    fn cancel_position(e: Env, position_id: u32) -> i128 {
         storage::extend_instance(&e);
-        trading::execute_cancel_limit(&e, position_id)
+        trading::execute_cancel_position(&e, position_id)
     }
 
     fn close_position(e: Env, position_id: u32, price: Bytes) -> i128 {
         storage::extend_instance(&e);
-        let pv = PriceVerifierClient::new(&e, &storage::get_price_verifier(&e));
-        trading::execute_close_position(&e, position_id, &pv.verify_price(&price))
+        trading::execute_close_position(&e, position_id, price)
     }
 
     fn modify_collateral(e: Env, position_id: u32, new_collateral: i128, price: Bytes) {

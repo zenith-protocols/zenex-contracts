@@ -43,10 +43,6 @@ impl Context {
     /// # Side effects
     /// - Calls `MarketData::accrue()` to advance borrowing and funding indices
     /// - Computes `price_scalar = 10^(-exponent)` from Pyth exponent
-    ///
-    /// WHY: price_scalar is computed per-call rather than stored because the exponent
-    /// comes from the oracle and could theoretically change between feed updates.
-    /// Computing it fresh avoids stale scalar bugs.
     pub fn load(e: &Env, price_data: &PriceData) -> Self {
         let feed_id = price_data.feed_id;
         let trading_config = storage::get_config(e);
@@ -119,11 +115,11 @@ impl Context {
     /// - `position_id` - Storage key for the position
     ///
     /// # Returns
-    /// `(base_fee, impact_fee)` -- both in token_decimals.
+    /// `(base_fee, impact_fee)` both in token_decimals.
     ///
     /// # Fee logic
     /// - `base_fee`: dominant-side openings pay `fee_dom`, non-dominant pay `fee_non_dom`
-    ///   (SCALAR_7 fraction of notional). WHY: opening on the dominant side worsens
+    ///   (SCALAR_7 fraction of notional). Opening on the dominant side worsens
     ///   market imbalance, so the higher fee disincentivizes that.
     /// - `impact_fee`: `notional / impact` (SCALAR_7), simulates price impact.
     ///
@@ -132,24 +128,23 @@ impl Context {
     /// - All panics from `Position::validate()`
     pub fn open(&mut self, e: &Env, position: &mut Position, position_id: u32) -> (i128, i128) {
         let base_fee = if self.data.is_dominant(position.long, position.notional) {
-            // WHY: ceil rounding on fees -- protocol never under-charges
             position.notional.fixed_mul_ceil(e, &self.trading_config.fee_dom, &SCALAR_7)
         } else {
             position.notional.fixed_mul_ceil(e, &self.trading_config.fee_non_dom, &SCALAR_7)
         };
         let impact_fee = position.notional.fixed_div_ceil(e, &self.config.impact, &SCALAR_7);
 
-        // WHY: fees deducted from collateral before validation -- ensures post-fee
+        // fees deducted from collateral before validation, ensures post-fee
         // collateral still meets margin requirements, preventing under-collateralized positions.
         position.col -= base_fee + impact_fee;
-        position.validate(e, self.config.status, self.trading_config.min_notional, self.trading_config.max_notional, self.config.margin);
+        position.validate(e, self.config.enabled, self.trading_config.min_notional, self.trading_config.max_notional, self.config.margin);
         position.fill(e, &self.data);
         storage::set_position(e, position_id, position);
 
-        // WHY: entry_wt (entry-weighted aggregate) tracks Sigma(notional/entry_price) per side.
-        // This enables O(1) PnL calculation for the entire side during ADL checks,
+        // entry_wt (entry-weighted aggregate) tracks Sigma(notional/entry_price) per side.
+        // This enables O(1) estimate PnL calculation for the entire side during ADL checks,
         // without iterating over every position.
-        // floor rounding on entry_wt -- conservative (slightly understates aggregate weight).
+        // floor rounding on entry_wt, conservative (slightly understates aggregate weight).
         let ew_delta = position.notional.fixed_div_floor(e, &position.entry_price, &self.price_scalar);
         self.data.update_stats(position.long, position.notional, ew_delta);
         self.total_notional += position.notional;
@@ -180,6 +175,78 @@ impl Context {
     pub fn store(&self, e: &Env) {
         storage::set_market_data(e, self.feed_id, &self.data);
         storage::set_total_notional(e, self.total_notional);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::constants::SCALAR_7;
+    use crate::testutils::{default_config, default_market, default_market_data, BTC_FEED_ID};
+    use crate::types::MarketData;
+    use super::Context;
+    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::{Address, Env};
+
+    fn test_ctx(e: &Env, vault_balance: i128, market_data: MarketData, total_notional: i128) -> Context {
+        Context {
+            feed_id: BTC_FEED_ID,
+            price: 0,
+            price_scalar: SCALAR_7,
+            publish_time: 0,
+            config: default_market(e),
+            data: market_data,
+            trading_config: default_config(),
+            vault: Address::generate(e),
+            vault_balance,
+            token: Address::generate(e),
+            treasury: Address::generate(e),
+            total_notional,
+        }
+    }
+
+    #[test]
+    fn test_util_within_caps() {
+        let e = Env::default();
+        // vault=100k, market notional=100k (1x), global=100k (1x)
+        // max_util_market=5x, max_util_global=10x → both within caps
+        let mut data = default_market_data();
+        data.l_notional = 50_000 * SCALAR_7;
+        data.s_notional = 50_000 * SCALAR_7;
+        let ctx = test_ctx(&e, 100_000 * SCALAR_7, data, 100_000 * SCALAR_7);
+        ctx.require_within_util(&e);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #751)")]
+    fn test_util_market_exceeds_cap() {
+        let e = Env::default();
+        // vault=100k, market notional=600k (6x) > max_util_market(5x)
+        let mut data = default_market_data();
+        data.l_notional = 300_000 * SCALAR_7;
+        data.s_notional = 300_000 * SCALAR_7;
+        let ctx = test_ctx(&e, 100_000 * SCALAR_7, data, 600_000 * SCALAR_7);
+        ctx.require_within_util(&e);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #751)")]
+    fn test_util_global_exceeds_cap() {
+        let e = Env::default();
+        // vault=100k, market notional=100k (1x, within 5x market cap)
+        // but global notional=1_100k (11x) > max_util_global(10x)
+        let mut data = default_market_data();
+        data.l_notional = 50_000 * SCALAR_7;
+        data.s_notional = 50_000 * SCALAR_7;
+        let ctx = test_ctx(&e, 100_000 * SCALAR_7, data, 1_100_000 * SCALAR_7);
+        ctx.require_within_util(&e);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #751)")]
+    fn test_util_zero_vault_balance() {
+        let e = Env::default();
+        let ctx = test_ctx(&e, 0, default_market_data(), 0);
+        ctx.require_within_util(&e);
     }
 }
 

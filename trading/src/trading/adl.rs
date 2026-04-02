@@ -274,7 +274,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #780)")]
+    #[should_panic(expected = "Error(Contract, #750)")]
     fn test_update_status_threshold_not_met() {
         let e = Env::default();
         e.mock_all_auths();
@@ -325,6 +325,8 @@ mod tests {
         // Longs: 50k notional entered at $50k, current price $100k => +50k PnL
         // Shorts: 30k notional entered at $50k, current price $100k => -30k PnL
         // Net = 20k, vault = 5k => deficit = 15k
+        // reduction_pct = floor(15k / 50k × S18) = 0.3 × S18
+        // factor = 0.7 × S18
         set_market_positions(&e, &contract, 50_000 * SCALAR_7, 30_000 * SCALAR_7, 50_000 * PRICE_SCALAR);
 
         e.as_contract(&contract, || {
@@ -337,12 +339,13 @@ mod tests {
 
             let data_after = storage::get_market_data(&e, BTC_FEED_ID);
 
-            // Longs were winning — should be reduced
-            assert!(data_after.l_notional < data_before.l_notional);
-            assert!(data_after.l_entry_wt < data_before.l_entry_wt);
-            assert!(data_after.l_adl_idx < data_before.l_adl_idx);
+            // Longs reduced by 30%: 50k × 0.7 = 35k
+            assert_eq!(data_after.l_notional, 350_000_000_000);
+            let expected_ew = data_before.l_entry_wt * 700_000_000_000_000_000 / SCALAR_18;
+            assert_eq!(data_after.l_entry_wt, expected_ew);
+            assert_eq!(data_after.l_adl_idx, 700_000_000_000_000_000);
 
-            // Shorts were losing — should be unchanged
+            // Shorts were losing — untouched
             assert_eq!(data_after.s_notional, data_before.s_notional);
             assert_eq!(data_after.s_entry_wt, data_before.s_entry_wt);
             assert_eq!(data_after.s_adl_idx, data_before.s_adl_idx);
@@ -364,7 +367,10 @@ mod tests {
 
         // Longs: 100k notional entered at $50k, current $100k => +100k PnL
         // Shorts: 10k entered at $50k => -10k PnL
-        // Net = 90k, vault = 1k => massive deficit
+        // Net = 90k, vault = 1k => deficit = 89k
+        // total_winner_pnl = 100k (longs)
+        // reduction_pct = floor(89k / 100k × S18) = 0.89 × S18
+        // factor = 0.11 × S18
         set_market_positions(&e, &contract, 100_000 * SCALAR_7, 10_000 * SCALAR_7, 50_000 * PRICE_SCALAR);
 
         e.as_contract(&contract, || {
@@ -377,12 +383,53 @@ mod tests {
 
             let data_after = storage::get_market_data(&e, BTC_FEED_ID);
 
-            // Longs heavily reduced
-            assert!(data_after.l_notional < data_before.l_notional);
-            assert!(data_after.l_adl_idx < SCALAR_18);
+            // Longs reduced by 89%: 100k × 0.11 = 11k
+            assert_eq!(data_after.l_notional, 110_000_000_000);
+            assert_eq!(data_after.l_adl_idx, 110_000_000_000_000_000);
 
             // Shorts lost — untouched
             assert_eq!(data_after.s_notional, data_before.s_notional);
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #740)")]
+    fn test_update_status_frozen_rejected() {
+        let e = Env::default();
+        e.mock_all_auths();
+        jump(&e, 1000);
+
+        let contract = setup_small_vault(&e, 100 * SCALAR_7);
+        set_market_positions(&e, &contract, 1000 * SCALAR_7, 0, 50_000 * PRICE_SCALAR);
+
+        e.as_contract(&contract, || {
+            storage::set_status(&e, ContractStatus::Frozen as u32);
+
+            let feeds = vec![&e, btc_feed(&e)];
+            super::execute_update_status(&e, &feeds);
+        });
+    }
+
+    #[test]
+    fn test_update_status_admin_onice_adl() {
+        let e = Env::default();
+        e.mock_all_auths();
+        jump(&e, 1000);
+
+        let contract = setup_small_vault(&e, 100 * SCALAR_7);
+        set_market_positions(&e, &contract, 1000 * SCALAR_7, 0, 50_000 * PRICE_SCALAR);
+
+        e.as_contract(&contract, || {
+            storage::set_status(&e, ContractStatus::AdminOnIce as u32);
+
+            let feeds = vec![&e, btc_feed(&e)];
+            super::execute_update_status(&e, &feeds);
+
+            // ADL runs but status stays AdminOnIce (admin controls the unlock)
+            assert_eq!(storage::get_status(&e), ContractStatus::AdminOnIce as u32);
+
+            let data = storage::get_market_data(&e, BTC_FEED_ID);
+            assert!(data.l_adl_idx < SCALAR_18);
         });
     }
 }

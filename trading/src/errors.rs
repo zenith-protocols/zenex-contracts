@@ -6,40 +6,41 @@ use soroban_sdk::contracterror;
 pub enum TradingError {
     Unauthorized = 1, // caller is not the contract owner
 
-    InvalidConfig = 702, // config parameter out of valid range
+    // 700: Config & Market
+    InvalidConfig = 700, // config parameter out of valid range
+    MarketNotFound = 701, // no market registered for the given feed_id
+    MarketDisabled = 702, // market is disabled or deleted
+    MaxMarketsReached = 703, // MAX_ENTRIES (50) markets already registered
 
-    MarketNotFound = 710, // no market registered for the given feed_id
-    MarketNotActive = 712, // market is not Active (Halted or Delisting)
+    // 710: Price
+    InvalidPrice = 710, // price verification failed, feed_id mismatch, or missing feed
+    StalePrice = 711, // price data predates position open time
 
-    InvalidPrice = 720, // price verification failed, feed_id mismatch, or missing feed
+    // 720: Position
+    PositionNotFound = 720, // position ID not found in storage
+    PositionNotPending = 721, // position is filled; expected pending
+    MaxPositionsReached = 722, // user has MAX_ENTRIES (50) positions
+    NegativeValueNotAllowed = 723, // a parameter is <= 0 or negative
+    NotionalBelowMinimum = 724, // notional below TradingConfig.min_notional
+    NotionalAboveMaximum = 725, // notional above TradingConfig.max_notional
+    LeverageAboveMaximum = 726, // effective leverage exceeds 1/margin
+    CollateralUnchanged = 727, // modify_collateral called with unchanged amount
+    WithdrawalBreaksMargin = 728, // collateral withdrawal would breach margin requirement
+    InvalidTakeProfitPrice = 729, // TP price on wrong side of entry
+    InvalidStopLossPrice = 730, // SL price on wrong side of entry
+    NotActionable = 731, // no valid action for this position
+    PositionTooNew = 732, // close attempted before MIN_OPEN_TIME (30s)
+    ActionNotAllowedForStatus = 733, // action not allowed for position status
 
-    PositionNotFound = 730, // position ID not found in storage
-    PositionNotPending = 733, // position is filled; expected pending
-    MaxPositionsReached = 734, // user has MAX_ENTRIES (50) positions
-    NegativeValueNotAllowed = 735, // a parameter is <= 0 or negative
-    NotionalBelowMinimum = 736, // notional below TradingConfig.min_notional
-    NotionalAboveMaximum = 737, // notional above TradingConfig.max_notional
-    LeverageAboveMaximum = 739, // effective leverage exceeds 1/margin
-    CollateralUnchanged = 740, // modify_collateral called with unchanged amount
-    WithdrawalBreaksMargin = 741, // collateral withdrawal would breach margin requirement
-    InvalidTakeProfitPrice = 742, // TP price on wrong side of entry
-    InvalidStopLossPrice = 743, // SL price on wrong side of entry
-    NotActionable = 747, // no valid action for this position
-    PositionTooNew = 748, // close attempted before MIN_OPEN_TIME (30s)
-    StalePrice = 749, // price data predates position open time
+    // 740: Contract Status
+    InvalidStatus = 740, // invalid or disallowed contract status value
+    ContractOnIce = 741, // new positions blocked (OnIce, AdminOnIce, or Frozen)
+    ContractFrozen = 742, // all position management blocked (Frozen)
 
-    ActionNotAllowedForStatus = 750, // action not allowed for position status
+    // 750: Utilization & Funding
+    ThresholdNotMet = 750, // net PnL below ADL threshold
+    UtilizationExceeded = 751, // position would exceed notional/vault cap
+    FundingTooEarly = 752, // apply_funding called < 1 hour since last call
 
-    InvalidStatus = 760, // invalid or disallowed contract status value
-    ContractOnIce = 761, // new positions blocked (OnIce, AdminOnIce, or Frozen)
-    ContractFrozen = 762, // all position management blocked (Frozen)
-
-    MaxMarketsReached = 770, // MAX_ENTRIES (50) markets already registered
-    MarketHasOpenPositions = 771, // cannot delete market with nonzero open interest
-
-    ThresholdNotMet = 780, // net PnL below ADL threshold
-
-    FundingTooEarly = 790, // apply_funding called < 1 hour since last call
-
-    UtilizationExceeded = 791, // position would exceed notional/vault cap
+    // 760-769: reserved for trading growth
 }

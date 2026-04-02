@@ -250,10 +250,10 @@ fn test_cancel_limit_rejects_non_position_owner() {
         },
     }]);
 
-    let result = f.trading.try_cancel_limit(&position_id);
+    let result = f.trading.try_cancel_position(&position_id);
     assert!(
         result.is_err(),
-        "cancel_limit should reject non-position-owner"
+        "cancel_position should reject non-position-owner"
     );
 }
 

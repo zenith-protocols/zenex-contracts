@@ -132,18 +132,6 @@ pub struct StopLoss {
     pub borrowing_fee: i128,
 }
 
-/// Emitted when a pending limit order is cancelled via `cancel_limit`.
-#[contractevent]
-#[derive(Clone)]
-pub struct CancelLimit {
-    #[topic]
-    pub feed_id: u32,
-    #[topic]
-    pub user: Address,
-    #[topic]
-    pub position_id: u32,
-}
-
 /// Emitted when collateral is added or withdrawn via `modify_collateral`.
 #[contractevent]
 #[derive(Clone)]
@@ -178,6 +166,19 @@ pub struct SetTriggers {
 pub struct DelMarket {
     #[topic]
     pub feed_id: u32,
+}
+
+/// Emitted when a position is refunded (market disabled or deleted).
+#[contractevent]
+#[derive(Clone)]
+pub struct RefundPosition {
+    #[topic]
+    pub feed_id: u32,
+    #[topic]
+    pub user: Address,
+    #[topic]
+    pub position_id: u32,
+    pub amount: i128,
 }
 
 /// Emitted when funding rates are recalculated via `apply_funding`.

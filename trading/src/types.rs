@@ -15,33 +15,10 @@ pub struct TradingConfig {
     pub r_var:        i128, // vault-level variable borrowing rate at full vault utilization (SCALAR_18)
 }
 
-/// Per-market lifecycle state.
-///
-/// Active -> Halted -> Delisting -> del_market (admin removes after OI = 0)
-/// Any state -> Active: admin can restore via set_market
-#[derive(Clone, PartialEq, Debug)]
-#[repr(u32)]
-pub enum MarketStatus {
-    Active    = 0, // normal operation, all actions permitted
-    Halted    = 1, // no new positions or limit fills, existing positions can be managed
-    Delisting = 2, // anyone can close any position, wind-down toward del_market
-}
-
-impl MarketStatus {
-    pub fn from_u32(e: &Env, value: u32) -> Self {
-        match value {
-            0 => MarketStatus::Active,
-            1 => MarketStatus::Halted,
-            2 => MarketStatus::Delisting,
-            _ => panic_with_error!(e, TradingError::InvalidStatus),
-        }
-    }
-}
-
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct MarketConfig {
-    pub status:   u32,  // MarketStatus: 0=Active, 1=Halted, 2=Delisting
+    pub enabled:  bool,  // true = active, false = disabled (positions refunded)
     pub max_util: i128, // per-market utilization cap (SCALAR_7)
     pub r_var_market: i128, // per-market variable borrowing rate at full market utilization (SCALAR_18)
     pub margin:   i128, // initial margin requirement, max leverage = 1/margin (SCALAR_7)

@@ -296,7 +296,7 @@ fn test_limit_order_cancel_refund() {
     assert!(balance_after_place < initial_balance); // collateral deducted
 
     // Cancel limit order
-    fixture.trading.cancel_limit(&position_id);
+    fixture.trading.cancel_position(&position_id);
 
     // Full refund
     let final_balance = fixture.token.balance(&user);
@@ -305,7 +305,7 @@ fn test_limit_order_cancel_refund() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #747)")]
+#[should_panic(expected = "Error(Contract, #731)")]
 fn test_limit_order_not_fillable_at_price() {
     let fixture = setup_fixture();
     let user = Address::generate(&fixture.env);
@@ -327,7 +327,7 @@ fn test_limit_order_not_fillable_at_price() {
 // ==========================================
 
 #[test]
-#[should_panic(expected = "Error(Contract, #761)")]
+#[should_panic(expected = "Error(Contract, #741)")]
 fn test_open_blocked_when_frozen() {
     let fixture = setup_fixture();
     // Set to Frozen (3)

@@ -66,7 +66,7 @@ fn test_mint_sets_lock() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #421)")] // SharesLocked
+#[should_panic(expected = "Error(Contract, #791)")] // SharesLocked
 fn test_withdraw_while_locked_fails_via_withdraw() {
     let (_, vault, _, user, _) = setup_test();
 
@@ -124,7 +124,7 @@ fn test_new_deposit_resets_lock() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #421)")] // SharesLocked
+#[should_panic(expected = "Error(Contract, #791)")] // SharesLocked
 fn test_redeem_while_locked_fails() {
     let (_, vault, _, user, _) = setup_test();
 
@@ -136,7 +136,7 @@ fn test_redeem_while_locked_fails() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #421)")] // SharesLocked
+#[should_panic(expected = "Error(Contract, #791)")] // SharesLocked
 fn test_withdraw_while_locked_fails() {
     let (_, vault, _, user, _) = setup_test();
 
@@ -191,7 +191,7 @@ fn test_user_without_deposit_history_is_not_locked() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #421)")] // SharesLocked
+#[should_panic(expected = "Error(Contract, #791)")] // SharesLocked
 fn test_transfer_while_locked_fails() {
     let (env, vault, _, user, _) = setup_test();
     let recipient = Address::generate(&env);
@@ -224,7 +224,7 @@ fn test_transfer_after_unlock_succeeds() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #421)")] // SharesLocked
+#[should_panic(expected = "Error(Contract, #791)")] // SharesLocked
 fn test_transfer_from_while_locked_fails() {
     let (env, vault, _, user, _) = setup_test();
     let spender = Address::generate(&env);
@@ -274,7 +274,7 @@ fn test_strategy_withdraw_decreases_assets() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #422)")] // UnauthorizedStrategy
+#[should_panic(expected = "Error(Contract, #792)")] // UnauthorizedStrategy
 fn test_unauthorized_strategy_fails() {
     let (env, vault, _, user, _) = setup_test();
     let fake_strategy = Address::generate(&env);
@@ -284,7 +284,7 @@ fn test_unauthorized_strategy_fails() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #420)")] // InvalidAmount
+#[should_panic(expected = "Error(Contract, #790)")] // InvalidAmount
 fn test_zero_strategy_withdraw_fails() {
     let (_, vault, _, user, strategy) = setup_test();
 

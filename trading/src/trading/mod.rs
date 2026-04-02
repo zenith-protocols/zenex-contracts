@@ -8,7 +8,7 @@ mod market;
 mod position;
 
 pub use actions::{
-    execute_apply_funding, execute_cancel_limit, execute_close_position,
+    execute_apply_funding, execute_cancel_position, execute_close_position,
     execute_create_limit, execute_create_market, execute_modify_collateral,
     execute_set_triggers,
 };

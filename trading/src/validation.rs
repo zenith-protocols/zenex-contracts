@@ -4,7 +4,7 @@ use crate::constants::{
 };
 use crate::errors::TradingError;
 use crate::storage;
-use crate::types::{ContractStatus, MarketConfig, MarketStatus, TradingConfig};
+use crate::types::{ContractStatus, MarketConfig, TradingConfig};
 use soroban_sdk::{panic_with_error, Env};
 
 /// Guard: contract must be `Active` to open new positions.
@@ -87,9 +87,6 @@ pub fn require_valid_config(e: &Env, config: &TradingConfig) {
 /// - `TradingError::NegativeValueNotAllowed` (735) if margin or liq_fee <= 0
 /// - `TradingError::InvalidConfig` (702) if bounds exceeded or margin <= liq_fee
 pub fn require_valid_market_config(e: &Env, config: &MarketConfig) {
-    // Validate status is a recognized MarketStatus value (panics with InvalidStatus if not)
-    MarketStatus::from_u32(e, config.status);
-
     // margin > 0 required because leverage = 1/margin; margin <= 0 is undefined.
     // liq_fee > 0 required because it doubles as the liquidation threshold.
     if config.margin <= 0

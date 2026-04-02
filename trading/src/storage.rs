@@ -207,6 +207,11 @@ pub fn set_markets(e: &Env, markets: &Vec<u32>) {
         .extend_ttl(&key, LEDGER_THRESHOLD_MARKET, LEDGER_BUMP_MARKET);
 }
 
+pub fn has_market(e: &Env, feed_id: u32) -> bool {
+    let key = TradingStorageKey::MarketConfig(feed_id);
+    e.storage().persistent().has(&key)
+}
+
 pub fn get_market_config(e: &Env, feed_id: u32) -> MarketConfig {
     let key = TradingStorageKey::MarketConfig(feed_id);
     let config: MarketConfig = e
@@ -247,6 +252,16 @@ pub fn set_market_data(e: &Env, feed_id: u32, data: &MarketData) {
     e.storage()
         .persistent()
         .extend_ttl(&key, LEDGER_THRESHOLD_MARKET, LEDGER_BUMP_MARKET);
+}
+
+pub fn remove_market_config(e: &Env, feed_id: u32) {
+    let key = TradingStorageKey::MarketConfig(feed_id);
+    e.storage().persistent().remove(&key);
+}
+
+pub fn remove_market_data(e: &Env, feed_id: u32) {
+    let key = TradingStorageKey::MarketData(feed_id);
+    e.storage().persistent().remove(&key);
 }
 
 pub fn get_position(e: &Env, position_id: u32) -> Position {
