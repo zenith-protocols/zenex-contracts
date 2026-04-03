@@ -109,7 +109,7 @@ impl Governance for GovernanceContract {
             args,
             unlock_time,
         };
-        storage::set_queued(&e, nonce, &queued);
+        storage::set_queued(&e, nonce, &queued, delay);
         events::Queued {
             nonce,
             target,
@@ -170,7 +170,7 @@ impl Governance for GovernanceContract {
             new_delay,
             unlock_time,
         };
-        storage::set_pending_delay(&e, &pending);
+        storage::set_pending_delay(&e, &pending, current_delay);
         events::Queued {
             nonce: u32::MAX,
             target: e.current_contract_address(),

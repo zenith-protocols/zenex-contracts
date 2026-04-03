@@ -27,8 +27,17 @@ pub struct PendingDelay {
 }
 
 pub const ONE_DAY_LEDGERS: u32 = 17280;
-pub const LEDGER_THRESHOLD_TEMP: u32 = ONE_DAY_LEDGERS * 100;
-pub const LEDGER_BUMP_TEMP: u32 = LEDGER_THRESHOLD_TEMP + 20 * ONE_DAY_LEDGERS;
+pub const MIN_TTL_LEDGERS: u32 = ONE_DAY_LEDGERS; // 1 day floor
+
+/// Compute TTL for a queued entry: 2x delay with a minimum of 1 day.
+/// Returns (threshold, bump) in ledger units.
+pub fn ttl_for_delay(delay_seconds: u64) -> (u32, u32) {
+    // 5 seconds per ledger
+    let delay_ledgers = (delay_seconds / 5) as u32;
+    let threshold = (delay_ledgers * 2).max(MIN_TTL_LEDGERS);
+    let bump = threshold + ONE_DAY_LEDGERS;
+    (threshold, bump)
+}
 
 pub fn get_delay(e: &Env) -> u64 {
     e.storage()
@@ -49,20 +58,22 @@ pub fn set_delay(e: &Env, delay: u64) {
     e.storage().instance().set(&GovKey::Delay, &delay);
 }
 
-pub fn set_queued(e: &Env, nonce: u32, queued: &QueuedCall) {
+pub fn set_queued(e: &Env, nonce: u32, queued: &QueuedCall, delay: u64) {
     let key = GovKey::Queued(nonce);
     e.storage().temporary().set(&key, queued);
+    let (threshold, bump) = ttl_for_delay(delay);
     e.storage()
         .temporary()
-        .extend_ttl(&key, LEDGER_THRESHOLD_TEMP, LEDGER_BUMP_TEMP);
+        .extend_ttl(&key, threshold, bump);
 }
 
-pub fn set_pending_delay(e: &Env, pending: &PendingDelay) {
+pub fn set_pending_delay(e: &Env, pending: &PendingDelay, delay: u64) {
     let key = GovKey::PendingDelay;
     e.storage().temporary().set(&key, pending);
+    let (threshold, bump) = ttl_for_delay(delay);
     e.storage()
         .temporary()
-        .extend_ttl(&key, LEDGER_THRESHOLD_TEMP, LEDGER_BUMP_TEMP);
+        .extend_ttl(&key, threshold, bump);
 }
 
 pub fn next_nonce(e: &Env) -> u32 {
