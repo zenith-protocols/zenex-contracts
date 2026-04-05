@@ -228,7 +228,7 @@ impl Position {
         } else {
             self.notional.fixed_mul_ceil(e, &market.trading_config.fee_dom, &SCALAR_7)
         };
-        let impact_fee = self.notional.fixed_div_ceil(e, &market.config.impact, &SCALAR_7);
+        let impact_fee = self.notional.fixed_div_floor(e, &market.config.impact, &SCALAR_7);
 
         // funding uses floor (conservative for receiver), borrowing uses ceil
         // (protocol never under-collects).
@@ -276,7 +276,7 @@ mod tests {
     use super::*;
     use crate::constants::{SCALAR_7, SCALAR_18};
     use crate::trading::context::Context;
-    use crate::testutils::{create_trading, default_config, default_market, default_market_data, BTC_FEED_ID};
+    use crate::testutils::{create_trading, default_config, default_market, default_market_data, FEED_BTC};
     use soroban_sdk::{testutils::Address as _, Address, Env};
 
     fn create_test_position(e: &Env) -> Position {
@@ -300,7 +300,7 @@ mod tests {
     fn test_market(data: MarketData) -> Context {
         let e = Env::default();
         Context {
-            feed_id: BTC_FEED_ID,
+            feed_id: FEED_BTC,
             price: 100_000 * SCALAR_7,
             price_scalar: SCALAR_7,
             config: default_market(&e),
@@ -318,7 +318,7 @@ mod tests {
     fn test_market_at(price: i128, data: MarketData) -> Context {
         let e = Env::default();
         Context {
-            feed_id: BTC_FEED_ID,
+            feed_id: FEED_BTC,
             price,
             price_scalar: SCALAR_7,
             config: default_market(&e),
@@ -680,7 +680,7 @@ mod tests {
             let (id, position) = Position::create(
                 &e,
                 &user,
-                BTC_FEED_ID,
+                FEED_BTC,
                 true,
                 100_000 * SCALAR_7,
                 1_000 * SCALAR_7,
@@ -692,7 +692,7 @@ mod tests {
             assert_eq!(id, 0);
             assert_eq!(position.user, user);
             assert!(!position.filled);
-            assert_eq!(position.feed, BTC_FEED_ID);
+            assert_eq!(position.feed, FEED_BTC);
             assert!(position.long);
             assert_eq!(position.sl, 90_000 * SCALAR_7);
             assert_eq!(position.tp, 110_000 * SCALAR_7);

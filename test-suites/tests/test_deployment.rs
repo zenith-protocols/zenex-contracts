@@ -344,13 +344,15 @@ fn test_price_verifier_confidence_too_wide_rejected() {
     // Confidence check: raw_conf * 10_000 > raw_price.abs() * max_confidence_bps
     // With price=100_000, max_confidence_bps=200: threshold = 100_000 * 200 = 20_000_000
     // So confidence of 3000: 3000 * 10_000 = 30_000_000 > 20_000_000 --> rejected
-    let price_bytes = pyth_helper::price_with_confidence(
+    let price_bytes = pyth_helper::build_price_update(
         &e,
         &signing_key,
-        1,       // feed_id
-        100_000, // price
-        -8,      // exponent
-        3000,    // confidence (3% > 2% max)
+        &[pyth_helper::FeedInput {
+            feed_id: 1,
+            price: 100_000,
+            exponent: -8,
+            confidence: 3000, // 3% > 2% max
+        }],
         timestamp,
     );
 
@@ -371,13 +373,15 @@ fn test_price_verifier_confidence_within_bounds_accepted() {
     e.ledger().with_mut(|li| li.timestamp = timestamp);
 
     // Confidence within bounds: 1000 * 10_000 = 10_000_000 <= 100_000 * 200 = 20_000_000
-    let price_bytes = pyth_helper::price_with_confidence(
+    let price_bytes = pyth_helper::build_price_update(
         &e,
         &signing_key,
-        1,       // feed_id
-        100_000, // price
-        -8,      // exponent
-        1000,    // confidence (1% < 2% max) -- accepted
+        &[pyth_helper::FeedInput {
+            feed_id: 1,
+            price: 100_000,
+            exponent: -8,
+            confidence: 1000, // 1% < 2% max -- accepted
+        }],
         timestamp,
     );
 

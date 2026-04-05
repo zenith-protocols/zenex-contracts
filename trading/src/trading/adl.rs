@@ -197,7 +197,7 @@ mod tests {
     use crate::storage;
     use crate::testutils::{
         create_trading_with_vault, default_market, jump,
-        BTC_FEED_ID, BTC_PRICE, PRICE_SCALAR,
+        FEED_BTC, BTC_PRICE, PRICE_SCALAR,
     };
     use crate::dependencies::PriceData;
     use crate::types::ContractStatus;
@@ -205,7 +205,7 @@ mod tests {
 
     fn btc_feed(e: &Env) -> PriceData {
         PriceData {
-            feed_id: BTC_FEED_ID,
+            feed_id: FEED_BTC,
             price: BTC_PRICE,
             exponent: -8,
             publish_time: e.ledger().timestamp(),
@@ -217,7 +217,7 @@ mod tests {
 
         e.as_contract(&contract, || {
             let market_config = default_market(e);
-            crate::trading::config::execute_set_market(e, BTC_FEED_ID, &market_config);
+            crate::trading::config::execute_set_market(e, FEED_BTC, &market_config);
         });
 
         contract
@@ -234,14 +234,14 @@ mod tests {
         let short_entry_wt = short_notional * PRICE_SCALAR / entry_price;
 
         e.as_contract(contract, || {
-            let mut data = storage::get_market_data(e, BTC_FEED_ID);
+            let mut data = storage::get_market_data(e, FEED_BTC);
             data.l_notional = long_notional;
             data.s_notional = short_notional;
             data.l_entry_wt = long_entry_wt;
             data.s_entry_wt = short_entry_wt;
             data.l_adl_idx = SCALAR_18;
             data.s_adl_idx = SCALAR_18;
-            storage::set_market_data(e, BTC_FEED_ID, &data);
+            storage::set_market_data(e, FEED_BTC, &data);
             storage::set_total_notional(e, long_notional + short_notional);
         });
     }
@@ -259,7 +259,7 @@ mod tests {
         set_market_positions(&e, &contract, 1000 * SCALAR_7, 0, 50_000 * PRICE_SCALAR);
 
         e.as_contract(&contract, || {
-            let data_before = storage::get_market_data(&e, BTC_FEED_ID);
+            let data_before = storage::get_market_data(&e, FEED_BTC);
 
             let feeds = vec![&e, btc_feed(&e)];
             super::execute_update_status(&e, &feeds);
@@ -267,7 +267,7 @@ mod tests {
             assert_eq!(storage::get_status(&e), ContractStatus::OnIce as u32);
 
             // ADL should have reduced the winning long side
-            let data_after = storage::get_market_data(&e, BTC_FEED_ID);
+            let data_after = storage::get_market_data(&e, FEED_BTC);
             assert!(data_after.l_notional < data_before.l_notional);
             assert!(data_after.l_adl_idx < SCALAR_18);
         });
@@ -332,12 +332,12 @@ mod tests {
         e.as_contract(&contract, || {
             storage::set_status(&e, ContractStatus::OnIce as u32);
 
-            let data_before = storage::get_market_data(&e, BTC_FEED_ID);
+            let data_before = storage::get_market_data(&e, FEED_BTC);
 
             let feeds = vec![&e, btc_feed(&e)];
             super::execute_update_status(&e, &feeds);
 
-            let data_after = storage::get_market_data(&e, BTC_FEED_ID);
+            let data_after = storage::get_market_data(&e, FEED_BTC);
 
             // Longs reduced by 30%: 50k × 0.7 = 35k
             assert_eq!(data_after.l_notional, 350_000_000_000);
@@ -376,12 +376,12 @@ mod tests {
         e.as_contract(&contract, || {
             storage::set_status(&e, ContractStatus::OnIce as u32);
 
-            let data_before = storage::get_market_data(&e, BTC_FEED_ID);
+            let data_before = storage::get_market_data(&e, FEED_BTC);
 
             let feeds = vec![&e, btc_feed(&e)];
             super::execute_update_status(&e, &feeds);
 
-            let data_after = storage::get_market_data(&e, BTC_FEED_ID);
+            let data_after = storage::get_market_data(&e, FEED_BTC);
 
             // Longs reduced by 89%: 100k × 0.11 = 11k
             assert_eq!(data_after.l_notional, 110_000_000_000);
@@ -428,7 +428,7 @@ mod tests {
             // ADL runs but status stays AdminOnIce (admin controls the unlock)
             assert_eq!(storage::get_status(&e), ContractStatus::AdminOnIce as u32);
 
-            let data = storage::get_market_data(&e, BTC_FEED_ID);
+            let data = storage::get_market_data(&e, FEED_BTC);
             assert!(data.l_adl_idx < SCALAR_18);
         });
     }

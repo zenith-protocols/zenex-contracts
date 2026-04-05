@@ -328,7 +328,7 @@ mod tests {
     use crate::constants::SCALAR_7;
     use crate::storage;
     use crate::testutils::{
-        setup_contract, setup_env, BTC_FEED_ID, BTC_PRICE,
+        setup_contract, setup_env, FEED_BTC, BTC_PRICE,
     };
     use crate::dependencies::PriceData;
     use soroban_sdk::testutils::Address as _;
@@ -346,7 +346,7 @@ mod tests {
             super::execute_create_limit(
                 e,
                 user,
-                BTC_FEED_ID,
+                FEED_BTC,
                 collateral,
                 notional,
                 true,
@@ -361,7 +361,7 @@ mod tests {
             super::execute_create_limit(
                 e,
                 user,
-                BTC_FEED_ID,
+                FEED_BTC,
                 collateral,
                 notional,
                 false,
@@ -423,7 +423,7 @@ mod tests {
         let notional = 10_000 * SCALAR_7;
 
         let price_data = PriceData {
-            feed_id: BTC_FEED_ID,
+            feed_id: FEED_BTC,
             price: BTC_PRICE,
             exponent: -8,
             publish_time: e.ledger().timestamp(),
@@ -530,7 +530,7 @@ mod tests {
         token_client.mint(&user, &(100_000 * SCALAR_7));
 
         let pd = PriceData {
-            feed_id: BTC_FEED_ID,
+            feed_id: FEED_BTC,
             price: BTC_PRICE,
             exponent: -8,
             publish_time: e.ledger().timestamp(),
@@ -557,7 +557,7 @@ mod tests {
         token_client.mint(&user, &(100_000 * SCALAR_7));
 
         let pd = PriceData {
-            feed_id: BTC_FEED_ID,
+            feed_id: FEED_BTC,
             price: BTC_PRICE,
             exponent: -8,
             publish_time: e.ledger().timestamp(),
@@ -592,7 +592,7 @@ mod tests {
         token_client.mint(&user, &(100_000 * SCALAR_7));
 
         let pd = PriceData {
-            feed_id: BTC_FEED_ID,
+            feed_id: FEED_BTC,
             price: BTC_PRICE,
             exponent: -8,
             publish_time: e.ledger().timestamp(),
@@ -621,7 +621,7 @@ mod tests {
         token_client.mint(&user, &(100_000 * SCALAR_7));
 
         let pd = PriceData {
-            feed_id: BTC_FEED_ID,
+            feed_id: FEED_BTC,
             price: BTC_PRICE,
             exponent: -8,
             publish_time: e.ledger().timestamp(),
@@ -653,7 +653,7 @@ mod tests {
         token_client.mint(&user, &(100_000 * SCALAR_7));
 
         let pd = PriceData {
-            feed_id: BTC_FEED_ID,
+            feed_id: FEED_BTC,
             price: BTC_PRICE,
             exponent: -8,
             publish_time: e.ledger().timestamp(),
@@ -680,7 +680,7 @@ mod tests {
         token_client.mint(&user, &(100_000 * SCALAR_7));
 
         let pd = PriceData {
-            feed_id: BTC_FEED_ID,
+            feed_id: FEED_BTC,
             price: BTC_PRICE,
             exponent: -8,
             publish_time: e.ledger().timestamp(),
@@ -710,7 +710,7 @@ mod tests {
         token_client.mint(&user, &(100_000 * SCALAR_7));
 
         let pd = PriceData {
-            feed_id: BTC_FEED_ID,
+            feed_id: FEED_BTC,
             price: BTC_PRICE,
             exponent: -8,
             publish_time: e.ledger().timestamp(),
@@ -741,9 +741,9 @@ mod tests {
         token_client.mint(&user, &(100_000 * SCALAR_7));
 
         e.as_contract(&contract, || {
-            let mut mc = storage::get_market_config(&e, BTC_FEED_ID);
+            let mut mc = storage::get_market_config(&e, FEED_BTC);
             mc.enabled = false;
-            storage::set_market_config(&e, BTC_FEED_ID, &mc);
+            storage::set_market_config(&e, FEED_BTC, &mc);
         });
 
         place_limit_long(&e, &contract, &user, 1_000 * SCALAR_7, 10_000 * SCALAR_7);
@@ -758,13 +758,13 @@ mod tests {
         token_client.mint(&user, &(100_000 * SCALAR_7));
 
         e.as_contract(&contract, || {
-            let mut mc = storage::get_market_config(&e, BTC_FEED_ID);
+            let mut mc = storage::get_market_config(&e, FEED_BTC);
             mc.enabled = false;
-            storage::set_market_config(&e, BTC_FEED_ID, &mc);
+            storage::set_market_config(&e, FEED_BTC, &mc);
         });
 
         let pd = PriceData {
-            feed_id: BTC_FEED_ID,
+            feed_id: FEED_BTC,
             price: BTC_PRICE,
             exponent: -8,
             publish_time: e.ledger().timestamp(),
@@ -786,7 +786,7 @@ mod tests {
         token_client.mint(&user, &(100_000 * SCALAR_7));
 
         let pd = PriceData {
-            feed_id: BTC_FEED_ID,
+            feed_id: FEED_BTC,
             price: BTC_PRICE,
             exponent: -8,
             publish_time: e.ledger().timestamp(),
@@ -801,9 +801,9 @@ mod tests {
 
         // Disable market
         e.as_contract(&contract, || {
-            let mut mc = storage::get_market_config(&e, BTC_FEED_ID);
+            let mut mc = storage::get_market_config(&e, FEED_BTC);
             mc.enabled = false;
-            storage::set_market_config(&e, BTC_FEED_ID, &mc);
+            storage::set_market_config(&e, FEED_BTC, &mc);
         });
 
         jump(&e, 1000 + 31);
@@ -830,7 +830,7 @@ mod tests {
         token_client.mint(&user, &(100_000 * SCALAR_7));
 
         let pd = PriceData {
-            feed_id: BTC_FEED_ID,
+            feed_id: FEED_BTC,
             price: BTC_PRICE,
             exponent: -8,
             publish_time: e.ledger().timestamp(),
@@ -848,7 +848,7 @@ mod tests {
         });
 
         e.as_contract(&contract, || {
-            crate::trading::execute_del_market(&e, BTC_FEED_ID);
+            crate::trading::execute_del_market(&e, FEED_BTC);
         });
 
         // cancel_position works for filled positions when market is deleted
@@ -874,9 +874,9 @@ mod tests {
 
         // Disable market — pending position can still be cancelled
         e.as_contract(&contract, || {
-            let mut mc = storage::get_market_config(&e, BTC_FEED_ID);
+            let mut mc = storage::get_market_config(&e, FEED_BTC);
             mc.enabled = false;
-            storage::set_market_config(&e, BTC_FEED_ID, &mc);
+            storage::set_market_config(&e, FEED_BTC, &mc);
         });
 
         let balance_before = token_client.balance(&user);

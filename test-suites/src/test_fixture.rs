@@ -1,3 +1,4 @@
+use crate::constants::SCALAR_7;
 use crate::dependencies::trading::trading_contract_wasm::WASM as TRADING_WASM;
 use crate::dependencies::vault::{VaultClient, VAULT_WASM};
 use crate::pyth_helper;
@@ -12,21 +13,9 @@ use trading::{MarketConfig, TradingClient};
 use treasury::{TreasuryClient, TreasuryContract};
 use factory::{FactoryClient, FactoryContract, FactoryInitMeta};
 
-/// Feed IDs matching Pyth Lazer conventions
-pub const ETH_FEED_ID: u32 = 2;
-pub const XLM_FEED_ID: u32 = 3;
-
 /// Prices in raw Pyth format (exponent -8, so multiply dollars by PRICE_SCALAR)
 pub const ETH_PRICE: i128 = 2_000 * PRICE_SCALAR; // $2,000
 pub const XLM_PRICE: i128 = PRICE_SCALAR / 10; // $0.10
-
-/// Asset/feed-id enum for readable test code
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
-pub enum AssetIndex {
-    BTC = 1, // Pyth feed ID
-    ETH = 2,
-    XLM = 3,
-}
 
 pub struct TestFixture<'a> {
     pub env: Env,
@@ -45,7 +34,7 @@ impl TestFixture<'_> {
     pub fn create<'a>() -> TestFixture<'a> {
         let e = Env::default();
         e.cost_estimate().budget().reset_unlimited();
-        e.mock_all_auths_allowing_non_root_auth();
+        e.mock_all_auths();
 
         let owner = Address::generate(&e);
         let (token_id, token_client) = create_stellar_token(&e, &owner);
@@ -65,7 +54,7 @@ impl TestFixture<'_> {
         );
         let pv_client = PriceVerifierClient::new(&e, &pv_id);
 
-        // Deploy real TreasuryContract (no mock)
+        // Deploy Treasury
         let treasury_rate: i128 = 500_000; // 5% in SCALAR_7
         let treasury_id = e.register(TreasuryContract, (&owner, treasury_rate));
         let treasury_client = TreasuryClient::new(&e, &treasury_id);
@@ -144,7 +133,7 @@ impl TestFixture<'_> {
                 feed_id,
                 price,
                 exponent: -8,
-                confidence: None,
+                confidence: 0,
             }],
             self.env.ledger().timestamp(),
         )
@@ -186,6 +175,32 @@ impl TestFixture<'_> {
             &stop_loss,
             &price_bytes,
         )
+    }
+
+    /// Open a long market order (no TP/SL) that fills immediately. Returns position_id.
+    /// `collateral` and `notional` are in human-readable token units (scaled by SCALAR_7 internally).
+    pub fn open_long(
+        &self,
+        user: &Address,
+        feed_id: u32,
+        collateral: i128,
+        notional: i128,
+        entry_price: i64,
+    ) -> u32 {
+        self.open_and_fill(user, feed_id, collateral * SCALAR_7, notional * SCALAR_7, true, entry_price, 0, 0)
+    }
+
+    /// Open a short market order (no TP/SL) that fills immediately. Returns position_id.
+    /// `collateral` and `notional` are in human-readable token units (scaled by SCALAR_7 internally).
+    pub fn open_short(
+        &self,
+        user: &Address,
+        feed_id: u32,
+        collateral: i128,
+        notional: i128,
+        entry_price: i64,
+    ) -> u32 {
+        self.open_and_fill(user, feed_id, collateral * SCALAR_7, notional * SCALAR_7, false, entry_price, 0, 0)
     }
 
     pub fn position_exists(&self, position_id: u32) -> bool {

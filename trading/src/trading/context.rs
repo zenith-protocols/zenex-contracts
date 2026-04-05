@@ -132,7 +132,7 @@ impl Context {
         } else {
             position.notional.fixed_mul_ceil(e, &self.trading_config.fee_non_dom, &SCALAR_7)
         };
-        let impact_fee = position.notional.fixed_div_ceil(e, &self.config.impact, &SCALAR_7);
+        let impact_fee = position.notional.fixed_div_floor(e, &self.config.impact, &SCALAR_7);
 
         // fees deducted from collateral before validation, ensures post-fee
         // collateral still meets margin requirements, preventing under-collateralized positions.
@@ -181,7 +181,7 @@ impl Context {
 #[cfg(test)]
 mod tests {
     use crate::constants::SCALAR_7;
-    use crate::testutils::{default_config, default_market, default_market_data, BTC_FEED_ID};
+    use crate::testutils::{default_config, default_market, default_market_data, FEED_BTC};
     use crate::types::MarketData;
     use super::Context;
     use soroban_sdk::testutils::Address as _;
@@ -189,7 +189,7 @@ mod tests {
 
     fn test_ctx(e: &Env, vault_balance: i128, market_data: MarketData, total_notional: i128) -> Context {
         Context {
-            feed_id: BTC_FEED_ID,
+            feed_id: FEED_BTC,
             price: 0,
             price_scalar: SCALAR_7,
             publish_time: 0,

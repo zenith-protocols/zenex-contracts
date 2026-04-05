@@ -13,10 +13,10 @@
 use soroban_sdk::testutils::{Address as _, BytesN as _, Ledger, LedgerInfo};
 use soroban_sdk::token::StellarAssetClient;
 use soroban_sdk::{vec as svec, Address, BytesN, Env, IntoVal, String, Symbol, Val, Vec};
-use test_suites::SCALAR_7;
+use test_suites::constants::SCALAR_7;
 use trading::testutils::{
     default_config, default_market, MockPriceVerifier, MockPriceVerifierClient, MockTreasury,
-    BTC_FEED_ID, BTC_PRICE,
+    FEED_BTC, BTC_PRICE,
 };
 use trading::TradingClient;
 
@@ -78,7 +78,7 @@ fn setup<'a>() -> GovernanceFixture<'a> {
     // Mock price verifier
     let pv_id = e.register(MockPriceVerifier, ());
     let pv_client = MockPriceVerifierClient::new(&e, &pv_id);
-    pv_client.set_price(&BTC_FEED_ID, &BTC_PRICE);
+    pv_client.set_price(&(FEED_BTC), &BTC_PRICE);
 
     // Mock treasury
     let treasury_id = e.register(MockTreasury, ());
@@ -124,7 +124,7 @@ fn setup<'a>() -> GovernanceFixture<'a> {
 
     // Create a BTC market on trading
     let market_config = default_market(&e);
-    trading_client.set_market(&BTC_FEED_ID, &market_config);
+    trading_client.set_market(&(FEED_BTC), &market_config);
 
     // Deploy governance with admin as owner (generic timelock, no trading address at construction)
     let gov_id = e.register(
@@ -234,7 +234,7 @@ fn test_timelock_queue_and_execute_set_market() {
     new_market.max_util = 8 * SCALAR_7; // 8x (up from 5x default)
 
     // Queue the market change via generic queue
-    let feed_id: u32 = BTC_FEED_ID;
+    let feed_id: u32 = FEED_BTC;
     let args: Vec<Val> = Vec::from_array(
         &f.env,
         [feed_id.into_val(&f.env), new_market.clone().into_val(&f.env)],
@@ -256,7 +256,7 @@ fn test_timelock_queue_and_execute_set_market() {
     f.gov.execute(&nonce);
 
     // Verify
-    let live_market = f.trading.get_market_config(&BTC_FEED_ID);
+    let live_market = f.trading.get_market_config(&(FEED_BTC));
     assert_eq!(
         live_market.max_util, new_market.max_util,
         "market max_util should be updated via timelock"
@@ -342,7 +342,7 @@ fn test_timelock_execute_after_cancel_reverts() {
     let mut new_market = default_market(&f.env);
     new_market.max_util = 8 * SCALAR_7;
 
-    let feed_id: u32 = BTC_FEED_ID;
+    let feed_id: u32 = FEED_BTC;
     let args: Vec<Val> = Vec::from_array(
         &f.env,
         [feed_id.into_val(&f.env), new_market.clone().into_val(&f.env)],
@@ -366,7 +366,7 @@ fn test_timelock_execute_after_cancel_reverts() {
     assert!(result.is_err(), "execute should revert after cancellation");
 
     // Verify the original market config is unchanged
-    let live_market = f.trading.get_market_config(&BTC_FEED_ID);
+    let live_market = f.trading.get_market_config(&(FEED_BTC));
     let original = default_market(&f.env);
     assert_eq!(
         live_market.max_util, original.max_util,
@@ -385,7 +385,7 @@ fn test_timelock_cancel_one_does_not_affect_other() {
     let mut market_b = default_market(&f.env);
     market_b.margin = 0_0200000; // 2% margin
 
-    let feed_id: u32 = BTC_FEED_ID;
+    let feed_id: u32 = FEED_BTC;
 
     // Queue two market updates
     let args_a: Vec<Val> = Vec::from_array(
@@ -420,6 +420,6 @@ fn test_timelock_cancel_one_does_not_affect_other() {
 
     // nonce_b should succeed
     f.gov.execute(&nonce_b);
-    let live = f.trading.get_market_config(&BTC_FEED_ID);
+    let live = f.trading.get_market_config(&(FEED_BTC));
     assert_eq!(live.margin, market_b.margin, "nonce_b should execute successfully");
 }

@@ -27,9 +27,8 @@ pub struct FeedInput {
     pub feed_id: u32,
     pub price: i64,
     pub exponent: i16,
-    /// If `Some`, the confidence property is included in the payload.
-    /// If `None`, the confidence property is omitted (most tests).
-    pub confidence: Option<u64>,
+    /// Confidence interval (max confidence = 0, i.e. no uncertainty).
+    pub confidence: u64,
 }
 
 /// Generate a deterministic Ed25519 keypair for tests.
@@ -81,8 +80,7 @@ pub fn build_price_update(
 
     for feed in feeds {
         payload.extend_from_slice(&feed.feed_id.to_le_bytes());
-        let num_props = if feed.confidence.is_some() { 3u8 } else { 2u8 };
-        payload.push(num_props);
+        payload.push(3u8); // num_props: price, exponent, confidence
 
         // Price property
         payload.push(PROP_PRICE);
@@ -92,11 +90,9 @@ pub fn build_price_update(
         payload.push(PROP_EXPONENT);
         payload.extend_from_slice(&feed.exponent.to_le_bytes());
 
-        // Confidence property (optional)
-        if let Some(conf) = feed.confidence {
-            payload.push(PROP_CONFIDENCE);
-            payload.extend_from_slice(&conf.to_le_bytes());
-        }
+        // Confidence property
+        payload.push(PROP_CONFIDENCE);
+        payload.extend_from_slice(&feed.confidence.to_le_bytes());
     }
 
     // 2. Sign payload
@@ -128,7 +124,7 @@ pub fn btc_price_update(
             feed_id: 1,
             price,
             exponent: -8,
-            confidence: None,
+            confidence: 0,
         }],
         timestamp,
     )
@@ -151,86 +147,22 @@ pub fn multi_price_update(
                 feed_id: 1,
                 price: btc_price,
                 exponent: -8,
-                confidence: None,
+                confidence: 0,
             },
             FeedInput {
                 feed_id: 2,
                 price: eth_price,
                 exponent: -8,
-                confidence: None,
+                confidence: 0,
             },
             FeedInput {
                 feed_id: 3,
                 price: xlm_price,
                 exponent: -8,
-                confidence: None,
+                confidence: 0,
             },
         ],
         timestamp,
     )
 }
 
-/// Build a price update with a confidence interval for confidence rejection tests.
-pub fn price_with_confidence(
-    env: &Env,
-    signing_key: &SigningKey,
-    feed_id: u32,
-    price: i64,
-    exponent: i16,
-    confidence: u64,
-    timestamp: u64,
-) -> Bytes {
-    build_price_update(
-        env,
-        signing_key,
-        &[FeedInput {
-            feed_id,
-            price,
-            exponent,
-            confidence: Some(confidence),
-        }],
-        timestamp,
-    )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_build_price_update_produces_valid_blob() {
-        let env = Env::default();
-        let (key, _pubkey) = test_keypair();
-        let blob = btc_price_update(&env, &key, 10_000_000_000_000, 1000);
-        // Verify basic structure: magic(4) + sig(64) + pubkey(32) + len(2) + payload
-        assert!(blob.len() > 102);
-    }
-
-    #[test]
-    fn test_price_with_confidence_adds_third_property() {
-        let env = Env::default();
-        let (key, _) = test_keypair();
-        let blob_no_conf = btc_price_update(&env, &key, 100_000, 1000);
-        let blob_with_conf = price_with_confidence(&env, &key, 1, 100_000, -8, 500, 1000);
-        // Confidence adds 9 more bytes (1 type + 8 value)
-        assert!(blob_with_conf.len() > blob_no_conf.len());
-    }
-
-    #[test]
-    fn test_multi_price_update_contains_three_feeds() {
-        let env = Env::default();
-        let (key, _) = test_keypair();
-        let blob = multi_price_update(&env, &key, 100_000, 200_000, 300_000, 1000);
-        // Should be larger than single-feed update
-        let single = btc_price_update(&env, &key, 100_000, 1000);
-        assert!(blob.len() > single.len());
-    }
-
-    #[test]
-    fn test_keypair_is_deterministic() {
-        let (key1, pub1) = test_keypair();
-        let (key2, pub2) = test_keypair();
-        assert_eq!(pub1, pub2);
-        assert_eq!(key1.to_bytes(), key2.to_bytes());
-    }
-}

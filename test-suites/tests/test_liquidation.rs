@@ -2,14 +2,9 @@ use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{vec as svec, Address};
 use test_suites::pyth_helper;
 use test_suites::setup::create_fixture_with_data;
-use test_suites::test_fixture::{AssetIndex, TestFixture};
-use test_suites::SCALAR_7;
-use trading::testutils::{BTC_FEED_ID, PRICE_SCALAR};
-
-const SECONDS_PER_WEEK: u64 = 604800;
-
-/// BTC_PRICE as i64 for Pyth raw format ($100k at exponent -8)
-const BTC_PRICE_I64: i64 = 10_000_000_000_000;
+use test_suites::test_fixture::TestFixture;
+use test_suites::constants::{BTC_PRICE_I64, SCALAR_7, SECONDS_PER_WEEK};
+use trading::testutils::{FEED_BTC, PRICE_SCALAR};
 
 // ==========================================
 // Helper Functions
@@ -35,16 +30,7 @@ fn test_liquidation_underwater_position() {
     fixture.token.mint(&user, &(100_000 * SCALAR_7));
 
     // Open long with high leverage: 110 collateral, 10000 notional (~91x)
-    let position_id = fixture.open_and_fill(
-        &user,
-        AssetIndex::BTC as u32,
-        110 * SCALAR_7,
-        10_000 * SCALAR_7,
-        true,
-        BTC_PRICE_I64,
-        0,
-        0,
-    );
+    let position_id = fixture.open_long(&user, FEED_BTC, 110, 10_000, BTC_PRICE_I64);
 
     // Price drops 2% -- underwater at this leverage
     fixture.jump(31); // past MIN_OPEN_TIME for the position to be closable
@@ -68,16 +54,7 @@ fn test_liquidation_healthy_position_rejected() {
     fixture.token.mint(&user, &(100_000 * SCALAR_7));
 
     // Open long with moderate leverage: 1000 collateral, 10000 notional (10x)
-    let position_id = fixture.open_and_fill(
-        &user,
-        AssetIndex::BTC as u32,
-        1_000 * SCALAR_7,
-        10_000 * SCALAR_7,
-        true,
-        BTC_PRICE_I64,
-        0,
-        0,
-    );
+    let position_id = fixture.open_long(&user, FEED_BTC, 1_000, 10_000, BTC_PRICE_I64);
 
     // Price drops only 5% -- with 10x leverage and 1% margin, position is still healthy
     // Equity = col + pnl - fees = ~1000 + (-500) - fees > liq_threshold (0.5% of 10k = 50)
@@ -97,16 +74,7 @@ fn test_liquidation_keeper_receives_fee() {
     fixture.token.mint(&user, &(100_000 * SCALAR_7));
 
     // Open highly leveraged long for liquidation
-    let position_id = fixture.open_and_fill(
-        &user,
-        AssetIndex::BTC as u32,
-        110 * SCALAR_7,
-        10_000 * SCALAR_7,
-        true,
-        BTC_PRICE_I64,
-        0,
-        0,
-    );
+    let position_id = fixture.open_long(&user, FEED_BTC, 110, 10_000, BTC_PRICE_I64);
 
     let keeper_balance_before = fixture.token.balance(&keeper);
 
@@ -144,25 +112,16 @@ fn test_liquidation_stale_price_rejected() {
         &fixture.env,
         &fixture.signing_key,
         &[pyth_helper::FeedInput {
-            feed_id: BTC_FEED_ID,
+            feed_id: FEED_BTC,
             price: 98_000 * PRICE_SCALAR as i64,
             exponent: -8,
-            confidence: None,
+            confidence: 0,
         }],
         99, // publish_time BEFORE position creation
     );
 
     // Open position at t=100 (created_at = 100)
-    let position_id = fixture.open_and_fill(
-        &user,
-        AssetIndex::BTC as u32,
-        110 * SCALAR_7,
-        10_000 * SCALAR_7,
-        true,
-        BTC_PRICE_I64,
-        0,
-        0,
-    );
+    let position_id = fixture.open_long(&user, FEED_BTC, 110, 10_000, BTC_PRICE_I64);
 
     // Try liquidation with stale price (publish_time=99 < created_at=100)
     // Price verifier passes (abs_diff(100, 99) = 1 < max_staleness=60)
@@ -185,16 +144,7 @@ fn test_liquidation_after_interest_accrual() {
     fixture.token.mint(&user, &(100_000 * SCALAR_7));
 
     // Open long with 10k collateral, 100k notional (10x leverage)
-    let position_id = fixture.open_and_fill(
-        &user,
-        AssetIndex::BTC as u32,
-        10_000 * SCALAR_7,
-        100_000 * SCALAR_7,
-        true,
-        BTC_PRICE_I64,
-        0,
-        0,
-    );
+    let position_id = fixture.open_long(&user, FEED_BTC, 10_000, 100_000, BTC_PRICE_I64);
 
     // Set funding rate: one-sided long -> rate = base_rate, longs pay
     fixture.jump(3600);
@@ -227,49 +177,27 @@ fn test_liquidation_after_adl() {
     let user = Address::generate(&fixture.env);
     let user2 = Address::generate(&fixture.env);
     let keeper = Address::generate(&fixture.env);
-    fixture.token.mint(&user, &(100_000_000 * SCALAR_7));
-    fixture.token.mint(&user2, &(100_000_000 * SCALAR_7));
+    fixture.token.mint(&user, &(100_000 * SCALAR_7));
+    fixture.token.mint(&user2, &(100_000 * SCALAR_7));
 
-    // Bump max_notional for large ADL-triggering positions
-    let mut config = fixture.trading.get_config();
-    config.max_notional = 1_000_000_000 * SCALAR_7;
-    fixture.trading.set_config(&config);
-
-    // Open large long positions to create a deficit scenario (user2 provides the mass)
+    // Open long positions to create a deficit scenario (user2 provides the mass)
+    // 5 × 1M notional = 5M total. Price 3x → PnL 10M > vault 10M → ADL
     for _ in 0..5 {
-        fixture.open_and_fill(
-            &user2,
-            AssetIndex::BTC as u32,
-            1_100_000 * SCALAR_7,
-            100_000_000 * SCALAR_7,
-            true,
-            BTC_PRICE_I64,
-            0,
-            0,
-        );
+        fixture.open_long(&user2, FEED_BTC, 11_000, 1_000_000, BTC_PRICE_I64);
     }
 
     // User opens a highly leveraged long: 120 col, 10k notional (~83x)
-    let position_id = fixture.open_and_fill(
-        &user,
-        AssetIndex::BTC as u32,
-        120 * SCALAR_7,
-        10_000 * SCALAR_7,
-        true,
-        BTC_PRICE_I64,
-        0,
-        0,
-    );
+    let position_id = fixture.open_long(&user, FEED_BTC, 120, 10_000, BTC_PRICE_I64);
 
-    // Price pumps 50% -> triggers ADL (longs are winning, vault can't cover)
+    // Price 4x ($400k) -> triggers ADL (longs are winning, vault can't cover)
     let pump_ts = fixture.env.ledger().timestamp() + 31;
     let pump_price = pyth_helper::build_price_update(
         &fixture.env,
         &fixture.signing_key,
         &[
-            pyth_helper::FeedInput { feed_id: 1, price: 150_000 * PRICE_SCALAR as i64, exponent: -8, confidence: None },
-            pyth_helper::FeedInput { feed_id: 2, price: 200_000_000_000, exponent: -8, confidence: None },
-            pyth_helper::FeedInput { feed_id: 3, price: 10_000_000, exponent: -8, confidence: None },
+            pyth_helper::FeedInput { feed_id: 1, price: 400_000 * PRICE_SCALAR as i64, exponent: -8, confidence: 0 },
+            pyth_helper::FeedInput { feed_id: 2, price: 200_000_000_000, exponent: -8, confidence: 0 },
+            pyth_helper::FeedInput { feed_id: 3, price: 10_000_000, exponent: -8, confidence: 0 },
         ],
         pump_ts,
     );
@@ -277,7 +205,7 @@ fn test_liquidation_after_adl() {
     fixture.trading.update_status(&pump_price);
 
     // ADL reduced long notional -- verify the index changed
-    let market = fixture.trading.get_market_data(&(AssetIndex::BTC as u32));
+    let market = fixture.trading.get_market_data(&(FEED_BTC));
     assert!(market.l_adl_idx < 1_000_000_000_000_000_000i128, "ADL should have reduced long index");
 
     // Now price crashes back below entry -- the ADL-reduced position has less
@@ -287,9 +215,9 @@ fn test_liquidation_after_adl() {
         &fixture.env,
         &fixture.signing_key,
         &[
-            pyth_helper::FeedInput { feed_id: 1, price: 97_000 * PRICE_SCALAR as i64, exponent: -8, confidence: None },
-            pyth_helper::FeedInput { feed_id: 2, price: 200_000_000_000, exponent: -8, confidence: None },
-            pyth_helper::FeedInput { feed_id: 3, price: 10_000_000, exponent: -8, confidence: None },
+            pyth_helper::FeedInput { feed_id: 1, price: 97_000 * PRICE_SCALAR as i64, exponent: -8, confidence: 0 },
+            pyth_helper::FeedInput { feed_id: 2, price: 200_000_000_000, exponent: -8, confidence: 0 },
+            pyth_helper::FeedInput { feed_id: 3, price: 10_000_000, exponent: -8, confidence: 0 },
         ],
         crash_ts,
     );
@@ -316,16 +244,7 @@ fn test_liquidation_works_when_frozen() {
     fixture.token.mint(&user, &(100_000 * SCALAR_7));
 
     // Open highly leveraged position while Active
-    let position_id = fixture.open_and_fill(
-        &user,
-        AssetIndex::BTC as u32,
-        110 * SCALAR_7,
-        10_000 * SCALAR_7,
-        true,
-        BTC_PRICE_I64,
-        0,
-        0,
-    );
+    let position_id = fixture.open_long(&user, FEED_BTC, 110, 10_000, BTC_PRICE_I64);
 
     // Set contract to Frozen (3)
     // Per T-DOS-05: frozen status must not trap positions -- liquidation must remain available

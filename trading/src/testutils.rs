@@ -14,8 +14,10 @@ pub const BTC_PRICE_RAW: i128 = 10_000_000_000_000; // $100,000 with exponent -8
 /// Default BTC price (raw Pyth value with exponent -8)
 pub const BTC_PRICE: i128 = BTC_PRICE_RAW; // $100,000 = 10_000_000_000_000
 
-/// BTC feed ID for Pyth Lazer
-pub const BTC_FEED_ID: u32 = 1;
+/// Pyth Lazer feed IDs for test assets.
+pub const FEED_BTC: u32 = 1;
+pub const FEED_ETH: u32 = 2;
+pub const FEED_XLM: u32 = 3;
 
 /// Price scalar matching mock exponent -8 (10^8)
 pub const PRICE_SCALAR: i128 = 100_000_000;
@@ -177,7 +179,7 @@ pub fn create_price_verifier(e: &Env) -> (Address, MockPriceVerifierClient<'_>) 
     let client = MockPriceVerifierClient::new(e, &address);
 
     // BTC at $100,000 normalized to 10 decimals
-    client.set_price(&BTC_FEED_ID, &BTC_PRICE_RAW);
+    client.set_price(&(FEED_BTC), &BTC_PRICE_RAW);
 
     (address, client)
 }
@@ -204,7 +206,7 @@ pub fn default_config() -> TradingConfig {
     TradingConfig {
         caller_rate: 1_000_000,                    // 10%
         min_notional: 10 * SCALAR_7,              // 10 tokens minimum notional
-        max_notional: 10_000_000 * SCALAR_7,      // 10M tokens maximum notional
+        max_notional: 1_000_000 * SCALAR_7,       // 1M tokens maximum notional
         fee_dom: 5_000,                            // 0.05%
         fee_non_dom: 1_000,                        // 0.01%
         max_util: 10 * SCALAR_7,                          // 10x vault
@@ -278,20 +280,20 @@ pub fn setup_contract(e: &Env) -> (Address, StellarAssetClient<'_>) {
     let config = default_config();
 
     e.as_contract(&contract, || {
-        storage::set_market_config(e, BTC_FEED_ID, &default_market(e));
+        storage::set_market_config(e, FEED_BTC, &default_market(e));
         let mut market_data = default_market_data();
         market_data.last_update = e.ledger().timestamp();
         market_data.l_fund_idx = SCALAR_18;
         market_data.s_fund_idx = SCALAR_18;
-        storage::set_market_data(e, BTC_FEED_ID, &market_data);
+        storage::set_market_data(e, FEED_BTC, &market_data);
         let mut markets = storage::get_markets(e);
-        markets.push_back(BTC_FEED_ID);
+        markets.push_back(FEED_BTC);
         storage::set_markets(e, &markets);
 
         storage::set_last_funding_update(e, e.ledger().timestamp());
-        let mut data = storage::get_market_data(e, BTC_FEED_ID);
+        let mut data = storage::get_market_data(e, FEED_BTC);
         data.update_funding_rate(e, config.r_funding);
-        storage::set_market_data(e, BTC_FEED_ID, &data);
+        storage::set_market_data(e, FEED_BTC, &data);
     });
 
     token_client.mint(&contract, &(10_000_000 * SCALAR_7));

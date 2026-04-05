@@ -2,16 +2,9 @@ use soroban_fixed_point_math::FixedPoint;
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::Address;
 use test_suites::setup::create_fixture_with_data;
-use test_suites::test_fixture::{AssetIndex, TestFixture};
-use test_suites::SCALAR_7;
-use trading::testutils::{default_config, default_market};
-
-#[allow(dead_code)]
-const SCALAR_18: i128 = 1_000_000_000_000_000_000;
-const SECONDS_IN_HOUR: u64 = 3600;
-
-/// BTC $100k as i64 for price_for_feed / btc_price
-const BTC_100K: i64 = 10_000_000_000_000;
+use test_suites::test_fixture::TestFixture;
+use test_suites::constants::{BTC_PRICE_I64, SCALAR_7, SCALAR_18, SECONDS_IN_HOUR};
+use trading::testutils::{default_config, default_market, FEED_BTC};
 
 fn setup_fixture() -> TestFixture<'static> {
     create_fixture_with_data()
@@ -38,30 +31,12 @@ fn test_funding_is_zero_sum() {
         + fixture.token.balance(&fixture.trading.address);
 
     // Open unequal sides: 2x long vs 1x short (long is dominant, funding flows L->S)
-    let long_notional = 20_000 * SCALAR_7;
-    let short_notional = 10_000 * SCALAR_7;
+    let long_notional = 20_000;
+    let short_notional = 10_000;
 
-    let long_pos = fixture.open_and_fill(
-        &user_long,
-        AssetIndex::BTC as u32,
-        5_000 * SCALAR_7,
-        long_notional,
-        true,
-        BTC_100K,
-        0,
-        0,
-    );
+    let long_pos = fixture.open_long(&user_long, FEED_BTC, 5_000, long_notional, BTC_PRICE_I64);
 
-    let short_pos = fixture.open_and_fill(
-        &user_short,
-        AssetIndex::BTC as u32,
-        5_000 * SCALAR_7,
-        short_notional,
-        false,
-        BTC_100K,
-        0,
-        0,
-    );
+    let short_pos = fixture.open_short(&user_short, FEED_BTC, 5_000, short_notional, BTC_PRICE_I64);
 
     // Let 1 hour pass, then apply_funding to set the funding rate
     fixture.jump(SECONDS_IN_HOUR);
@@ -71,7 +46,7 @@ fn test_funding_is_zero_sum() {
     fixture.jump(SECONDS_IN_HOUR);
 
     // Close both positions at the same price (no PnL from price movement)
-    let close_bytes = fixture.btc_price(BTC_100K);
+    let close_bytes = fixture.btc_price(BTC_PRICE_I64);
     let payout_long = fixture.trading.close_position(&long_pos, &close_bytes);
     let payout_short = fixture.trading.close_position(&short_pos, &close_bytes);
 
@@ -113,27 +88,9 @@ fn test_funding_dominant_side_pays() {
     let initial_short = fixture.token.balance(&user_short);
 
     // Open $20k long (dominant) and $10k short (non-dominant)
-    let long_pos = fixture.open_and_fill(
-        &user_long,
-        AssetIndex::BTC as u32,
-        5_000 * SCALAR_7,
-        20_000 * SCALAR_7,
-        true,
-        BTC_100K,
-        0,
-        0,
-    );
+    let long_pos = fixture.open_long(&user_long, FEED_BTC, 5_000, 20_000, BTC_PRICE_I64);
 
-    let short_pos = fixture.open_and_fill(
-        &user_short,
-        AssetIndex::BTC as u32,
-        5_000 * SCALAR_7,
-        10_000 * SCALAR_7,
-        false,
-        BTC_100K,
-        0,
-        0,
-    );
+    let short_pos = fixture.open_short(&user_short, FEED_BTC, 5_000, 10_000, BTC_PRICE_I64);
 
     // Apply funding + accrue for 1 hour
     fixture.jump(SECONDS_IN_HOUR);
@@ -141,7 +98,7 @@ fn test_funding_dominant_side_pays() {
     fixture.jump(SECONDS_IN_HOUR);
 
     // Close both at same price (no PnL from price movement)
-    let close_bytes = fixture.btc_price(BTC_100K);
+    let close_bytes = fixture.btc_price(BTC_PRICE_I64);
     fixture.trading.close_position(&long_pos, &close_bytes);
     fixture.trading.close_position(&short_pos, &close_bytes);
 
@@ -181,34 +138,16 @@ fn test_funding_rate_zero_with_balanced_sides() {
     fixture.token.mint(&user2, &(500_000 * SCALAR_7));
 
     // Open equal long and short notionals
-    let _long_pos = fixture.open_and_fill(
-        &user1,
-        AssetIndex::BTC as u32,
-        5_000 * SCALAR_7,
-        10_000 * SCALAR_7,
-        true,
-        BTC_100K,
-        0,
-        0,
-    );
+    let _long_pos = fixture.open_long(&user1, FEED_BTC, 5_000, 10_000, BTC_PRICE_I64);
 
-    let _short_pos = fixture.open_and_fill(
-        &user2,
-        AssetIndex::BTC as u32,
-        5_000 * SCALAR_7,
-        10_000 * SCALAR_7,
-        false,
-        BTC_100K,
-        0,
-        0,
-    );
+    let _short_pos = fixture.open_short(&user2, FEED_BTC, 5_000, 10_000, BTC_PRICE_I64);
 
     // Apply funding to compute the rate
     fixture.jump(SECONDS_IN_HOUR);
     fixture.trading.apply_funding();
 
     // When L == S, funding rate should be 0
-    let market_data = fixture.trading.get_market_data(&(AssetIndex::BTC as u32));
+    let market_data = fixture.trading.get_market_data(&(FEED_BTC));
     assert_eq!(
         market_data.fund_rate, 0,
         "funding rate should be zero with balanced sides, got {}",
@@ -240,8 +179,8 @@ fn test_borrowing_curve_at_utilization_points() {
     let max_util_global = config.max_util;       // 10 * SCALAR_7
     let max_util_market = market_config.max_util; // 5 * SCALAR_7
 
-    // Vault has 100_000_000 * SCALAR_7 (100M tokens).
-    let vault_balance: i128 = 100_000_000 * SCALAR_7;
+    // Vault has 10_000_000 * SCALAR_7 (10M tokens).
+    let vault_balance: i128 = 10_000_000 * SCALAR_7;
     let cap_vault = vault_balance * max_util_global / SCALAR_7;    // max global capacity
     let cap_market = vault_balance * max_util_market / SCALAR_7;   // max market capacity
 
@@ -258,10 +197,11 @@ fn test_borrowing_curve_at_utilization_points() {
     for (pct_s7, label) in pct_points.iter() {
         let fixture = setup_fixture();
         let user = Address::generate(&fixture.env);
-        fixture.token.mint(&user, &(500_000_000 * SCALAR_7));
+        fixture.token.mint(&user, &(100_000_000 * SCALAR_7));
 
+        // Bump max_notional for rate-curve test that needs large positions at high utilization
         let mut trading_config = fixture.trading.get_config();
-        trading_config.max_notional = 1_000_000_000 * SCALAR_7;
+        trading_config.max_notional = 100_000_000 * SCALAR_7;
         fixture.trading.set_config(&trading_config);
 
         // Target notional = pct of cap_market
@@ -270,24 +210,15 @@ fn test_borrowing_curve_at_utilization_points() {
             .unwrap();
 
         let collateral = target_notional / 2;
-        let _pos = fixture.open_and_fill(
-            &user,
-            AssetIndex::BTC as u32,
-            collateral,
-            target_notional,
-            true,
-            BTC_100K,
-            0,
-            0,
-        );
+        let _pos = fixture.open_long(&user, FEED_BTC, collateral / SCALAR_7, target_notional / SCALAR_7, BTC_PRICE_I64);
 
-        let market_before = fixture.trading.get_market_data(&(AssetIndex::BTC as u32));
+        let market_before = fixture.trading.get_market_data(&(FEED_BTC));
         let borr_idx_before = market_before.l_borr_idx;
 
         fixture.jump(SECONDS_IN_HOUR);
         fixture.trading.apply_funding();
 
-        let market_after = fixture.trading.get_market_data(&(AssetIndex::BTC as u32));
+        let market_after = fixture.trading.get_market_data(&(FEED_BTC));
         let observed_borr_delta = market_after.l_borr_idx - borr_idx_before;
 
         // Compute expected rate off-chain (additive formula):
@@ -345,30 +276,12 @@ fn test_borrowing_dominant_side_only() {
     fixture.token.mint(&user2, &(500_000 * SCALAR_7));
 
     // Long dominant: 20k long > 10k short
-    let _long_pos = fixture.open_and_fill(
-        &user1,
-        AssetIndex::BTC as u32,
-        5_000 * SCALAR_7,
-        20_000 * SCALAR_7,
-        true,
-        BTC_100K,
-        0,
-        0,
-    );
+    let _long_pos = fixture.open_long(&user1, FEED_BTC, 5_000, 20_000, BTC_PRICE_I64);
 
-    let _short_pos = fixture.open_and_fill(
-        &user2,
-        AssetIndex::BTC as u32,
-        5_000 * SCALAR_7,
-        10_000 * SCALAR_7,
-        false,
-        BTC_100K,
-        0,
-        0,
-    );
+    let _short_pos = fixture.open_short(&user2, FEED_BTC, 5_000, 10_000, BTC_PRICE_I64);
 
     // Read initial indices
-    let market_initial = fixture.trading.get_market_data(&(AssetIndex::BTC as u32));
+    let market_initial = fixture.trading.get_market_data(&(FEED_BTC));
     let initial_l_borr_idx = market_initial.l_borr_idx;
     let initial_s_borr_idx = market_initial.s_borr_idx;
 
@@ -377,7 +290,7 @@ fn test_borrowing_dominant_side_only() {
     fixture.trading.apply_funding();
 
     // Read updated indices
-    let market_after = fixture.trading.get_market_data(&(AssetIndex::BTC as u32));
+    let market_after = fixture.trading.get_market_data(&(FEED_BTC));
 
     // Long is dominant -> long borrowing index should advance
     assert!(
@@ -407,23 +320,14 @@ fn test_fee_accrual_increases_with_time() {
     fixture.token.mint(&user, &(500_000 * SCALAR_7));
 
     // Open a position
-    let pos = fixture.open_and_fill(
-        &user,
-        AssetIndex::BTC as u32,
-        5_000 * SCALAR_7,
-        20_000 * SCALAR_7,
-        true,
-        BTC_100K,
-        0,
-        0,
-    );
+    let pos = fixture.open_long(&user, FEED_BTC, 5_000, 20_000, BTC_PRICE_I64);
 
     // Jump 1 hour and apply funding to set the rate
     fixture.jump(SECONDS_IN_HOUR);
     fixture.trading.apply_funding();
 
     // Record borrowing index after 1 hour
-    let market_1h = fixture.trading.get_market_data(&(AssetIndex::BTC as u32));
+    let market_1h = fixture.trading.get_market_data(&(FEED_BTC));
     let borr_idx_1h = market_1h.l_borr_idx;
 
     // Jump another hour
@@ -431,7 +335,7 @@ fn test_fee_accrual_increases_with_time() {
     fixture.trading.apply_funding();
 
     // Record borrowing index after 2 hours
-    let market_2h = fixture.trading.get_market_data(&(AssetIndex::BTC as u32));
+    let market_2h = fixture.trading.get_market_data(&(FEED_BTC));
     let borr_idx_2h = market_2h.l_borr_idx;
 
     // Borrowing index should be larger after 2 hours than after 1 hour
@@ -443,7 +347,7 @@ fn test_fee_accrual_increases_with_time() {
     );
 
     // Close the position after 2 hours
-    let close_bytes = fixture.btc_price(BTC_100K);
+    let close_bytes = fixture.btc_price(BTC_PRICE_I64);
     let payout = fixture.trading.close_position(&pos, &close_bytes);
     assert!(payout > 0, "position should have some payout");
 
@@ -479,38 +383,11 @@ fn test_token_conservation_after_open_close() {
         + fixture.token.balance(&fixture.trading.address);
 
     // Open several positions
-    let pos1 = fixture.open_and_fill(
-        &user1,
-        AssetIndex::BTC as u32,
-        5_000 * SCALAR_7,
-        20_000 * SCALAR_7,
-        true,
-        BTC_100K,
-        0,
-        0,
-    );
+    let pos1 = fixture.open_long(&user1, FEED_BTC, 5_000, 20_000, BTC_PRICE_I64);
 
-    let pos2 = fixture.open_and_fill(
-        &user2,
-        AssetIndex::BTC as u32,
-        5_000 * SCALAR_7,
-        15_000 * SCALAR_7,
-        false,
-        BTC_100K,
-        0,
-        0,
-    );
+    let pos2 = fixture.open_short(&user2, FEED_BTC, 5_000, 15_000, BTC_PRICE_I64);
 
-    let pos3 = fixture.open_and_fill(
-        &user3,
-        AssetIndex::BTC as u32,
-        3_000 * SCALAR_7,
-        10_000 * SCALAR_7,
-        true,
-        BTC_100K,
-        0,
-        0,
-    );
+    let pos3 = fixture.open_long(&user3, FEED_BTC, 3_000, 10_000, BTC_PRICE_I64);
 
     // Let time pass, apply funding
     fixture.jump(SECONDS_IN_HOUR);
@@ -518,7 +395,7 @@ fn test_token_conservation_after_open_close() {
     fixture.jump(SECONDS_IN_HOUR);
 
     // Close all positions at original price (no PnL from price movement)
-    let close_bytes = fixture.btc_price(BTC_100K);
+    let close_bytes = fixture.btc_price(BTC_PRICE_I64);
     fixture.trading.close_position(&pos1, &close_bytes);
     fixture.trading.close_position(&pos2, &close_bytes);
     fixture.trading.close_position(&pos3, &close_bytes);

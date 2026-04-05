@@ -1,14 +1,9 @@
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{vec as svec, Address};
 use test_suites::setup::create_fixture_with_data;
-use test_suites::test_fixture::{AssetIndex, TestFixture};
-use test_suites::SCALAR_7;
-use trading::testutils::{BTC_FEED_ID, PRICE_SCALAR};
-
-const SECONDS_PER_WEEK: u64 = 604800;
-
-/// BTC_PRICE as i64 for Pyth raw format ($100k at exponent -8)
-const BTC_PRICE_I64: i64 = 10_000_000_000_000;
+use test_suites::test_fixture::TestFixture;
+use test_suites::constants::{BTC_PRICE_I64, SCALAR_7, SECONDS_PER_WEEK};
+use trading::testutils::{FEED_BTC, PRICE_SCALAR};
 
 // ==========================================
 // Helper Functions
@@ -19,35 +14,17 @@ fn setup_fixture() -> TestFixture<'static> {
 }
 
 fn open_long(fixture: &TestFixture, user: &Address) -> u32 {
-    fixture.open_and_fill(
-        user,
-        AssetIndex::BTC as u32,
-        1_000 * SCALAR_7,
-        10_000 * SCALAR_7,
-        true,
-        BTC_PRICE_I64,
-        0,
-        0,
-    )
+    fixture.open_long(user, FEED_BTC, 1_000, 10_000, BTC_PRICE_I64)
 }
 
 fn open_short(fixture: &TestFixture, user: &Address) -> u32 {
-    fixture.open_and_fill(
-        user,
-        AssetIndex::BTC as u32,
-        1_000 * SCALAR_7,
-        10_000 * SCALAR_7,
-        false,
-        BTC_PRICE_I64,
-        0,
-        0,
-    )
+    fixture.open_short(user, FEED_BTC, 1_000, 10_000, BTC_PRICE_I64)
 }
 
 fn place_limit_long(fixture: &TestFixture, user: &Address, entry_price: i128) -> u32 {
     fixture.trading.place_limit(
         user,
-        &(AssetIndex::BTC as u32),
+        &(FEED_BTC),
         &(1_000 * SCALAR_7),
         &(10_000 * SCALAR_7),
         &true,
@@ -265,7 +242,7 @@ fn test_limit_order_place_fill_close() {
     assert!(!fixture.trading.get_position(&position_id).filled);
 
     // Market data should not yet reflect the pending order
-    let market = fixture.trading.get_market_data(&(AssetIndex::BTC as u32));
+    let market = fixture.trading.get_market_data(&(FEED_BTC));
     assert_eq!(market.l_notional, 0);
 
     // Price drops to entry -- fillable for long limit
@@ -339,7 +316,7 @@ fn test_open_blocked_when_frozen() {
     // Any attempt to open should fail -- place_limit uses require_active
     fixture.trading.place_limit(
         &user,
-        &(AssetIndex::BTC as u32),
+        &(FEED_BTC),
         &(1_000 * SCALAR_7),
         &(10_000 * SCALAR_7),
         &true,
@@ -406,36 +383,17 @@ fn test_equal_notional_zero_funding() {
     fixture.token.mint(&user2, &(1_000_000 * SCALAR_7));
 
     // Equal notional: long and short
-    let collateral = 50_000 * SCALAR_7;
-    let notional = 200_000 * SCALAR_7;
+    let collateral = 50_000;
+    let notional = 200_000;
 
-    fixture.open_and_fill(
-        &user1,
-        AssetIndex::BTC as u32,
-        collateral,
-        notional,
-        true,
-        BTC_PRICE_I64,
-        0,
-        0,
-    );
-
-    fixture.open_and_fill(
-        &user2,
-        AssetIndex::BTC as u32,
-        collateral,
-        notional,
-        false,
-        BTC_PRICE_I64,
-        0,
-        0,
-    );
+    fixture.open_long(&user1, FEED_BTC, collateral, notional, BTC_PRICE_I64);
+    fixture.open_short(&user2, FEED_BTC, collateral, notional, BTC_PRICE_I64);
 
     // Apply funding -- equal notional should yield zero funding rate
     fixture.jump(3600);
     fixture.trading.apply_funding();
 
-    let market = fixture.trading.get_market_data(&(AssetIndex::BTC as u32));
+    let market = fixture.trading.get_market_data(&(FEED_BTC));
     assert_eq!(market.fund_rate, 0, "equal notional should yield zero funding rate");
 }
 
@@ -446,16 +404,7 @@ fn test_loss_exceeds_collateral_clamped() {
     fixture.token.mint(&user, &(100_000 * SCALAR_7));
 
     // Open highly leveraged long: 1k collateral, 20k notional (20x)
-    let position_id = fixture.open_and_fill(
-        &user,
-        AssetIndex::BTC as u32,
-        1_000 * SCALAR_7,
-        20_000 * SCALAR_7,
-        true,
-        BTC_PRICE_I64,
-        0,
-        0,
-    );
+    let position_id = fixture.open_long(&user, FEED_BTC, 1_000, 20_000, BTC_PRICE_I64);
 
     // Jump 1 week for interest, price drops 10%
     fixture.jump(SECONDS_PER_WEEK);

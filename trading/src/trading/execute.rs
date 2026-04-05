@@ -252,7 +252,7 @@ mod tests {
     use crate::constants::SCALAR_7;
     use crate::storage;
     use crate::testutils::{
-        setup_contract, setup_env, BTC_FEED_ID, BTC_PRICE, PRICE_SCALAR,
+        setup_contract, setup_env, FEED_BTC, BTC_PRICE, PRICE_SCALAR,
     };
     use crate::dependencies::PriceData;
     use soroban_sdk::testutils::Address as _;
@@ -260,7 +260,7 @@ mod tests {
 
     fn btc_price_data(e: &soroban_sdk::Env, price: i128) -> PriceData {
         PriceData {
-            feed_id: BTC_FEED_ID,
+            feed_id: FEED_BTC,
             price,
             exponent: -8,
             publish_time: e.ledger().timestamp(),
@@ -277,7 +277,7 @@ mod tests {
     ) -> u32 {
         e.as_contract(contract, || {
             crate::trading::execute_create_limit(
-                e, user, BTC_FEED_ID, collateral, notional, true, entry_price, 0, 0,
+                e, user, FEED_BTC, collateral, notional, true, entry_price, 0, 0,
             )
         })
     }
@@ -292,7 +292,7 @@ mod tests {
     ) -> u32 {
         e.as_contract(contract, || {
             crate::trading::execute_create_limit(
-                e, user, BTC_FEED_ID, collateral, notional, false, entry_price, 0, 0,
+                e, user, FEED_BTC, collateral, notional, false, entry_price, 0, 0,
             )
         })
     }
@@ -316,11 +316,11 @@ mod tests {
             let pos = storage::get_position(&e, id);
             assert!(pos.filled);
             // base_fee = ceil(10_000*S7 × 5_000 / S7) = 50_000_000
-            // impact_fee = ceil(10_000*S7 × S7 / (8B*S7)) = 13
-            // pos.col = 1_000*S7 - 50_000_013 = 9_949_999_987
-            assert_eq!(pos.col, 9_949_999_987);
+            // impact_fee = floor(10_000*S7 × S7 / (8B*S7)) = 12
+            // pos.col = 1_000*S7 - 50_000_012 = 9_949_999_988
+            assert_eq!(pos.col, 9_949_999_988);
         });
-        // caller_fee = floor(50_000_013 × 1_000_000 / S7) = 5_000_001
+        // caller_fee = floor(50_000_012 × 1_000_000 / S7) = 5_000_001
         assert_eq!(token_client.balance(&caller) - caller_before, 5_000_001);
     }
 
@@ -363,8 +363,8 @@ mod tests {
 
             let pos = storage::get_position(&e, id);
             assert!(pos.filled);
-            // Same fees as long (first position on short side, also dominant)
-            assert_eq!(pos.col, 9_949_999_987);
+            // Same fees as long: base=50_000_000, impact=12. col = 1_000*S7 - 50_000_012
+            assert_eq!(pos.col, 9_949_999_988);
         });
     }
 
@@ -430,7 +430,7 @@ mod tests {
 
         let id = e.as_contract(&contract, || {
             crate::trading::execute_create_limit(
-                &e, &user, BTC_FEED_ID,
+                &e, &user, FEED_BTC,
                 1_000 * SCALAR_7,
                 10_000 * SCALAR_7,
                 true,
@@ -474,7 +474,7 @@ mod tests {
 
         let id = e.as_contract(&contract, || {
             crate::trading::execute_create_limit(
-                &e, &user, BTC_FEED_ID,
+                &e, &user, FEED_BTC,
                 1_000 * SCALAR_7,
                 10_000 * SCALAR_7,
                 true,

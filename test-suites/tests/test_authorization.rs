@@ -16,8 +16,8 @@ use soroban_sdk::testutils::{Address as _, BytesN as _, MockAuth, MockAuthInvoke
 use soroban_sdk::{Address, BytesN, Env, IntoVal, String, Symbol, Val, Vec};
 use test_suites::setup::create_fixture_with_data;
 use test_suites::test_fixture::TestFixture;
-use test_suites::SCALAR_7;
-use trading::testutils::{default_config, default_market, BTC_FEED_ID, BTC_PRICE};
+use test_suites::constants::SCALAR_7;
+use trading::testutils::{default_config, default_market, FEED_BTC, BTC_PRICE};
 
 // WASM bytes for factory deployment tests
 const TRADING_WASM: &[u8] = include_bytes!("../../target/wasm32v1-none/release/trading.wasm");
@@ -92,7 +92,7 @@ fn test_set_market_rejects_non_owner() {
 fn test_del_market_rejects_non_owner() {
     let f = fixture();
     let non_owner = Address::generate(&f.env);
-    let feed_id: u32 = BTC_FEED_ID;
+    let feed_id: u32 = FEED_BTC;
 
     f.env.mock_auths(&[MockAuth {
         address: &non_owner,
@@ -161,7 +161,7 @@ fn test_open_market_rejects_wrong_user() {
             fn_name: "open_market",
             args: (
                 real_user.clone(),
-                BTC_FEED_ID,
+                FEED_BTC,
                 1_000i128 * SCALAR_7,
                 10_000i128 * SCALAR_7,
                 true,
@@ -177,7 +177,7 @@ fn test_open_market_rejects_wrong_user() {
     // Call open_market with real_user as the user param, but only non_owner has auth
     let result = f.trading.try_open_market(
         &real_user,
-        &BTC_FEED_ID,
+        &(FEED_BTC),
         &(1_000 * SCALAR_7),
         &(10_000 * SCALAR_7),
         &true,
@@ -196,7 +196,7 @@ fn test_close_position_rejects_non_position_owner() {
     let (f, user_a) = fixture_with_user();
 
     // User A opens a position
-    let position_id = f.open_and_fill(&user_a, BTC_FEED_ID, 1_000 * SCALAR_7, 10_000 * SCALAR_7, true, BTC_PRICE as i64, 0, 0);
+    let position_id = f.open_long(&user_a, FEED_BTC, 1_000, 10_000, BTC_PRICE as i64);
 
     // Jump past MIN_OPEN_TIME so close is allowed
     f.jump(31);
@@ -228,7 +228,7 @@ fn test_cancel_limit_rejects_non_position_owner() {
     // User A places a limit order
     let position_id = f.trading.place_limit(
         &user_a,
-        &BTC_FEED_ID,
+        &(FEED_BTC),
         &(1_000 * SCALAR_7),
         &(10_000 * SCALAR_7),
         &true,
@@ -261,7 +261,7 @@ fn test_cancel_limit_rejects_non_position_owner() {
 fn test_modify_collateral_rejects_non_position_owner() {
     let (f, user_a) = fixture_with_user();
 
-    let position_id = f.open_and_fill(&user_a, BTC_FEED_ID, 1_000 * SCALAR_7, 10_000 * SCALAR_7, true, BTC_PRICE as i64, 0, 0);
+    let position_id = f.open_long(&user_a, FEED_BTC, 1_000, 10_000, BTC_PRICE as i64);
 
     let user_b = Address::generate(&f.env);
     let new_col = 2_000 * SCALAR_7;
@@ -289,7 +289,7 @@ fn test_modify_collateral_rejects_non_position_owner() {
 fn test_set_triggers_rejects_non_position_owner() {
     let (f, user_a) = fixture_with_user();
 
-    let position_id = f.open_and_fill(&user_a, BTC_FEED_ID, 1_000 * SCALAR_7, 10_000 * SCALAR_7, true, BTC_PRICE as i64, 0, 0);
+    let position_id = f.open_long(&user_a, FEED_BTC, 1_000, 10_000, BTC_PRICE as i64);
 
     let user_b = Address::generate(&f.env);
 

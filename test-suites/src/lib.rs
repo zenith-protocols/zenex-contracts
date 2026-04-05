@@ -1,11 +1,12 @@
 pub mod assertions;
+pub mod constants;
 pub mod test_fixture;
 pub mod setup;
 pub mod pyth_helper;
 mod token;
 pub mod dependencies;
 
-pub const SCALAR_7: i128 = 10000000; // 7 decimal places
+pub use constants::SCALAR_7;
 
 /// Convert trading::TradingConfig to factory::TradingConfig (same XDR, different Rust types).
 pub fn to_factory_config(tc: &trading::TradingConfig) -> factory::TradingConfig {

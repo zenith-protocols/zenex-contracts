@@ -85,7 +85,7 @@ mod tests {
     use crate::constants::SCALAR_18;
     use crate::storage;
     use crate::testutils::{
-        create_trading, default_market, jump, BTC_FEED_ID,
+        create_trading, default_market, jump, FEED_BTC,
     };
     use crate::types::ContractStatus;
     use soroban_sdk::Env;
@@ -135,15 +135,15 @@ mod tests {
 
         e.as_contract(&contract, || {
             let market_config = default_market(&e);
-            super::execute_set_market(&e, BTC_FEED_ID, &market_config);
+            super::execute_set_market(&e, FEED_BTC, &market_config);
 
             let markets = storage::get_markets(&e);
             assert_eq!(markets.len(), 1);
-            assert_eq!(markets.get(0).unwrap(), BTC_FEED_ID);
-            let stored = storage::get_market_config(&e, BTC_FEED_ID);
+            assert_eq!(markets.get(0).unwrap(), FEED_BTC);
+            let stored = storage::get_market_config(&e, FEED_BTC);
             assert_eq!(stored.enabled, true);
 
-            let data = storage::get_market_data(&e, BTC_FEED_ID);
+            let data = storage::get_market_data(&e, FEED_BTC);
             assert_eq!(data.l_notional, 0);
             assert_eq!(data.s_notional, 0);
             assert_eq!(data.l_adl_idx, SCALAR_18);
@@ -161,20 +161,20 @@ mod tests {
 
         e.as_contract(&contract, || {
             let market_config = default_market(&e);
-            super::execute_set_market(&e, BTC_FEED_ID, &market_config);
-            assert!(storage::has_market(&e, BTC_FEED_ID));
+            super::execute_set_market(&e, FEED_BTC, &market_config);
+            assert!(storage::has_market(&e, FEED_BTC));
 
             // Set OI to verify total_notional adjustment on deletion
-            let mut data = storage::get_market_data(&e, BTC_FEED_ID);
+            let mut data = storage::get_market_data(&e, FEED_BTC);
             data.l_notional = 10_000_000_000;
             data.s_notional = 5_000_000_000;
-            storage::set_market_data(&e, BTC_FEED_ID, &data);
+            storage::set_market_data(&e, FEED_BTC, &data);
             storage::set_total_notional(&e, 15_000_000_000);
 
-            super::execute_del_market(&e, BTC_FEED_ID);
+            super::execute_del_market(&e, FEED_BTC);
 
             assert_eq!(storage::get_markets(&e).len(), 0);
-            assert!(!storage::has_market(&e, BTC_FEED_ID));
+            assert!(!storage::has_market(&e, FEED_BTC));
             assert_eq!(storage::get_total_notional(&e), 0);
         });
     }
@@ -223,18 +223,18 @@ mod tests {
 
         e.as_contract(&contract, || {
             let mut mc = default_market(&e);
-            super::execute_set_market(&e, BTC_FEED_ID, &mc);
-            assert!(storage::get_market_config(&e, BTC_FEED_ID).enabled);
+            super::execute_set_market(&e, FEED_BTC, &mc);
+            assert!(storage::get_market_config(&e, FEED_BTC).enabled);
 
             // Disable
             mc.enabled = false;
-            super::execute_set_market(&e, BTC_FEED_ID, &mc);
-            assert!(!storage::get_market_config(&e, BTC_FEED_ID).enabled);
+            super::execute_set_market(&e, FEED_BTC, &mc);
+            assert!(!storage::get_market_config(&e, FEED_BTC).enabled);
 
             // Re-enable
             mc.enabled = true;
-            super::execute_set_market(&e, BTC_FEED_ID, &mc);
-            assert!(storage::get_market_config(&e, BTC_FEED_ID).enabled);
+            super::execute_set_market(&e, FEED_BTC, &mc);
+            assert!(storage::get_market_config(&e, FEED_BTC).enabled);
         });
     }
 }
