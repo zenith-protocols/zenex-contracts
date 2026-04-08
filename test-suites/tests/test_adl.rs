@@ -19,6 +19,22 @@ fn price_update_all(fixture: &TestFixture, btc: i64, eth: i64, xlm: i64) -> soro
     )
 }
 
+/// Realistic multi-market ADL scenario with 1-5% reductions per round.
+///
+/// 500k vault, all fees/rates zeroed (impact=i128::MAX → 0 fee).
+/// 9 positions across BTC/ETH/XLM with varied entry prices.
+///
+/// Flow:
+///   1. Open positions, jump past MIN_OPEN_TIME
+///   2. BTC $183k → OnIce (net ~98.6% vault, no ADL)
+///   3. BTC $186k → ADL #1 (~1.07% reduction, all non-XLM sides are winners)
+///   4. BTC $192k → ADL #2 (~4.68% additional, compounds to ~5.69% total)
+///   5. BTC $107k → Active restored (net < 90% vault)
+///   6. Liquidate carol's BTC long (equity < threshold, but not underwater)
+///   7. Close all remaining at $107k BTC, $2k ETH, $0.10 XLM
+///   8. Verify zero notionals and new-position ADL index snapshot
+///
+/// All expected values from adl_expected_values.py (independent Python math).
 #[test]
 fn test_adl_multi_market_scenario() {
     let fixture = TestFixture::create();
@@ -47,10 +63,15 @@ fn test_adl_multi_market_scenario() {
     }
 
     // ========================================================
-    // Phase 1 — Open positions at varied entry prices
+    // Phase 1 — Open 9 positions at varied entry prices
     // ========================================================
+    // BTC longs: alice 200k @$90k, bob 150k @$100k, carol 100k @$110k  (total 450k)
+    // BTC short: dave 100k @$200k
+    // ETH shorts: alice 200k @$2.5k, bob 150k @$2.2k  (total 350k)
+    // ETH long: carol 100k @$1.5k
+    // XLM: dave 50k long @$0.10, alice 50k short @$0.10
 
-    let _btc_long_alice = fixture.open_long(&alice, FEED_BTC, 5_000, 200_000, 90_000 * PRICE_SCALAR as i64);
+    let btc_long_alice = fixture.open_long(&alice, FEED_BTC, 5_000, 200_000, 90_000 * PRICE_SCALAR as i64);
     let btc_long_bob = fixture.open_long(&bob, FEED_BTC, 4_000, 150_000, 100_000 * PRICE_SCALAR as i64);
     let btc_long_carol = fixture.open_long(&carol, FEED_BTC, 3_000, 100_000, 110_000 * PRICE_SCALAR as i64);
     let btc_short_dave = fixture.open_short(&dave, FEED_BTC, 25_000, 100_000, 200_000 * PRICE_SCALAR as i64);
@@ -65,204 +86,261 @@ fn test_adl_multi_market_scenario() {
     fixture.jump(31);
 
     // ========================================================
-    // Phase 2 — ADL #1: BTC $240k (+140%), ETH $2k, XLM $0.10
+    // Phase 2 — BTC $183k: OnIce (no ADL)
     // ========================================================
-    // vault = 5_000_000_000_009 (500k tokens + 9 impact fees from opens)
-    //
-    // BTC long PnL (entry_wt = 22222222 + 15000000 + 9090909 = 46313131):
-    //   pnl = $240k × 46313131 / 100_000_000 - 4_500_000_000_000 = 6_615_151_440_000
-    // BTC short PnL (entry_wt = 5000000, entry $200k):
-    //   pnl = 1_000_000_000_000 - $240k × 5000000 / 100_000_000 = -200_000_000_000
-    // ETH long PnL (entry_wt = 666666666, entry $1.5k):
-    //   pnl = $2k × 666666666 / 100_000_000 - 1_000_000_000_000 = 333_333_332_000
-    // ETH short PnL (entry_wt = 800000000 + 681818181 = 1481818181):
-    //   pnl = 3_500_000_000_000 - $2k × 1481818181 / 100_000_000 = 536_363_638_000
-    //
-    // net_pnl = 6_615_151_440_000 + (-200_000_000_000) + 333_333_332_000 + 536_363_638_000
-    //         = 7_284_848_410_000
-    // winner_pnl = 6_615_151_440_000 + 333_333_332_000 + 536_363_638_000 = 7_484_848_410_000
-    // deficit = 7_284_848_410_000 - 5_000_000_000_000 = 2_284_848_410_000
-    // reduction = floor(2_284_848_410_000 × 1_000_000_000_000_000_000 / 7_484_848_410_000)
-    //           = 305_263_150_947_368_351
-    // factor = 1_000_000_000_000_000_000 - 305_263_150_947_368_351 = 694_736_849_052_631_649
+    // net_pnl ~$492,999.99 (~98.6% of $500k vault)
+    // net_pnl = 4_929_999_943_000
+    // >= 95% vault ($475k = 4_750_000_000_000) → OnIce
+    // <= vault ($500k = 5_000_000_000_000) → no ADL
     fixture.trading.update_status(
-        &price_update_all(&fixture, 240_000 * PRICE_SCALAR as i64, 200_000_000_000, 10_000_000),
+        &price_update_all(&fixture, 183_000 * PRICE_SCALAR as i64, 200_000_000_000, 10_000_000),
     );
 
-    assert_eq!(fixture.trading.get_status(), 1);
-
-    // BTC longs reduced: floor(4_500_000_000_000 × 694_736_849_052_631_649 / 1_000_000_000_000_000_000)
-    //                   = 3_126_315_820_736
-    let btc = fixture.trading.get_market_data(&FEED_BTC);
-    assert_eq!(btc.l_notional, 3_126_315_820_736);
-    assert_eq!(btc.l_adl_idx, 694_736_849_052_631_649);
-    assert_eq!(btc.s_notional, 100_000 * SCALAR_7);
-    assert_eq!(btc.s_adl_idx, SCALAR_18);
-
-    // ETH long reduced: floor(1_000_000_000_000 × 694_736_849_052_631_649 / 1e18) = 694_736_849_052
-    // ETH short reduced: floor(3_500_000_000_000 × factor / 1e18) = 2_431_578_971_684
-    let eth = fixture.trading.get_market_data(&FEED_ETH);
-    assert_eq!(eth.l_notional, 694_736_849_052);
-    assert_eq!(eth.s_notional, 2_431_578_971_684);
-    assert_eq!(eth.l_adl_idx, 694_736_849_052_631_649);
-    assert_eq!(eth.s_adl_idx, 694_736_849_052_631_649);
-
+    assert_eq!(fixture.trading.get_status(), 1); // OnIce
+    assert_eq!(fixture.trading.get_market_data(&FEED_BTC).l_adl_idx, SCALAR_18);
+    assert_eq!(fixture.trading.get_market_data(&FEED_BTC).s_adl_idx, SCALAR_18);
+    assert_eq!(fixture.trading.get_market_data(&FEED_ETH).l_adl_idx, SCALAR_18);
+    assert_eq!(fixture.trading.get_market_data(&FEED_ETH).s_adl_idx, SCALAR_18);
     assert_eq!(fixture.trading.get_market_data(&FEED_XLM).l_adl_idx, SCALAR_18);
     assert_eq!(fixture.trading.get_market_data(&FEED_XLM).s_adl_idx, SCALAR_18);
 
     // ========================================================
-    // Phase 3 — Partial close (OnIce allows closes)
+    // Phase 3 — BTC $186k: ADL #1 (~1.07% reduction)
     // ========================================================
-
-    let btc_close_240k = fixture.price_for_feed(FEED_BTC, 240_000 * PRICE_SCALAR as i64);
-
-    // Alice BTC long: 200_000 notional @$90k, col = 50_000_000_000 - 1 (impact).
-    // ADL-adjusted notional = floor(2_000_000_000_000 × 694_736_849_052_631_649 / 1_000_000_000_000_000_000)
-    //                       = 1_389_473_698_107
-    // pnl ratio = floor(($240k - $90k) × 100_000_000 / ($90k × 100_000_000))
-    //           = floor(150_000 × 100_000_000 / 90_000) = 166_666_666
-    // pnl = floor(1_389_473_698_107 × 166_666_666 / 100_000_000) = 2_315_789_495_580
-    // payout = (50_000_000_000 - 1) + 2_315_789_495_580 - 1 = 2_365_789_487_578
-    let pay_alice_btc = fixture.trading.close_position(&0u32, &btc_close_240k);
-    assert_eq!(pay_alice_btc, 2_365_789_487_578);
-
-    // Dave BTC short: 100_000 notional @$200k, not ADL'd. col = 250_000_000_000 - 1.
-    // pnl ratio = floor(($200k - $240k) × 100_000_000 / ($200k × 100_000_000))
-    //           = floor(-40_000 × 100_000_000 / 200_000) = -20_000_000
-    // pnl = floor(1_000_000_000_000 × (-20_000_000) / 100_000_000) = -200_000_000_000
-    // payout = max((250_000_000_000 - 1) + (-200_000_000_000) - 1, 0) = 50_000_000_000
-    let pay_dave_btc = fixture.trading.close_position(&btc_short_dave, &btc_close_240k);
-    assert_eq!(pay_dave_btc, 50_000_000_000);
-
-    let btc_mid = fixture.trading.get_market_data(&FEED_BTC);
-    assert_eq!(btc_mid.l_notional, 1_736_842_122_631);
-    assert_eq!(btc_mid.s_notional, 0);
-
-    assert_eq!(fixture.vault.total_assets(), 2_884_210_512_422);
-
-    // ========================================================
-    // Phase 4 — ADL #2: BTC $300k (still OnIce, continued rally)
-    // ========================================================
-    // Uses post-close market state (btc_l_not=1_736_842_122_631, btc_l_ew=16_736_842).
-    // vault = 2_884_210_512_422.
+    // All non-XLM sides profitable (BTC short @$200k profits at $186k).
     //
-    // BTC long pnl = $300k × 16_736_842 / 100_000_000 - 1_736_842_122_631 = 3_283_210_477_365
-    // ETH long pnl = $2k × 463_157_898 / 100_000_000 - 694_736_849_052 = 231_578_947_947
-    // ETH short pnl = 2_431_578_971_684 - $2k × 1_029_473_693 / 100_000_000 = 372_990_084_088
-    //
-    // net = 3_887_779_509_400. winner = 3_887_779_509_400.
-    // deficit = 3_887_779_509_400 - 2_884_210_512_422 = 1_003_568_996_970
-    // reduction = floor(1_003_568_996_970 × 1e18 / 3_887_779_509_400) = 258_256_627_815_618_144
-    // factor₂ = 741_743_372_184_381_856
-    // compound = floor(694_736_849_052_631_649 × 741_743_372_184_381_856 / 1e18)
-    //          = 515_316_453_195_489_003
+    // net_pnl ~$505,393.93 > vault $500k → ADL triggered
+    // net_pnl = 5_053_939_336_000
+    // deficit ~$5,393.93 = 53_939_336_000
+    // winner_pnl = net_pnl (no losers) = 5_053_939_336_000
+    // reduction ~1.067% = floor(53_939_336_000 × 10^18 / 5_053_939_336_000) = 10_672_731_193_226_178
+    // factor ~0.9893 = 10^18 - 10_672_731_193_226_178 = 989_327_268_806_773_822
     fixture.trading.update_status(
-        &price_update_all(&fixture, 300_000 * PRICE_SCALAR as i64, 200_000_000_000, 10_000_000),
+        &price_update_all(&fixture, 186_000 * PRICE_SCALAR as i64, 200_000_000_000, 10_000_000),
     );
 
-    // BTC long: floor(1_736_842_122_631 × 741_743_372_184_381_856 / 1e18) = 1_288_291_132_988
-    let btc2 = fixture.trading.get_market_data(&FEED_BTC);
-    assert_eq!(btc2.l_notional, 1_288_291_132_988);
-    assert_eq!(btc2.l_adl_idx, 515_316_453_195_489_003);
+    // Status stays OnIce (ADL runs but doesn't change status in OnIce state)
+    assert_eq!(fixture.trading.get_status(), 1);
 
-    // ETH long: floor(694_736_849_052 × factor₂ / 1e18) = 515_316_453_195
-    // ETH short: floor(2_431_578_971_684 × factor₂ / 1e18) = 1_803_607_586_184
-    let eth2 = fixture.trading.get_market_data(&FEED_ETH);
-    assert_eq!(eth2.l_notional, 515_316_453_195);
-    assert_eq!(eth2.l_adl_idx, 515_316_453_195_489_003);
-    assert_eq!(eth2.s_notional, 1_803_607_586_184);
-    assert_eq!(eth2.s_adl_idx, 515_316_453_195_489_003);
+    // BTC longs: $450k × 0.9893 ~= $445,197.27
+    // floor(4_500_000_000_000 × 989_327_268_806_773_822 / 10^18) = 4_451_972_709_630
+    let btc = fixture.trading.get_market_data(&FEED_BTC);
+    assert_eq!(btc.l_notional, 4_451_972_709_630);
+    // idx: 1.0 × factor ~= 0.9893
+    // floor(10^18 × 989_327_268_806_773_822 / 10^18) = 989_327_268_806_773_822
+    assert_eq!(btc.l_adl_idx, 989_327_268_806_773_822);
 
+    // BTC shorts: $100k × 0.9893 ~= $98,932.73
+    // floor(1_000_000_000_000 × 989_327_268_806_773_822 / 10^18) = 989_327_268_806
+    assert_eq!(btc.s_notional, 989_327_268_806);
+    // idx: 1.0 × factor ~= 0.9893
+    // floor(10^18 × 989_327_268_806_773_822 / 10^18) = 989_327_268_806_773_822
+    assert_eq!(btc.s_adl_idx, 989_327_268_806_773_822);
+
+    // ETH long: $100k × 0.9893 ~= $98,932.73
+    // floor(1_000_000_000_000 × 989_327_268_806_773_822 / 10^18) = 989_327_268_806
+    let eth = fixture.trading.get_market_data(&FEED_ETH);
+    assert_eq!(eth.l_notional, 989_327_268_806);
+    // idx: 1.0 × factor ~= 0.9893
+    // floor(10^18 × 989_327_268_806_773_822 / 10^18) = 989_327_268_806_773_822
+    assert_eq!(eth.l_adl_idx, 989_327_268_806_773_822);
+
+    // ETH shorts: $350k × 0.9893 ~= $346,264.54
+    // floor(3_500_000_000_000 × 989_327_268_806_773_822 / 10^18) = 3_462_645_440_823
+    assert_eq!(eth.s_notional, 3_462_645_440_823);
+    // idx: 1.0 × factor ~= 0.9893
+    // floor(10^18 × 989_327_268_806_773_822 / 10^18) = 989_327_268_806_773_822
+    assert_eq!(eth.s_adl_idx, 989_327_268_806_773_822);
+
+    // XLM: zero PnL → untouched
     assert_eq!(fixture.trading.get_market_data(&FEED_XLM).l_adl_idx, SCALAR_18);
+    assert_eq!(fixture.trading.get_market_data(&FEED_XLM).s_adl_idx, SCALAR_18);
 
     // ========================================================
-    // Phase 5 — Price reversal to $104k → Active restored, carol liquidatable
+    // Phase 4 — BTC $192k: ADL #2 (compounds to ~5.69% total)
     // ========================================================
-    // net_pnl at $104k ≈ 450_972_330_000 < 90% × vault (2_595_789_461_187) → Active.
+    // Uses post-ADL #1 state.
     //
-    // Carol's BTC long: 100_000 notional @$110k, pos.adl_idx = 1e18 (opened before any ADL).
-    // market adl_idx = 515_316_453_195_489_003.
-    // effective_not = floor(1_000_000_000_000 × 515_316_453_195_489_003 / 1e18) = 515_316_453_195
-    // pnl ratio = floor(($104k - $110k) × 100_000_000 / $110k) = -5_454_545
-    // pnl = floor(515_316_453_195 × (-5_454_545) / 100_000_000) = -28_108_338_810
-    // equity = (30_000_000_000 - 1) + (-28_108_338_810) - 1 = 1_891_661_188
-    // liq_threshold = floor(515_316_453_195 × 50_000 / 10_000_000) = 2_576_582_265
-    // equity (1_891_661_188) < threshold (2_576_582_265) → liquidatable
+    // net_pnl ~$524,523.32 > vault $500k → ADL #2
+    // net_pnl = 5_245_233_231_193
+    // deficit ~$24,523.32 = 245_233_231_193
+    // winner_pnl = net_pnl = 5_245_233_231_193
+    // reduction₂ ~4.675% = floor(245_233_231_193 × 10^18 / 5_245_233_231_193) = 46_753_541_812_901_048
+    // factor₂ ~0.9532 = 10^18 - 46_753_541_812_901_048 = 953_246_458_187_098_952
+    // compound ~0.9431 = floor(0.9893 × 10^18 × 0.9532 × 10^18 / 10^18) = 943_072_714_977_973_127
     fixture.trading.update_status(
-        &price_update_all(&fixture, 104_000 * PRICE_SCALAR as i64, 200_000_000_000, 10_000_000),
+        &price_update_all(&fixture, 192_000 * PRICE_SCALAR as i64, 200_000_000_000, 10_000_000),
     );
-    assert_eq!(fixture.trading.get_status(), 0);
 
-    let liq_price = fixture.price_for_feed(FEED_BTC, 104_000 * PRICE_SCALAR as i64);
+    // BTC longs: $445,197.27 × 0.9532 ~= $424,382.72
+    // floor(4_451_972_709_630 × 953_246_458_187_098_952 / 10^18) = 4_243_827_217_400
+    let btc2 = fixture.trading.get_market_data(&FEED_BTC);
+    assert_eq!(btc2.l_notional, 4_243_827_217_400);
+    // compound idx: 0.9893 × 0.9532 ~= 0.9431
+    // floor(989_327_268_806_773_822 × 953_246_458_187_098_952 / 10^18) = 943_072_714_977_973_127
+    assert_eq!(btc2.l_adl_idx, 943_072_714_977_973_127);
+
+    // BTC shorts: $98,932.73 × 0.9532 ~= $94,307.27
+    // floor(989_327_268_806 × 953_246_458_187_098_952 / 10^18) = 943_072_714_977
+    assert_eq!(btc2.s_notional, 943_072_714_977);
+    // compound idx: 0.9893 × 0.9532 ~= 0.9431
+    // floor(989_327_268_806_773_822 × 953_246_458_187_098_952 / 10^18) = 943_072_714_977_973_127
+    assert_eq!(btc2.s_adl_idx, 943_072_714_977_973_127);
+
+    // ETH long: $98,932.73 × 0.9532 ~= $94,307.27
+    // floor(989_327_268_806 × 953_246_458_187_098_952 / 10^18) = 943_072_714_977
+    let eth2 = fixture.trading.get_market_data(&FEED_ETH);
+    assert_eq!(eth2.l_notional, 943_072_714_977);
+    // compound idx: 0.9893 × 0.9532 ~= 0.9431
+    // floor(989_327_268_806_773_822 × 953_246_458_187_098_952 / 10^18) = 943_072_714_977_973_127
+    assert_eq!(eth2.l_adl_idx, 943_072_714_977_973_127);
+
+    // ETH shorts: $346,264.54 × 0.9532 ~= $330,075.45
+    // floor(3_462_645_440_823 × 953_246_458_187_098_952 / 10^18) = 3_300_754_502_422
+    assert_eq!(eth2.s_notional, 3_300_754_502_422);
+    // compound idx: 0.9893 × 0.9532 ~= 0.9431
+    // floor(989_327_268_806_773_822 × 953_246_458_187_098_952 / 10^18) = 943_072_714_977_973_127
+    assert_eq!(eth2.s_adl_idx, 943_072_714_977_973_127);
+
+    // XLM still untouched
+    assert_eq!(fixture.trading.get_market_data(&FEED_XLM).l_adl_idx, SCALAR_18);
+    assert_eq!(fixture.trading.get_market_data(&FEED_XLM).s_adl_idx, SCALAR_18);
+
+    // ========================================================
+    // Phase 5 — BTC $107k: Active restored
+    // ========================================================
+    // net_pnl ~$168,829.06 < 90% vault ($450k) → Active
+    // net_pnl = 1_688_290_581_022 < active_line = 4_500_000_000_000
+    fixture.trading.update_status(
+        &price_update_all(&fixture, 107_000 * PRICE_SCALAR as i64, 200_000_000_000, 10_000_000),
+    );
+    assert_eq!(fixture.trading.get_status(), 0); // Active
+
+    // ========================================================
+    // Phase 6 — Liquidate carol's BTC long at $107k
+    // ========================================================
+    // Carol: $100k notional @$110k, $3k col, pos.adl_idx = 1.0 (opened before ADL).
+    //
+    // ADL-adjusted: eff_not = $100k × 0.9431 ~= $94,307.27
+    // floor(1_000_000_000_000 × 943_072_714_977_973_127 / 10^18) = 943_072_714_977
+    //
+    // PnL at $107k: ($107k - $110k) / $110k ~= -2.73%
+    // ratio = trunc(-$3k × 10^8 / $110k) = -2_727_272
+    // pnl ~= -$2,572.02 = trunc(943_072_714_977 × -2_727_272 / 10^8) = -25_720_158_095
+    //
+    // equity = $3k + (-$2,572.02) ~= $427.98
+    // col + pnl = 30_000_000_000 + (-25_720_158_095) = 4_279_841_905
+    //
+    // liq_threshold = eff_not × 0.5% ~= $471.54
+    // floor(943_072_714_977 × 50_000 / 10_000_000) = 4_715_363_574
+    //
+    // equity $427.98 < threshold $471.54 → liquidatable (but equity > 0 → NOT underwater)
+    let liq_price = fixture.price_for_feed(FEED_BTC, 107_000 * PRICE_SCALAR as i64);
     fixture.trading.execute(&keeper, &svec![&fixture.env, btc_long_carol], &liq_price);
     assert!(!fixture.position_exists(btc_long_carol));
 
     // ========================================================
-    // Phase 6 — Close remaining at current market prices
+    // Phase 7 — Close all remaining at $107k BTC, $2k ETH, $0.10 XLM
     // ========================================================
 
-    let btc_104k = fixture.price_for_feed(FEED_BTC, 104_000 * PRICE_SCALAR as i64);
+    let btc_107k = fixture.price_for_feed(FEED_BTC, 107_000 * PRICE_SCALAR as i64);
     let eth_2k = fixture.price_for_feed(FEED_ETH, 200_000_000_000);
     let xlm_010 = fixture.price_for_feed(FEED_XLM, 10_000_000);
 
-    // Bob BTC long: 150_000 @$100k, compound idx 515_316_453_195_489_003.
-    // eff_not = floor(1_500_000_000_000 × 515_316_453_195_489_003 / 1e18) = 772_974_679_796
-    // pnl ratio = floor(($104k - $100k) × 100_000_000 / $100k) = 4_000_000
-    // pnl = floor(772_974_679_796 × 4_000_000 / 100_000_000) = 30_918_987_191
-    // payout = (40_000_000_000 - 1) + 30_918_987_191 - 1 = 70_918_987_191
-    let pay_bob_btc = fixture.trading.close_position(&btc_long_bob, &btc_104k);
-    assert_eq!(pay_bob_btc, 70_918_987_191);
+    // Alice BTC long: $200k @$90k, $5k col, compound ADL idx 0.9431.
+    // eff_not = $200k × 0.9431 ~= $188,614.54
+    // floor(2_000_000_000_000 × 943_072_714_977_973_127 / 10^18) = 1_886_145_429_955
+    // PnL: ($107k - $90k) / $90k ~= +18.89%
+    // ratio = floor($17k × 10^8 / $90k) = 18_888_888
+    // pnl ~= $35,627.19 = floor(1_886_145_429_955 × 18_888_888 / 10^8) = 356_271_897_781
+    // payout = $5k + $35,627.19 ~= $40,627.19
+    // 50_000_000_000 + 356_271_897_781 = 406_271_897_781
+    let pay_alice_btc = fixture.trading.close_position(&btc_long_alice, &btc_107k);
+    assert_eq!(pay_alice_btc, 406_271_897_781);
 
-    // Alice ETH short: 200_000 @$2.5k, compound idx.
-    // eff_not = floor(2_000_000_000_000 × 515_316_453_195_489_003 / 1e18) = 1_030_632_906_395
-    // pnl ratio = floor(($2.5k - $2k) × 100_000_000 / $2.5k) = 20_000_000
-    // pnl = floor(1_030_632_906_395 × 20_000_000 / 100_000_000) = 206_126_581_279
-    // payout = (250_000_000_000 - 1) + 206_126_581_279 - 1 = 456_126_581_278
-    let pay_eth_alice = fixture.trading.close_position(&eth_short_alice, &eth_2k);
-    assert_eq!(pay_eth_alice, 456_126_581_278);
+    // Bob BTC long: $150k @$100k, $4k col, compound ADL idx 0.9431.
+    // eff_not = $150k × 0.9431 ~= $141,460.91
+    // floor(1_500_000_000_000 × 943_072_714_977_973_127 / 10^18) = 1_414_609_072_466
+    // PnL: ($107k - $100k) / $100k = +7%
+    // ratio = floor($7k × 10^8 / $100k) = 7_000_000
+    // pnl ~= $9,902.26 = floor(1_414_609_072_466 × 7_000_000 / 10^8) = 99_022_635_072
+    // payout = $4k + $9,902.26 ~= $13,902.26
+    // 40_000_000_000 + 99_022_635_072 = 139_022_635_072
+    let pay_bob_btc = fixture.trading.close_position(&btc_long_bob, &btc_107k);
+    assert_eq!(pay_bob_btc, 139_022_635_072);
 
-    // Bob ETH short: 150_000 @$2.2k.
-    // eff_not = floor(1_500_000_000_000 × 515_316_453_195_489_003 / 1e18) = 772_974_679_796
-    // pnl ratio = floor(($2.2k - $2k) × 100_000_000 / $2.2k) = 9_090_909
-    // pnl = floor(772_974_679_796 × 9_090_909 / 100_000_000) = 70_270_424_733
-    // payout = (200_000_000_000 - 1) + 70_270_424_733 - 1 = 270_270_424_733
-    let pay_eth_bob = fixture.trading.close_position(&eth_short_bob, &eth_2k);
-    assert_eq!(pay_eth_bob, 270_270_424_733);
+    // Dave BTC short: $100k @$200k, $25k col, compound ADL idx 0.9431.
+    // eff_not = $100k × 0.9431 ~= $94,307.27
+    // floor(1_000_000_000_000 × 943_072_714_977_973_127 / 10^18) = 943_072_714_977
+    // PnL: ($200k - $107k) / $200k = +46.5%
+    // ratio = floor($93k × 10^8 / $200k) = 46_500_000
+    // pnl ~= $43,852.88 = floor(943_072_714_977 × 46_500_000 / 10^8) = 438_528_812_464
+    // payout = $25k + $43,852.88 ~= $68,852.88
+    // 250_000_000_000 + 438_528_812_464 = 688_528_812_464
+    let pay_dave_btc = fixture.trading.close_position(&btc_short_dave, &btc_107k);
+    assert_eq!(pay_dave_btc, 688_528_812_464);
 
-    // Carol ETH long: 100_000 @$1.5k.
-    // eff_not = floor(1_000_000_000_000 × 515_316_453_195_489_003 / 1e18) = 515_316_453_195
-    // pnl ratio = floor(($2k - $1.5k) × 100_000_000 / $1.5k) = 33_333_333
-    // pnl = floor(515_316_453_195 × 33_333_333 / 100_000_000) = 171_772_149_347
-    // payout = (150_000_000_000 - 1) + 171_772_149_347 - 1 = 321_772_149_347
-    let pay_eth_carol = fixture.trading.close_position(&eth_long_carol, &eth_2k);
-    assert_eq!(pay_eth_carol, 321_772_149_347);
+    // Alice ETH short: $200k @$2.5k, $25k col, compound ADL idx 0.9431.
+    // eff_not = $200k × 0.9431 ~= $188,614.54
+    // floor(2_000_000_000_000 × 943_072_714_977_973_127 / 10^18) = 1_886_145_429_955
+    // PnL: ($2.5k - $2k) / $2.5k = +20%
+    // ratio = floor($500 × 10^8 / $2.5k) = 20_000_000
+    // pnl ~= $37,722.91 = floor(1_886_145_429_955 × 20_000_000 / 10^8) = 377_229_085_991
+    // payout = $25k + $37,722.91 ~= $62,722.91
+    // 250_000_000_000 + 377_229_085_991 = 627_229_085_991
+    let pay_alice_eth = fixture.trading.close_position(&eth_short_alice, &eth_2k);
+    assert_eq!(pay_alice_eth, 627_229_085_991);
 
-    // XLM: no ADL, $0.10 entry = $0.10 close, pnl = 0.
-    // payout = 10_000_000_000 - 1 (open impact) - 1 (close impact) = 10_000_000_000
+    // Bob ETH short: $150k @$2.2k, $20k col, compound ADL idx 0.9431.
+    // eff_not = $150k × 0.9431 ~= $141,460.91
+    // floor(1_500_000_000_000 × 943_072_714_977_973_127 / 10^18) = 1_414_609_072_466
+    // PnL: ($2.2k - $2k) / $2.2k ~= +9.09%
+    // ratio = floor($200 × 10^8 / $2.2k) = 9_090_909
+    // pnl ~= $12,860.08 = floor(1_414_609_072_466 × 9_090_909 / 10^8) = 128_600_823_483
+    // payout = $20k + $12,860.08 ~= $32,860.08
+    // 200_000_000_000 + 128_600_823_483 = 328_600_823_483
+    let pay_bob_eth = fixture.trading.close_position(&eth_short_bob, &eth_2k);
+    assert_eq!(pay_bob_eth, 328_600_823_483);
+
+    // Carol ETH long: $100k @$1.5k, $15k col, compound ADL idx 0.9431.
+    // eff_not = $100k × 0.9431 ~= $94,307.27
+    // floor(1_000_000_000_000 × 943_072_714_977_973_127 / 10^18) = 943_072_714_977
+    // PnL: ($2k - $1.5k) / $1.5k ~= +33.33%
+    // ratio = floor($500 × 10^8 / $1.5k) = 33_333_333
+    // pnl ~= $31,435.76 = floor(943_072_714_977 × 33_333_333 / 10^8) = 314_357_568_515
+    // payout = $15k + $31,435.76 ~= $46,435.76
+    // 150_000_000_000 + 314_357_568_515 = 464_357_568_515
+    let pay_carol_eth = fixture.trading.close_position(&eth_long_carol, &eth_2k);
+    assert_eq!(pay_carol_eth, 464_357_568_515);
+
+    // XLM: no ADL, $0.10 entry = $0.10 close, pnl = $0, no fees.
+    // payout = col = $1k = 10_000_000_000
     let pay_xlm_dave = fixture.trading.close_position(&xlm_long_dave, &xlm_010);
     assert_eq!(pay_xlm_dave, 10_000_000_000);
     let pay_xlm_alice = fixture.trading.close_position(&xlm_short_alice, &xlm_010);
     assert_eq!(pay_xlm_alice, 10_000_000_000);
 
     // ========================================================
-    // Phase 7 — Verify zero notionals, new position snapshots compound index
+    // Phase 8 — Verify zero notionals, new positions snapshot compound index
     // ========================================================
 
     // Two ADL rounds of floor division can leave up to 2 units of rounding dust
     // per market side (1 unit per round × 2 rounds).
     let btc_f = fixture.trading.get_market_data(&FEED_BTC);
-    assert!(btc_f.l_notional <= 2);
+    assert!(btc_f.l_notional <= 2, "btc_l remaining: {}", btc_f.l_notional);
     assert_eq!(btc_f.s_notional, 0);
     let eth_f = fixture.trading.get_market_data(&FEED_ETH);
     assert_eq!(eth_f.l_notional, 0);
-    assert!(eth_f.s_notional <= 1);
+    assert!(eth_f.s_notional <= 2, "eth_s remaining: {}", eth_f.s_notional);
     let xlm_f = fixture.trading.get_market_data(&FEED_XLM);
     assert_eq!(xlm_f.l_notional, 0);
     assert_eq!(xlm_f.s_notional, 0);
 
-    let new_btc = fixture.open_long(&alice, FEED_BTC, 1_000, 10_000, 104_000 * PRICE_SCALAR as i64);
-    assert_eq!(fixture.trading.get_position(&new_btc).adl_idx, 515_316_453_195_489_003);
+    // New position on BTC snapshots the compound ADL index (~0.9431)
+    let new_btc = fixture.open_long(&alice, FEED_BTC, 1_000, 10_000, 107_000 * PRICE_SCALAR as i64);
+    assert_eq!(fixture.trading.get_position(&new_btc).adl_idx, 943_072_714_977_973_127);
 
+    // New position on XLM snapshots SCALAR_18 (no ADL occurred on XLM)
     let new_xlm = fixture.open_long(&alice, FEED_XLM, 1_000, 10_000, 10_000_000);
     assert_eq!(fixture.trading.get_position(&new_xlm).adl_idx, SCALAR_18);
 }

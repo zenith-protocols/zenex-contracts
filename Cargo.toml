@@ -18,19 +18,19 @@ version = "1.5.0"
 
 [workspace.dependencies.stellar-access]
 git = "https://github.com/OpenZeppelin/stellar-contracts"
-rev = "63167bb707edf4ad25e46572df11d4332d10b68e"
+tag = "v0.7.0"
 
 [workspace.dependencies.stellar-contract-utils]
 git = "https://github.com/OpenZeppelin/stellar-contracts"
-rev = "63167bb707edf4ad25e46572df11d4332d10b68e"
+tag = "v0.7.0"
 
 [workspace.dependencies.stellar-macros]
 git = "https://github.com/OpenZeppelin/stellar-contracts"
-rev = "63167bb707edf4ad25e46572df11d4332d10b68e"
+tag = "v0.7.0"
 
 [workspace.dependencies.stellar-tokens]
 git = "https://github.com/OpenZeppelin/stellar-contracts"
-rev = "63167bb707edf4ad25e46572df11d4332d10b68e"
+tag = "v0.7.0"
 
 [profile.release]
 opt-level = "z"

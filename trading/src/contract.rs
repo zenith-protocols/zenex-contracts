@@ -8,10 +8,9 @@ use crate::validation::require_valid_config;
 use soroban_sdk::{contract, contractclient, contractimpl, panic_with_error, Address, Bytes, Env, Vec};
 use soroban_sdk::unwrap::UnwrapOptimized;
 use stellar_access::ownable::{self as ownable, Ownable};
-use stellar_contract_utils::upgradeable::UpgradeableInternal;
-use stellar_macros::{only_owner, Upgradeable};
+use stellar_contract_utils::upgradeable::{self as upgradeable, Upgradeable};
+use stellar_macros::only_owner;
 
-#[derive(Upgradeable)]
 #[contract]
 pub struct TradingContract;
 
@@ -467,13 +466,14 @@ impl Trading for TradingContract {
 #[contractimpl(contracttrait)]
 impl Ownable for TradingContract {}
 
-impl UpgradeableInternal for TradingContract {
-    fn _require_auth(e: &Env, operator: &Address) {
+#[contractimpl]
+impl Upgradeable for TradingContract {
+    fn upgrade(e: &Env, new_wasm_hash: soroban_sdk::BytesN<32>, operator: Address) {
         operator.require_auth();
-        //owner is always set in __constructor; cannot reach this without initialization
         let owner = ownable::get_owner(e).unwrap_optimized();
-        if *operator != owner {
+        if operator != owner {
             panic_with_error!(e, TradingError::Unauthorized)
         }
+        upgradeable::upgrade(e, &new_wasm_hash);
     }
 }

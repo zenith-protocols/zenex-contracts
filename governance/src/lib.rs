@@ -6,8 +6,8 @@ use soroban_sdk::{
 };
 use soroban_sdk::unwrap::UnwrapOptimized;
 use stellar_access::ownable::{self, Ownable};
-use stellar_contract_utils::upgradeable::UpgradeableInternal;
-use stellar_macros::{only_owner, Upgradeable};
+use stellar_contract_utils::upgradeable::{self as upgradeable, Upgradeable};
+use stellar_macros::only_owner;
 
 mod errors;
 mod events;
@@ -18,7 +18,6 @@ pub use storage::QueuedCall;
 
 /// Governance timelock for deferred admin operations. Config changes are queued
 /// with a mandatory delay. set_status bypasses delay for emergency halts.
-#[derive(Upgradeable)]
 #[contract]
 pub struct GovernanceContract;
 
@@ -211,13 +210,15 @@ impl Governance for GovernanceContract {
 #[contractimpl(contracttrait)]
 impl Ownable for GovernanceContract {}
 
-impl UpgradeableInternal for GovernanceContract {
-    fn _require_auth(e: &Env, operator: &Address) {
+#[contractimpl]
+impl Upgradeable for GovernanceContract {
+    fn upgrade(e: &Env, new_wasm_hash: soroban_sdk::BytesN<32>, operator: Address) {
         operator.require_auth();
         let owner = ownable::get_owner(e).unwrap_optimized();
-        if *operator != owner {
+        if operator != owner {
             panic_with_error!(e, GovernanceError::Unauthorized)
         }
+        upgradeable::upgrade(e, &new_wasm_hash);
     }
 }
 
