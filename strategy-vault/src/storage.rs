@@ -5,10 +5,19 @@ use stellar_tokens::fungible::{
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
+pub struct DepositLock {
+    /// Timestamp of the most recent deposit (seconds).
+    pub timestamp: u64,
+    /// Number of shares deposited within the current lock window.
+    pub shares: i128,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
 pub enum StrategyStorageKey {
     LockTime,
     Strategy,
-    LastDepositTime(Address),
+    DepositLock(Address),
 }
 
 pub fn extend_instance(e: &Env) {
@@ -43,9 +52,12 @@ pub fn set_strategy(e: &Env, strategy: &Address) {
         .set::<StrategyStorageKey, Address>(&StrategyStorageKey::Strategy, strategy);
 }
 
-pub fn get_last_deposit_time(e: &Env, user: &Address) -> Option<u64> {
-    let key = StrategyStorageKey::LastDepositTime(user.clone());
-    let result = e.storage().persistent().get::<StrategyStorageKey, u64>(&key);
+pub fn get_deposit_lock(e: &Env, user: &Address) -> Option<DepositLock> {
+    let key = StrategyStorageKey::DepositLock(user.clone());
+    let result = e
+        .storage()
+        .persistent()
+        .get::<StrategyStorageKey, DepositLock>(&key);
     if result.is_some() {
         e.storage()
             .persistent()
@@ -54,11 +66,11 @@ pub fn get_last_deposit_time(e: &Env, user: &Address) -> Option<u64> {
     result
 }
 
-pub fn set_last_deposit_time(e: &Env, user: &Address, timestamp: u64) {
-    let key = StrategyStorageKey::LastDepositTime(user.clone());
+pub fn set_deposit_lock(e: &Env, user: &Address, lock: &DepositLock) {
+    let key = StrategyStorageKey::DepositLock(user.clone());
     e.storage()
         .persistent()
-        .set::<StrategyStorageKey, u64>(&key, &timestamp);
+        .set::<StrategyStorageKey, DepositLock>(&key, lock);
     e.storage()
         .persistent()
         .extend_ttl(&key, BALANCE_TTL_THRESHOLD, BALANCE_EXTEND_AMOUNT);

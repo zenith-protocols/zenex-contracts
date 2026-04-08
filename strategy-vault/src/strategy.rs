@@ -1,9 +1,9 @@
-//! Strategy integration and custom vault extensions
+//! Strategy integration and share-aware deposit locking.
 
 use soroban_sdk::{contracterror, contractevent, panic_with_error, token, Address, Env};
-use stellar_tokens::vault::Vault;
+use stellar_tokens::{fungible::Base, vault::Vault};
 
-use crate::storage;
+use crate::storage::{self, DepositLock};
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -13,6 +13,7 @@ pub enum StrategyVaultError {
     SharesLocked = 791,
     UnauthorizedStrategy = 792,
 }
+
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StrategyWithdraw {
@@ -24,25 +25,62 @@ pub struct StrategyWithdraw {
 pub struct StrategyVault;
 
 impl StrategyVault {
-    /// Returns seconds remaining until user's shares unlock, or 0 if unlocked.
-    /// Users without deposit history (received shares via transfer) are never locked.
-    pub fn get_lock_time(e: &Env, user: &Address) -> u64 {
-        let Some(last_deposit_time) = storage::get_last_deposit_time(e, user) else {
+    /// Returns the number of shares that are currently available (unlocked)
+    /// for the given address to transfer, withdraw, or redeem.
+    pub fn available_shares(e: &Env, user: &Address) -> i128 {
+        let balance = Base::balance(e, user);
+        let Some(lock) = storage::get_deposit_lock(e, user) else {
+            return balance; // no deposit history → all available
+        };
+        let lock_time = storage::get_lock_time(e);
+        if e.ledger().timestamp() >= lock.timestamp + lock_time {
+            return balance; // lock expired → all available
+        }
+        // Only recently deposited shares are locked
+        let available = balance - lock.shares;
+        if available > 0 { available } else { 0 }
+    }
+
+    /// Returns seconds remaining until the lock expires, or 0 if unlocked.
+    pub fn lock_time_remaining(e: &Env, user: &Address) -> u64 {
+        let Some(lock) = storage::get_deposit_lock(e, user) else {
             return 0;
         };
-        let unlock_time = last_deposit_time.saturating_add(storage::get_lock_time(e));
+        let unlock_time = lock.timestamp.saturating_add(storage::get_lock_time(e));
         unlock_time.saturating_sub(e.ledger().timestamp())
     }
 
-    /// Panics if user's shares are currently locked
-    pub fn require_unlocked(e: &Env, user: &Address) {
-        if Self::get_lock_time(e, user) > 0 {
+    /// Panics if `amount` shares exceed the user's available (unlocked) balance.
+    pub fn require_available(e: &Env, user: &Address, amount: i128) {
+        if amount > Self::available_shares(e, user) {
             panic_with_error!(e, StrategyVaultError::SharesLocked);
         }
     }
 
-    /// Strategy withdraws tokens from the vault
-    /// This decreases total_assets and thus the share price
+    /// Record newly minted shares into the deposit lock for the receiver.
+    /// If the previous lock expired, resets to only the new shares.
+    /// If still active, accumulates onto the existing locked shares.
+    pub fn record_deposit(e: &Env, receiver: &Address, new_shares: i128) {
+        let now = e.ledger().timestamp();
+        let lock_time = storage::get_lock_time(e);
+
+        let locked = match storage::get_deposit_lock(e, receiver) {
+            Some(lock) if now < lock.timestamp + lock_time => lock.shares,
+            _ => 0, // no lock or expired
+        };
+
+        storage::set_deposit_lock(
+            e,
+            receiver,
+            &DepositLock {
+                timestamp: now,
+                shares: locked + new_shares,
+            },
+        );
+    }
+
+    /// Strategy withdraws tokens from the vault.
+    /// This decreases total_assets and thus the share price.
     pub fn withdraw(env: &Env, strategy: &Address, amount: i128) {
         if amount <= 0 {
             panic_with_error!(env, StrategyVaultError::InvalidAmount);
@@ -53,7 +91,6 @@ impl StrategyVault {
 
         let asset = Vault::query_asset(env);
         let token_client = token::Client::new(env, &asset);
-
         token_client.transfer(&env.current_contract_address(), strategy, &amount);
 
         StrategyWithdraw {
@@ -62,5 +99,4 @@ impl StrategyVault {
         }
         .publish(env);
     }
-
 }
