@@ -20,3 +20,33 @@ pub fn create_fixture_with_data<'a>() -> TestFixture<'a> {
     // Contract starts Active from constructor, no need to set_status
     fixture
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    /// Verify that factory deployment wires all contracts together correctly.
+    #[test]
+    fn test_fixture_creation() {
+        let f = create_fixture_with_data();
+
+        // Trading ↔ vault cross-references
+        assert_eq!(f.trading.get_vault(), f.vault.address);
+        assert_eq!(f.vault.query_asset(), f.token.address);
+
+        // Trading → price verifier
+        assert_eq!(f.trading.get_price_verifier(), f.price_verifier.address);
+
+        // Factory tracks the deployment
+        assert!(f.factory.is_deployed(&f.trading.address));
+
+        // Vault has liquidity from setup
+        assert_eq!(f.vault.total_assets(), 10_000_000_0000000);
+
+        // Price verification works end-to-end
+        let price_bytes = f.price_for_feed(FEED_BTC, 10_000_000_000_000);
+        let price_data = f.price_verifier.verify_price(&price_bytes);
+        assert_eq!(price_data.feed_id, FEED_BTC);
+        assert_eq!(price_data.price, 10_000_000_000_000_i128);
+    }
+}

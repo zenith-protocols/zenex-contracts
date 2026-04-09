@@ -345,9 +345,13 @@ fn test_adl_multi_market_scenario() {
     assert_eq!(fixture.trading.get_position(&new_xlm).adl_idx, SCALAR_18);
 }
 
+/// ADL fires once, then the same prices cannot trigger it again.
+///
+/// After ADL reduces notionals, net_pnl drops below the vault threshold,
+/// so a second update_status at the same prices panics with ThresholdNotMet (#750).
 #[test]
 #[should_panic(expected = "Error(Contract, #750)")]
-fn test_adl_cannot_retrigger_with_small_positions() {
+fn test_adl_cannot_trigger_twice_at_same_prices() {
     let fixture = TestFixture::create();
     fixture.token.mint(&fixture.owner, &(500_000 * SCALAR_7));
     fixture.vault.deposit(&(500_000 * SCALAR_7), &fixture.owner, &fixture.owner, &fixture.owner);
@@ -364,14 +368,56 @@ fn test_adl_cannot_retrigger_with_small_positions() {
     fixture.create_market(FEED_XLM, &mc);
 
     let alice = Address::generate(&fixture.env);
-    fixture.token.mint(&alice, &(100_000 * SCALAR_7));
+    let bob = Address::generate(&fixture.env);
+    let carol = Address::generate(&fixture.env);
+    let dave = Address::generate(&fixture.env);
 
-    fixture.open_long(&alice, FEED_BTC, 500, 1_000, 100_000 * PRICE_SCALAR as i64);
-    fixture.open_long(&alice, FEED_XLM, 500, 1_000, 10_000_000);
+    for u in [&alice, &bob, &carol, &dave] {
+        fixture.token.mint(u, &(200_000 * SCALAR_7));
+    }
+
+    // BTC longs: alice 200k @$90k, bob 150k @$100k, carol 100k @$110k  (total 450k)
+    // BTC short: dave 100k @$200k
+    // ETH shorts: alice 200k @$2.5k, bob 150k @$2.2k  (total 350k)
+    // ETH long: carol 100k @$1.5k
+    // XLM: dave 50k long @$0.10, alice 50k short @$0.10
+
+    fixture.open_long(&alice, FEED_BTC, 5_000, 200_000, 90_000 * PRICE_SCALAR as i64);
+    fixture.open_long(&bob, FEED_BTC, 4_000, 150_000, 100_000 * PRICE_SCALAR as i64);
+    fixture.open_long(&carol, FEED_BTC, 3_000, 100_000, 110_000 * PRICE_SCALAR as i64);
+    fixture.open_short(&dave, FEED_BTC, 25_000, 100_000, 200_000 * PRICE_SCALAR as i64);
+
+    fixture.open_short(&alice, FEED_ETH, 25_000, 200_000, 250_000_000_000);
+    fixture.open_short(&bob, FEED_ETH, 20_000, 150_000, 220_000_000_000);
+    fixture.open_long(&carol, FEED_ETH, 15_000, 100_000, 150_000_000_000);
+
+    fixture.open_long(&dave, FEED_XLM, 1_000, 50_000, 10_000_000);
+    fixture.open_short(&alice, FEED_XLM, 1_000, 50_000, 10_000_000);
+
     fixture.jump(31);
 
-    // 1_000 × 10_000_000 notional at 100× BTC: PnL = 99_000 × 10_000_000 < vault 500_000 × 10_000_000
+    // ========================================================
+    // ADL #1 — BTC $186k
+    // ========================================================
+    // All non-XLM sides profitable (BTC short @$200k profits at $186k).
+    //
+    // net_pnl ~$505,393.93 > vault $500k → ADL triggered
+    // net_pnl = 5_053_939_336_000
+    // deficit ~$5,393.93 = 53_939_336_000
+    // winner_pnl = net_pnl (no losers) = 5_053_939_336_000
+    // reduction ~1.067% = floor(53_939_336_000 × 10^18 / 5_053_939_336_000) = 10_672_731_193_226_178
+    // factor ~0.9893 = 10^18 - 10_672_731_193_226_178 = 989_327_268_806_773_822
     fixture.trading.update_status(
-        &price_update_all(&fixture, 10_000_000 * PRICE_SCALAR as i64, 200_000_000_000, 10_000_000),
+        &price_update_all(&fixture, 186_000 * PRICE_SCALAR as i64, 200_000_000_000, 10_000_000),
+    );
+    assert_eq!(fixture.trading.get_status(), 1); // OnIce
+
+    // ========================================================
+    // Second call at same prices → ThresholdNotMet
+    // ========================================================
+    // Post-ADL notionals are reduced by ~1.067%, so net_pnl is now ≤ vault.
+    // No ADL to perform, status already OnIce → panics.
+    fixture.trading.update_status(
+        &price_update_all(&fixture, 186_000 * PRICE_SCALAR as i64, 200_000_000_000, 10_000_000),
     );
 }

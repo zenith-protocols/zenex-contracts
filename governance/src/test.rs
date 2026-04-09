@@ -1,5 +1,4 @@
-use crate::{GovernanceContract, GovernanceClient, GovernanceError};
-use crate::storage::QueuedCall;
+use crate::{GovernanceContract, GovernanceClient};
 use soroban_sdk::testutils::{Address as _, Ledger, LedgerInfo};
 use soroban_sdk::{contract, contractimpl, Address, Env, IntoVal, Symbol, Val, Vec};
 

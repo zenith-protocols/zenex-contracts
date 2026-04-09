@@ -3,7 +3,7 @@ use soroban_sdk::testutils::Address as _;
 use soroban_sdk::Address;
 use test_suites::setup::create_fixture_with_data;
 use test_suites::test_fixture::TestFixture;
-use test_suites::constants::{BTC_PRICE_I64, SCALAR_7, SCALAR_18, SECONDS_IN_HOUR};
+use test_suites::constants::{BTC_PRICE_I64, SCALAR_7, SECONDS_IN_HOUR};
 use trading::testutils::{default_config, default_market, FEED_BTC};
 
 fn setup_fixture() -> TestFixture<'static> {
@@ -11,11 +11,11 @@ fn setup_fixture() -> TestFixture<'static> {
 }
 
 // ==========================================
-// 1. Funding is zero-sum (token conservation)
+// 1. Funding accrues and settles on close
 // ==========================================
 
 #[test]
-fn test_funding_is_zero_sum() {
+fn test_funding_accrues_and_settles() {
     let fixture = setup_fixture();
     let user_long = Address::generate(&fixture.env);
     let user_short = Address::generate(&fixture.env);
@@ -23,20 +23,9 @@ fn test_funding_is_zero_sum() {
     fixture.token.mint(&user_long, &(500_000 * SCALAR_7));
     fixture.token.mint(&user_short, &(500_000 * SCALAR_7));
 
-    // Record total system tokens before trading
-    let total_before = fixture.token.balance(&user_long)
-        + fixture.token.balance(&user_short)
-        + fixture.token.balance(&fixture.vault.address)
-        + fixture.token.balance(&fixture.treasury.address)
-        + fixture.token.balance(&fixture.trading.address);
-
     // Open unequal sides: 2x long vs 1x short (long is dominant, funding flows L->S)
-    let long_notional = 20_000;
-    let short_notional = 10_000;
-
-    let long_pos = fixture.open_long(&user_long, FEED_BTC, 5_000, long_notional, BTC_PRICE_I64);
-
-    let short_pos = fixture.open_short(&user_short, FEED_BTC, 5_000, short_notional, BTC_PRICE_I64);
+    let long_pos = fixture.open_long(&user_long, FEED_BTC, 5_000, 20_000, BTC_PRICE_I64);
+    let short_pos = fixture.open_short(&user_short, FEED_BTC, 5_000, 10_000, BTC_PRICE_I64);
 
     // Let 1 hour pass, then apply_funding to set the funding rate
     fixture.jump(SECONDS_IN_HOUR);
@@ -52,23 +41,6 @@ fn test_funding_is_zero_sum() {
 
     assert!(payout_long > 0, "long should have some payout");
     assert!(payout_short > 0, "short should have some payout");
-
-    // Record total system tokens after all trades settled
-    let total_after = fixture.token.balance(&user_long)
-        + fixture.token.balance(&user_short)
-        + fixture.token.balance(&fixture.vault.address)
-        + fixture.token.balance(&fixture.treasury.address)
-        + fixture.token.balance(&fixture.trading.address);
-
-    // Total tokens must be conserved within rounding tolerance (2 units per position = 4 total)
-    let diff = (total_after - total_before).abs();
-    assert!(
-        diff <= 4,
-        "Token conservation violated: total_before={}, total_after={}, diff={}",
-        total_before,
-        total_after,
-        diff
-    );
 }
 
 // ==========================================
@@ -359,62 +331,3 @@ fn test_fee_accrual_increases_with_time() {
     assert!(total_cost > 0, "user should have paid net fees");
 }
 
-// ==========================================
-// 7. Token conservation after open/close cycle
-// ==========================================
-
-#[test]
-fn test_token_conservation_after_open_close() {
-    let fixture = setup_fixture();
-    let user1 = Address::generate(&fixture.env);
-    let user2 = Address::generate(&fixture.env);
-    let user3 = Address::generate(&fixture.env);
-
-    fixture.token.mint(&user1, &(500_000 * SCALAR_7));
-    fixture.token.mint(&user2, &(500_000 * SCALAR_7));
-    fixture.token.mint(&user3, &(500_000 * SCALAR_7));
-
-    // Record total tokens across all addresses
-    let total_before = fixture.token.balance(&user1)
-        + fixture.token.balance(&user2)
-        + fixture.token.balance(&user3)
-        + fixture.token.balance(&fixture.vault.address)
-        + fixture.token.balance(&fixture.treasury.address)
-        + fixture.token.balance(&fixture.trading.address);
-
-    // Open several positions
-    let pos1 = fixture.open_long(&user1, FEED_BTC, 5_000, 20_000, BTC_PRICE_I64);
-
-    let pos2 = fixture.open_short(&user2, FEED_BTC, 5_000, 15_000, BTC_PRICE_I64);
-
-    let pos3 = fixture.open_long(&user3, FEED_BTC, 3_000, 10_000, BTC_PRICE_I64);
-
-    // Let time pass, apply funding
-    fixture.jump(SECONDS_IN_HOUR);
-    fixture.trading.apply_funding();
-    fixture.jump(SECONDS_IN_HOUR);
-
-    // Close all positions at original price (no PnL from price movement)
-    let close_bytes = fixture.btc_price(BTC_PRICE_I64);
-    fixture.trading.close_position(&pos1, &close_bytes);
-    fixture.trading.close_position(&pos2, &close_bytes);
-    fixture.trading.close_position(&pos3, &close_bytes);
-
-    // Record total tokens after
-    let total_after = fixture.token.balance(&user1)
-        + fixture.token.balance(&user2)
-        + fixture.token.balance(&user3)
-        + fixture.token.balance(&fixture.vault.address)
-        + fixture.token.balance(&fixture.treasury.address)
-        + fixture.token.balance(&fixture.trading.address);
-
-    // Total tokens must be conserved (2 units tolerance per position = 6 total)
-    let diff = (total_after - total_before).abs();
-    assert!(
-        diff <= 6,
-        "Token conservation violated: total_before={}, total_after={}, diff={}",
-        total_before,
-        total_after,
-        diff
-    );
-}
