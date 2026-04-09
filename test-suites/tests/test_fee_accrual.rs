@@ -425,7 +425,9 @@ fn test_adl_funding_undercharge_bounded() {
     let mut mc = default_market(&fixture.env);
     mc.r_var_market = 0; mc.impact = i128::MAX;
     fixture.create_market(FEED_BTC, &mc);
+    mc.feed_id = FEED_ETH;
     fixture.create_market(FEED_ETH, &mc);
+    mc.feed_id = FEED_XLM;
     fixture.create_market(FEED_XLM, &mc);
 
     let alice = Address::generate(&fixture.env);

@@ -52,7 +52,7 @@ impl Position {
     pub fn create(
         e: &Env,
         user: &Address,
-        feed: u32,
+        market_id: u32,
         long: bool,
         entry_price: i128,
         col: i128,
@@ -63,7 +63,7 @@ impl Position {
         let position = Position {
             user: user.clone(),
             filled: false,
-            feed,
+            market_id,
             long,
             sl,
             tp,
@@ -283,7 +283,7 @@ mod tests {
         Position {
             user: Address::generate(e),
             filled: true,
-            feed: 1,
+            market_id: FEED_BTC,
             long: true,
             sl: 0,
             tp: 0,
@@ -300,6 +300,7 @@ mod tests {
     fn test_market(data: MarketData) -> Context {
         let e = Env::default();
         Context {
+            market_id: FEED_BTC,
             feed_id: FEED_BTC,
             price: 100_000 * SCALAR_7,
             price_scalar: SCALAR_7,
@@ -318,6 +319,7 @@ mod tests {
     fn test_market_at(price: i128, data: MarketData) -> Context {
         let e = Env::default();
         Context {
+            market_id: FEED_BTC,
             feed_id: FEED_BTC,
             price,
             price_scalar: SCALAR_7,
@@ -692,7 +694,7 @@ mod tests {
             assert_eq!(id, 0);
             assert_eq!(position.user, user);
             assert!(!position.filled);
-            assert_eq!(position.feed, FEED_BTC);
+            assert_eq!(position.market_id, FEED_BTC);
             assert!(position.long);
             assert_eq!(position.sl, 90_000 * SCALAR_7);
             assert_eq!(position.tp, 110_000 * SCALAR_7);

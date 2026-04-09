@@ -18,6 +18,7 @@ pub struct TradingConfig {
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct MarketConfig {
+    pub feed_id:  u32,   // Pyth price feed identifier (immutable after market creation)
     pub enabled:  bool,  // true = active, false = disabled (positions refunded)
     pub max_util: i128, // per-market utilization cap (SCALAR_7)
     pub r_var_market: i128, // per-market variable borrowing rate at full market utilization (SCALAR_18)
@@ -48,7 +49,7 @@ pub struct MarketData {
 pub struct Position {
     pub user:        Address, // position owner
     pub filled:      bool,    // false = pending limit, true = filled
-    pub feed:        u32,     // price feed ID
+    pub market_id:   u32,     // market identifier (maps to MarketConfig with feed_id)
     pub long:        bool,    // true = long, false = short
     pub sl:          i128,    // stop-loss trigger price, 0 = not set (price_scalar)
     pub tp:          i128,    // take-profit trigger price, 0 = not set (price_scalar)

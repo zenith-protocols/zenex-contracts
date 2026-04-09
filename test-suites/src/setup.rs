@@ -12,10 +12,16 @@ pub fn create_fixture_with_data<'a>() -> TestFixture<'a> {
 
     let base_config = default_market(&fixture.env);
 
-    // Create markets identified by feed_id (no asset field needed)
+    // Create markets: each config must carry the correct feed_id
     fixture.create_market(FEED_BTC, &base_config);
-    fixture.create_market(FEED_ETH, &base_config);
-    fixture.create_market(FEED_XLM, &base_config);
+
+    let mut eth_config = base_config.clone();
+    eth_config.feed_id = FEED_ETH;
+    fixture.create_market(FEED_ETH, &eth_config);
+
+    let mut xlm_config = base_config.clone();
+    xlm_config.feed_id = FEED_XLM;
+    fixture.create_market(FEED_XLM, &xlm_config);
 
     // Contract starts Active from constructor, no need to set_status
     fixture

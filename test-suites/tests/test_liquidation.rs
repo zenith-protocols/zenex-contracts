@@ -37,7 +37,7 @@ fn test_liquidation_underwater_position() {
     let crash_price = fixture.btc_price(98_000 * PRICE_SCALAR as i64);
 
     let ids = position_ids(&fixture.env, position_id);
-    fixture.trading.execute(&keeper, &ids, &crash_price);
+    fixture.trading.execute(&keeper, &FEED_BTC, &ids, &crash_price);
 
     assert!(
         !fixture.position_exists(position_id),
@@ -63,7 +63,7 @@ fn test_liquidation_healthy_position_rejected() {
     let ids = position_ids(&fixture.env, position_id);
     fixture
         .trading
-        .execute(&keeper, &ids, &mild_drop); // should panic #751
+        .execute(&keeper, &FEED_BTC, &ids, &mild_drop); // should panic #751
 }
 
 #[test]
@@ -83,7 +83,7 @@ fn test_liquidation_keeper_receives_fee() {
     let crash_price = fixture.btc_price(97_000 * PRICE_SCALAR as i64);
 
     let ids = position_ids(&fixture.env, position_id);
-    fixture.trading.execute(&keeper, &ids, &crash_price);
+    fixture.trading.execute(&keeper, &FEED_BTC, &ids, &crash_price);
 
     let keeper_balance_after = fixture.token.balance(&keeper);
     assert!(
@@ -129,7 +129,7 @@ fn test_liquidation_stale_price_rejected() {
     let ids = position_ids(&fixture.env, position_id);
     fixture
         .trading
-        .execute(&keeper, &ids, &stale_price); // should panic #749
+        .execute(&keeper, &FEED_BTC, &ids, &stale_price); // should panic #749
 }
 
 // ==========================================
@@ -159,7 +159,7 @@ fn test_liquidation_after_interest_accrual() {
     let moderate_drop = fixture.btc_price(90_710 * PRICE_SCALAR as i64);
 
     let ids = position_ids(&fixture.env, position_id);
-    fixture.trading.execute(&keeper, &ids, &moderate_drop);
+    fixture.trading.execute(&keeper, &FEED_BTC, &ids, &moderate_drop);
 
     assert!(
         !fixture.position_exists(position_id),
@@ -224,7 +224,7 @@ fn test_liquidation_after_adl() {
     fixture.jump(31);
 
     let ids = position_ids(&fixture.env, position_id);
-    fixture.trading.execute(&keeper, &ids, &crash_price);
+    fixture.trading.execute(&keeper, &FEED_BTC, &ids, &crash_price);
 
     assert!(
         !fixture.position_exists(position_id),

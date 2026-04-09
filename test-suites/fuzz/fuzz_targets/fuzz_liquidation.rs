@@ -223,7 +223,7 @@ fuzz_target!(|input: FuzzInput| {
                 StepAction::TryLiquidate => {
                     let price_bytes = build_btc_price(&fixture, btc_price);
                     let result = fixture.trading.try_execute(
-                        &keeper, &svec![&fixture.env, primary_id], &price_bytes,
+                        &keeper, &FEED_BTC, &svec![&fixture.env, primary_id], &price_bytes,
                     );
                     verify_no_host_error(&result, "TryLiquidate");
 

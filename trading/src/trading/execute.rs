@@ -26,12 +26,13 @@ fn add_transfer(map: &mut Map<Address, i128>, address: &Address, amount: i128) {
 pub fn execute_trigger(
     e: &Env,
     caller: &Address,
+    market_id: u32,
     position_ids: Vec<u32>,
     price_data: &PriceData,
 ) {
     require_can_manage(e);
 
-    let mut ctx = Context::load(e, price_data);
+    let mut ctx = Context::load(e, market_id, price_data);
     let transfers = process_positions(e, &mut ctx, caller, position_ids);
 
     let token_client = TokenClient::new(e, &ctx.token);
@@ -69,7 +70,7 @@ fn process_positions(
     for position_id in position_ids.iter() {
         let mut position = storage::get_position(e, position_id);
 
-        if position.feed != ctx.feed_id {
+        if position.market_id != ctx.market_id {
             panic_with_error!(e, TradingError::InvalidPrice);
         }
 
@@ -111,7 +112,7 @@ fn apply_close(
         position.require_closable(e);
         settle_close(e, t, ctx, caller, position, col, &s);
         StopLoss {
-            feed_id: position.feed,
+            market_id: position.market_id,
             user: position.user.clone(),
             position_id,
             price: ctx.price,
@@ -128,7 +129,7 @@ fn apply_close(
         position.require_closable(e);
         settle_close(e, t, ctx, caller, position, col, &s);
         TakeProfit {
-            feed_id: position.feed,
+            market_id: position.market_id,
             user: position.user.clone(),
             position_id,
             price: ctx.price,
@@ -189,7 +190,7 @@ fn settle_liquidation(
     if caller_fee > 0 { add_transfer(t, caller, caller_fee); }
 
     Liquidation {
-        feed_id: position.feed,
+        market_id: position.market_id,
         user: position.user.clone(),
         position_id,
         price: ctx.price,
@@ -238,7 +239,7 @@ fn apply_fill(
     if caller_fee > 0 { add_transfer(t, caller, caller_fee); }
 
     FillLimit {
-        feed_id: position.feed,
+        market_id: position.market_id,
         user: position.user.clone(),
         position_id,
         base_fee,
@@ -311,7 +312,7 @@ mod tests {
         let caller_before = token_client.balance(&caller);
         e.as_contract(&contract, || {
             let ids = vec![&e, id];
-            super::execute_trigger(&e, &caller, ids, &pd);
+            super::execute_trigger(&e, &caller, FEED_BTC, ids, &pd);
 
             let pos = storage::get_position(&e, id);
             assert!(pos.filled);
@@ -342,7 +343,7 @@ mod tests {
         let pd = btc_price_data(&e, BTC_PRICE);
         e.as_contract(&contract, || {
             let ids = vec![&e, id];
-            super::execute_trigger(&e, &caller, ids, &pd);
+            super::execute_trigger(&e, &caller, FEED_BTC, ids, &pd);
         });
     }
 
@@ -359,7 +360,7 @@ mod tests {
         let pd = btc_price_data(&e, BTC_PRICE);
         e.as_contract(&contract, || {
             let ids = vec![&e, id];
-            super::execute_trigger(&e, &caller, ids, &pd);
+            super::execute_trigger(&e, &caller, FEED_BTC, ids, &pd);
 
             let pos = storage::get_position(&e, id);
             assert!(pos.filled);
@@ -382,12 +383,12 @@ mod tests {
         let pd = btc_price_data(&e, BTC_PRICE);
         e.as_contract(&contract, || {
             let ids = vec![&e, id];
-            super::execute_trigger(&e, &caller, ids, &pd);
+            super::execute_trigger(&e, &caller, FEED_BTC, ids, &pd);
 
             // Price crashes -2% on 100x leverage → underwater
             let crash_pd = btc_price_data(&e, 9_800_000_000_000_i128);
             let ids = vec![&e, id];
-            super::execute_trigger(&e, &caller, ids, &crash_pd);
+            super::execute_trigger(&e, &caller, FEED_BTC, ids, &crash_pd);
 
             // Position removed
             let positions = storage::get_user_positions(&e, &user);
@@ -411,11 +412,11 @@ mod tests {
         let pd = btc_price_data(&e, BTC_PRICE);
         e.as_contract(&contract, || {
             let ids = vec![&e, id];
-            super::execute_trigger(&e, &caller, ids, &pd);
+            super::execute_trigger(&e, &caller, FEED_BTC, ids, &pd);
 
             // Price unchanged, no SL/TP set — no action should be possible
             let ids = vec![&e, id];
-            super::execute_trigger(&e, &caller, ids, &pd);
+            super::execute_trigger(&e, &caller, FEED_BTC, ids, &pd);
         });
     }
 
@@ -443,7 +444,7 @@ mod tests {
         let pd = btc_price_data(&e, BTC_PRICE);
         e.as_contract(&contract, || {
             let ids = vec![&e, id];
-            super::execute_trigger(&e, &caller, ids, &pd);
+            super::execute_trigger(&e, &caller, FEED_BTC, ids, &pd);
         });
 
         jump(&e, 1000 + 31);
@@ -453,7 +454,7 @@ mod tests {
             // Price drops to $94k (-6%), triggers SL at $95k
             let sl_pd = btc_price_data(&e, 9_400_000_000_000_i128);
             let ids = vec![&e, id];
-            super::execute_trigger(&e, &caller, ids, &sl_pd);
+            super::execute_trigger(&e, &caller, FEED_BTC, ids, &sl_pd);
 
             let positions = storage::get_user_positions(&e, &user);
             assert_eq!(positions.len(), 0);
@@ -487,7 +488,7 @@ mod tests {
         let pd = btc_price_data(&e, BTC_PRICE);
         e.as_contract(&contract, || {
             let ids = vec![&e, id];
-            super::execute_trigger(&e, &caller, ids, &pd);
+            super::execute_trigger(&e, &caller, FEED_BTC, ids, &pd);
         });
 
         jump(&e, 1000 + 31);
@@ -497,7 +498,7 @@ mod tests {
             // Price rises to $115k (+15%), triggers TP at $110k
             let tp_pd = btc_price_data(&e, 11_500_000_000_000_i128);
             let ids = vec![&e, id];
-            super::execute_trigger(&e, &caller, ids, &tp_pd);
+            super::execute_trigger(&e, &caller, FEED_BTC, ids, &tp_pd);
 
             let positions = storage::get_user_positions(&e, &user);
             assert_eq!(positions.len(), 0);
@@ -523,7 +524,7 @@ mod tests {
         let pd = btc_price_data(&e, BTC_PRICE);
         e.as_contract(&contract, || {
             let ids = vec![&e, id1, id2];
-            super::execute_trigger(&e, &caller, ids, &pd);
+            super::execute_trigger(&e, &caller, FEED_BTC, ids, &pd);
 
             let pos1 = storage::get_position(&e, id1);
             let pos2 = storage::get_position(&e, id2);
@@ -548,11 +549,11 @@ mod tests {
         let pd = btc_price_data(&e, BTC_PRICE);
         e.as_contract(&contract, || {
             let ids = vec![&e, id];
-            super::execute_trigger(&e, &caller, ids, &pd);
+            super::execute_trigger(&e, &caller, FEED_BTC, ids, &pd);
 
             // Already filled, no SL/TP, not liquidatable — should panic
             let ids = vec![&e, id];
-            super::execute_trigger(&e, &caller, ids, &pd);
+            super::execute_trigger(&e, &caller, FEED_BTC, ids, &pd);
         });
     }
 

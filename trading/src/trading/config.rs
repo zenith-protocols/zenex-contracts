@@ -18,41 +18,50 @@ pub fn execute_set_config(e: &Env, config: &TradingConfig) {
 /// On first registration: initializes `MarketData` with zero OI, ADL indices at 1e18,
 /// and `last_update` at current timestamp. Also seeds `last_funding_update` for the
 /// first market to establish the funding cadence.
-pub fn execute_set_market(e: &Env, feed_id: u32, config: &MarketConfig) {
+///
+/// `config.feed_id` is immutable after creation: updating an existing market with a
+/// different `feed_id` panics with `InvalidConfig`.
+pub fn execute_set_market(e: &Env, market_id: u32, config: &MarketConfig) {
     require_valid_market_config(e, config);
 
     let mut markets = storage::get_markets(e);
-    let is_new = !markets.contains(feed_id);
+    let is_new = !markets.contains(market_id);
 
     if is_new {
         if markets.len() >= MAX_ENTRIES {
             panic_with_error!(e, TradingError::MaxMarketsReached);
         }
-        markets.push_back(feed_id);
+        markets.push_back(market_id);
         storage::set_markets(e, &markets);
 
         let initial_data = MarketData {
             last_update: e.ledger().timestamp(),
             ..Default::default()
         };
-        storage::set_market_data(e, feed_id, &initial_data);
+        storage::set_market_data(e, market_id, &initial_data);
+    } else {
+        // feed_id is immutable after creation
+        let existing = storage::get_market_config(e, market_id);
+        if config.feed_id != existing.feed_id {
+            panic_with_error!(e, TradingError::InvalidConfig);
+        }
     }
 
-    storage::set_market_config(e, feed_id, config);
-    SetMarket { feed_id }.publish(e);
+    storage::set_market_config(e, market_id, config);
+    SetMarket { market_id }.publish(e);
 }
 
 /// Remove a market. Subtracts remaining OI from total_notional and cleans up
 /// market storage. Existing positions are refunded via cancel_position.
-pub fn execute_del_market(e: &Env, feed_id: u32) {
+pub fn execute_del_market(e: &Env, market_id: u32) {
     let mut markets = storage::get_markets(e);
     let idx = markets
         .iter()
-        .position(|id| id == feed_id)
+        .position(|id| id == market_id)
         .unwrap_or_else(|| panic_with_error!(e, TradingError::MarketNotFound));
 
     // Subtract this market's OI from total_notional
-    let data = storage::get_market_data(e, feed_id);
+    let data = storage::get_market_data(e, market_id);
     let market_notional = data.l_notional + data.s_notional;
     if market_notional > 0 {
         let total = storage::get_total_notional(e) - market_notional;
@@ -61,9 +70,9 @@ pub fn execute_del_market(e: &Env, feed_id: u32) {
 
     markets.remove(idx as u32);
     storage::set_markets(e, &markets);
-    storage::remove_market_config(e, feed_id);
-    storage::remove_market_data(e, feed_id);
-    DelMarket { feed_id }.publish(e);
+    storage::remove_market_config(e, market_id);
+    storage::remove_market_data(e, market_id);
+    DelMarket { market_id }.publish(e);
 }
 
 /// Admin-only status transitions (AdminOnIce, Frozen, Active from admin states).

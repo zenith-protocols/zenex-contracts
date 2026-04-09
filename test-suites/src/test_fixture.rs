@@ -104,8 +104,8 @@ impl TestFixture<'_> {
         }
     }
 
-    pub fn create_market(&self, feed_id: u32, config: &MarketConfig) {
-        self.trading.set_market(&feed_id, config);
+    pub fn create_market(&self, market_id: u32, config: &MarketConfig) {
+        self.trading.set_market(&market_id, config);
     }
 
     /// Build a signed price update blob for the given feeds at the current ledger timestamp.
@@ -156,7 +156,7 @@ impl TestFixture<'_> {
     pub fn open_and_fill(
         &self,
         user: &Address,
-        feed_id: u32,
+        market_id: u32,
         collateral: i128,
         notional_size: i128,
         is_long: bool,
@@ -164,10 +164,11 @@ impl TestFixture<'_> {
         take_profit: i128,
         stop_loss: i128,
     ) -> u32 {
+        let feed_id = self.trading.get_market_config(&market_id).feed_id;
         let price_bytes = self.price_for_feed(feed_id, entry_price);
         self.trading.open_market(
             user,
-            &feed_id,
+            &market_id,
             &collateral,
             &notional_size,
             &is_long,
@@ -182,12 +183,12 @@ impl TestFixture<'_> {
     pub fn open_long(
         &self,
         user: &Address,
-        feed_id: u32,
+        market_id: u32,
         collateral: i128,
         notional: i128,
         entry_price: i64,
     ) -> u32 {
-        self.open_and_fill(user, feed_id, collateral * SCALAR_7, notional * SCALAR_7, true, entry_price, 0, 0)
+        self.open_and_fill(user, market_id, collateral * SCALAR_7, notional * SCALAR_7, true, entry_price, 0, 0)
     }
 
     /// Open a short market order (no TP/SL) that fills immediately. Returns position_id.
@@ -195,12 +196,12 @@ impl TestFixture<'_> {
     pub fn open_short(
         &self,
         user: &Address,
-        feed_id: u32,
+        market_id: u32,
         collateral: i128,
         notional: i128,
         entry_price: i64,
     ) -> u32 {
-        self.open_and_fill(user, feed_id, collateral * SCALAR_7, notional * SCALAR_7, false, entry_price, 0, 0)
+        self.open_and_fill(user, market_id, collateral * SCALAR_7, notional * SCALAR_7, false, entry_price, 0, 0)
     }
 
     pub fn position_exists(&self, position_id: u32) -> bool {

@@ -28,29 +28,28 @@ pub trait Trading {
 
     /// (Owner only) Register a new market or update an existing market's configuration.
     ///
-    /// On first call for a `feed_id`, initializes `MarketData` with zero notional and
-    /// ADL indices at `SCALAR_18`.
+    /// On first call for a `market_id`, initializes `MarketData` with zero notional and
+    /// ADL indices at `SCALAR_18`. `config.feed_id` is immutable after creation.
     ///
     /// # Parameters
-    /// - `feed_id` - feed identifier (u32)
-    /// - `config` - Per-market parameters (see [`MarketConfig`])
+    /// - `market_id` - Market identifier (u32)
+    /// - `config` - Per-market parameters (see [`MarketConfig`], includes `feed_id`)
     ///
     /// # Panics
     /// - `TradingError::MaxMarketsReached` (770) if `MAX_ENTRIES` markets exist
-    /// - `TradingError::InvalidConfig` (702) if market config bounds fail
+    /// - `TradingError::InvalidConfig` (702) if market config bounds fail or feed_id changed
     /// - `TradingError::NegativeValueNotAllowed` (735) if any rate/fee is negative
-    fn set_market(e: Env, feed_id: u32, config: MarketConfig);
+    fn set_market(e: Env, market_id: u32, config: MarketConfig);
 
     /// (Owner only) Remove a market. Subtracts remaining OI from total_notional
-    /// and cleans up market storage. Existing positions are refunded via
-    /// `close_position` or `execute`.
+    /// and cleans up market config and data storage.
     ///
     /// # Parameters
-    /// - `feed_id` - Market to remove
+    /// - `market_id` - Market to remove
     ///
     /// # Panics
-    /// - `TradingError::MarketNotFound` (710) if feed_id not registered
-    fn del_market(e: Env, feed_id: u32);
+    /// - `TradingError::MarketNotFound` (710) if market_id not registered
+    fn del_market(e: Env, market_id: u32);
 
     /// (Owner only) Set contract status to an admin-level state.
     ///
@@ -83,7 +82,7 @@ pub trait Trading {
     ///
     /// # Parameters
     /// - `user` - Position owner (must `require_auth`)
-    /// - `feed_id` - Market feed identifier
+    /// - `market_id` - Market identifier
     /// - `collateral` - Collateral amount (token_decimals)
     /// - `notional_size` - Position notional (token_decimals)
     /// - `is_long` - `true` for long, `false` for short
@@ -103,7 +102,7 @@ pub trait Trading {
     fn place_limit(
         e: Env,
         user: Address,
-        feed_id: u32,
+        market_id: u32,
         collateral: i128,
         notional_size: i128,
         is_long: bool,
@@ -120,7 +119,7 @@ pub trait Trading {
     ///
     /// # Parameters
     /// - `user` - Position owner (must `require_auth`)
-    /// - `feed_id` - Market feed identifier (must match the verified price feed)
+    /// - `market_id` - Market identifier
     /// - `collateral` - Collateral amount (token_decimals)
     /// - `notional_size` - Position notional (token_decimals)
     /// - `is_long` - `true` for long, `false` for short
@@ -142,7 +141,7 @@ pub trait Trading {
     fn open_market(
         e: Env,
         user: Address,
-        feed_id: u32,
+        market_id: u32,
         collateral: i128,
         notional_size: i128,
         is_long: bool,
@@ -151,22 +150,25 @@ pub trait Trading {
         price: Bytes,
     ) -> u32;
 
-    /// Cancel a pending (unfilled) limit order. Returns full collateral to user.
+    /// Cancel a position and refund collateral. No settlement or fees applied.
+    ///
+    /// - **Pending** (unfilled): requires user auth, cancels the limit order.
+    /// - **Filled + market deleted**: permissionless cleanup — anyone can trigger
+    ///   the refund for stranded positions after `del_market`.
     ///
     /// # Parameters
-    /// - `position_id` - ID of the pending limit order
+    /// - `position_id` - ID of the position to cancel
     ///
     /// # Returns
     /// Collateral amount returned to the user (token_decimals).
     ///
     /// # Panics
+    /// - `TradingError::PositionNotPending` (733) if position is filled and market still exists (use `close_position` instead)
     /// - `TradingError::ContractFrozen` (762) if contract is Frozen
-    /// - `TradingError::PositionNotPending` (733) if position is filled and market exists
     /// - `TradingError::PositionNotFound` (730) if position_id is invalid
     fn cancel_position(e: Env, position_id: u32) -> i128;
 
     /// Close a filled position at the current oracle price with full settlement.
-    /// For deleted markets or pending positions, use `cancel_position` instead.
     ///
     /// # Parameters
     /// - `position_id` - ID of the position
@@ -232,7 +234,7 @@ pub trait Trading {
     /// - `TradingError::ContractFrozen` (762) if contract is Frozen
     /// - `TradingError::InvalidPrice` (720) if position feed doesn't match price feed
     /// - `TradingError::NotActionable` (747) if no valid action for the position
-    fn execute(e: Env, caller: Address, position_ids: Vec<u32>, price: Bytes);
+    fn execute(e: Env, caller: Address, market_id: u32, position_ids: Vec<u32>, price: Bytes);
 
     /// Recalculate and store funding rates for all markets. Permissionless, callable
     /// once per hour.
@@ -250,13 +252,13 @@ pub trait Trading {
     /// Returns all position IDs owned by the given user.
     fn get_user_positions(e: Env, user: Address) -> Vec<u32>;
 
-    /// Returns the market configuration for the given feed.
-    fn get_market_config(e: Env, feed_id: u32) -> MarketConfig;
+    /// Returns the market configuration for the given market.
+    fn get_market_config(e: Env, market_id: u32) -> MarketConfig;
 
-    /// Returns the mutable market data (notionals, indices) for the given feed.
-    fn get_market_data(e: Env, feed_id: u32) -> MarketData;
+    /// Returns the mutable market data (notionals, indices) for the given market.
+    fn get_market_data(e: Env, market_id: u32) -> MarketData;
 
-    /// Returns all registered market feed IDs.
+    /// Returns all registered market IDs.
     fn get_markets(e: Env) -> Vec<u32>;
 
     /// Returns the global trading configuration.
@@ -322,15 +324,15 @@ impl Trading for TradingContract {
     }
 
     #[only_owner]
-    fn set_market(e: Env, feed_id: u32, config: MarketConfig) {
+    fn set_market(e: Env, market_id: u32, config: MarketConfig) {
         storage::extend_instance(&e);
-        trading::execute_set_market(&e, feed_id, &config);
+        trading::execute_set_market(&e, market_id, &config);
     }
 
     #[only_owner]
-    fn del_market(e: Env, feed_id: u32) {
+    fn del_market(e: Env, market_id: u32) {
         storage::extend_instance(&e);
-        trading::execute_del_market(&e, feed_id);
+        trading::execute_del_market(&e, market_id);
     }
 
     #[only_owner]
@@ -348,7 +350,7 @@ impl Trading for TradingContract {
     fn place_limit(
         e: Env,
         user: Address,
-        feed_id: u32,
+        market_id: u32,
         collateral: i128,
         notional_size: i128,
         is_long: bool,
@@ -358,7 +360,7 @@ impl Trading for TradingContract {
     ) -> u32 {
         storage::extend_instance(&e);
         trading::execute_create_limit(
-            &e, &user, feed_id, collateral, notional_size, is_long,
+            &e, &user, market_id, collateral, notional_size, is_long,
             entry_price, take_profit, stop_loss,
         )
     }
@@ -366,7 +368,7 @@ impl Trading for TradingContract {
     fn open_market(
         e: Env,
         user: Address,
-        feed_id: u32,
+        market_id: u32,
         collateral: i128,
         notional_size: i128,
         is_long: bool,
@@ -377,11 +379,8 @@ impl Trading for TradingContract {
         storage::extend_instance(&e);
         let pv = PriceVerifierClient::new(&e, &storage::get_price_verifier(&e));
         let pd = pv.verify_price(&price);
-        if pd.feed_id != feed_id {
-            panic_with_error!(e, TradingError::InvalidPrice);
-        }
         trading::execute_create_market(
-            &e, &user, collateral, notional_size, is_long,
+            &e, &user, market_id, collateral, notional_size, is_long,
             take_profit, stop_loss, &pd,
         )
     }
@@ -407,10 +406,10 @@ impl Trading for TradingContract {
         trading::execute_set_triggers(&e, position_id, take_profit, stop_loss);
     }
 
-    fn execute(e: Env, caller: Address, position_ids: Vec<u32>, price: Bytes) {
+    fn execute(e: Env, caller: Address, market_id: u32, position_ids: Vec<u32>, price: Bytes) {
         storage::extend_instance(&e);
         let pv = PriceVerifierClient::new(&e, &storage::get_price_verifier(&e));
-        trading::execute_trigger(&e, &caller, position_ids, &pv.verify_price(&price));
+        trading::execute_trigger(&e, &caller, market_id, position_ids, &pv.verify_price(&price));
     }
 
     fn apply_funding(e: Env) {
@@ -426,12 +425,12 @@ impl Trading for TradingContract {
         storage::get_user_positions(&e, &user)
     }
 
-    fn get_market_config(e: Env, feed_id: u32) -> MarketConfig {
-        storage::get_market_config(&e, feed_id)
+    fn get_market_config(e: Env, market_id: u32) -> MarketConfig {
+        storage::get_market_config(&e, market_id)
     }
 
-    fn get_market_data(e: Env, feed_id: u32) -> MarketData {
-        storage::get_market_data(&e, feed_id)
+    fn get_market_data(e: Env, market_id: u32) -> MarketData {
+        storage::get_market_data(&e, market_id)
     }
 
     fn get_markets(e: Env) -> Vec<u32> {

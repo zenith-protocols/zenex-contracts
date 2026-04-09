@@ -19,6 +19,7 @@ use soroban_sdk::{panic_with_error, Address, Env};
 /// cumulative rates without the caller needing to remember to accrue first.
 pub struct Context {
     // Per-market
+    pub market_id:    u32,
     pub feed_id:      u32,
     pub price:        i128,
     pub price_scalar: i128,
@@ -38,21 +39,27 @@ impl Context {
     /// Load full market context from storage and accrue indices to current timestamp.
     ///
     /// # Parameters
+    /// - `market_id` - Market identifier (storage key)
     /// - `price_data` - Verified price data from the oracle (contains feed_id, price, exponent)
     ///
     /// # Side effects
     /// - Calls `MarketData::accrue()` to advance borrowing and funding indices
     /// - Computes `price_scalar = 10^(-exponent)` from Pyth exponent
-    pub fn load(e: &Env, price_data: &PriceData) -> Self {
-        let feed_id = price_data.feed_id;
+    ///
+    /// # Panics
+    /// - `TradingError::InvalidPrice` if `price_data.feed_id != config.feed_id`
+    pub fn load(e: &Env, market_id: u32, price_data: &PriceData) -> Self {
         let trading_config = storage::get_config(e);
         let vault = storage::get_vault(e);
         let vault_balance = VaultClient::new(e, &vault).total_assets();
         let token = storage::get_token(e);
         let treasury = storage::get_treasury(e);
         let total_notional = storage::get_total_notional(e);
-        let mut data = storage::get_market_data(e, feed_id);
-        let config = storage::get_market_config(e, feed_id);
+        let config = storage::get_market_config(e, market_id);
+        if price_data.feed_id != config.feed_id {
+            panic_with_error!(e, TradingError::InvalidPrice);
+        }
+        let mut data = storage::get_market_data(e, market_id);
         data.accrue(
             e,
             trading_config.r_base,
@@ -64,7 +71,8 @@ impl Context {
             config.max_util,
         );
         Context {
-            feed_id,
+            market_id,
+            feed_id: config.feed_id,
             price: price_data.price,
             price_scalar: scalar_from_exponent(price_data.exponent),
             publish_time: price_data.publish_time,
@@ -173,7 +181,7 @@ impl Context {
 
     /// Write mutable state back to storage.
     pub fn store(&self, e: &Env) {
-        storage::set_market_data(e, self.feed_id, &self.data);
+        storage::set_market_data(e, self.market_id, &self.data);
         storage::set_total_notional(e, self.total_notional);
     }
 }
@@ -189,6 +197,7 @@ mod tests {
 
     fn test_ctx(e: &Env, vault_balance: i128, market_data: MarketData, total_notional: i128) -> Context {
         Context {
+            market_id: FEED_BTC,
             feed_id: FEED_BTC,
             price: 0,
             price_scalar: SCALAR_7,

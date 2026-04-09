@@ -1,10 +1,10 @@
 use crate::constants::{SCALAR_7, SCALAR_18, UTIL_ACTIVE, UTIL_ONICE};
 use crate::dependencies::VaultClient;
 use crate::errors::TradingError;
-use crate::events::{ADLMarket, ADLTriggered, SetStatus};
+use crate::events::{ADLTriggered, SetStatus};
 use crate::storage;
 use crate::dependencies::{scalar_from_exponent, PriceData};
-use crate::types::{ContractStatus, MarketData};
+use crate::types::{ContractStatus, MarketConfig, MarketData};
 use soroban_fixed_point_math::SorobanFixedPoint;
 use soroban_sdk::{panic_with_error, Env, Map, Vec};
 
@@ -30,18 +30,24 @@ pub fn execute_update_status(e: &Env, feeds: &Vec<PriceData>) {
     let vault = storage::get_vault(e);
     let markets = storage::get_markets(e);
     let vault_balance = VaultClient::new(e, &vault).total_assets();
+    let total_notional = storage::get_total_notional(e);
 
-    // Ensure feeds cover all markets; mismatch means missing feeds.
-    if feeds.len() != markets.len() {
-        panic_with_error!(e, TradingError::InvalidPrice);
+    // Build a feed_id -> PriceData lookup from the input feeds.
+    // feeds.len() can be <= markets.len() when multiple markets share a feed.
+    let mut feed_map: Map<u32, PriceData> = Map::new(e);
+    for f in feeds.iter() {
+        feed_map.set(f.feed_id, f);
     }
 
-    let mut cached: Map<u32, (MarketData, i128, i128)> = Map::new(e);
+    let mut cached: Map<u32, (MarketConfig, MarketData, i128, i128)> = Map::new(e);
     let mut net_pnl: i128 = 0;
     let mut total_winner_pnl: i128 = 0;
 
-    for f in feeds.iter() {
-        let data = storage::get_market_data(e, f.feed_id);
+    for market_id in markets.iter() {
+        let config = storage::get_market_config(e, market_id);
+        let f = feed_map.get(config.feed_id)
+            .unwrap_or_else(|| panic_with_error!(e, TradingError::InvalidPrice));
+        let data = storage::get_market_data(e, market_id);
         let ps = scalar_from_exponent(f.exponent);
 
         let long_pnl = f.price.fixed_mul_floor(e, &data.l_entry_wt, &ps) - data.l_notional;
@@ -51,12 +57,7 @@ pub fn execute_update_status(e: &Env, feeds: &Vec<PriceData>) {
         if long_pnl > 0 { total_winner_pnl += long_pnl; }
         if short_pnl > 0 { total_winner_pnl += short_pnl; }
 
-        cached.set(f.feed_id, (data, long_pnl, short_pnl));
-    }
-
-    // Duplicates collapse in the map; length mismatch means duplicate feeds
-    if cached.len() != markets.len() {
-        panic_with_error!(e, TradingError::InvalidPrice);
+        cached.set(market_id, (config, data, long_pnl, short_pnl));
     }
 
     match current {
@@ -67,7 +68,7 @@ pub fn execute_update_status(e: &Env, feeds: &Vec<PriceData>) {
             }
             // >= 95%: set OnIce. > 100%: also run ADL.
             if net_pnl > vault_balance {
-                do_adl(e, &cached, total_winner_pnl, net_pnl, vault_balance);
+                do_adl(e, &cached, total_winner_pnl, net_pnl, vault_balance, total_notional);
             }
             storage::set_status(e, ContractStatus::OnIce as u32);
             SetStatus { status: ContractStatus::OnIce as u32 }.publish(e);
@@ -78,14 +79,14 @@ pub fn execute_update_status(e: &Env, feeds: &Vec<PriceData>) {
                 storage::set_status(e, ContractStatus::Active as u32);
                 SetStatus { status: ContractStatus::Active as u32 }.publish(e);
             } else if net_pnl > vault_balance {
-                do_adl(e, &cached, total_winner_pnl, net_pnl, vault_balance);
+                do_adl(e, &cached, total_winner_pnl, net_pnl, vault_balance, total_notional);
             } else {
                 panic_with_error!(e, TradingError::ThresholdNotMet);
             }
         }
         ContractStatus::AdminOnIce => {
             if net_pnl > vault_balance {
-                do_adl(e, &cached, total_winner_pnl, net_pnl, vault_balance);
+                do_adl(e, &cached, total_winner_pnl, net_pnl, vault_balance, total_notional);
             } else {
                 panic_with_error!(e, TradingError::ThresholdNotMet);
             }
@@ -110,25 +111,23 @@ pub fn execute_update_status(e: &Env, feeds: &Vec<PriceData>) {
 ///
 /// ADL reduces notional but does NOT adjust funding/borrowing indices. When an
 /// ADL'd position later settles, its funding is computed as `reduced_notional ×
-/// full_index_delta`, which under-counts funding accrued during the pre-ADL period
+/// full_index_delta`, which under-counts funding and borrowing accrued during the pre-ADL period
 /// (when the position had larger notional). The shortfall is:
 ///
 ///   `original_notional × (1 - factor) × pre_adl_fund_delta`
 ///
 /// This is accepted because:
-/// 1. Funding rates are small (~0.001%/hr), so the gap is negligible vs vault TVL.
-/// 2. The vault already acts as funding counterparty (all funding flows through
+/// 1. The vault already acts as funding counterparty (all funding flows through
 ///    vault_transfer on settlement), so the vault implicitly absorbs the residual.
 /// 3. ADL only triggers under extreme stress (net PnL > vault), and the funding
 ///    residual is orders of magnitude smaller than the PnL deficit that caused ADL.
-/// 4. Splitting the calculation at the ADL boundary is infeasible without per-position
-///    iteration or additional storage for index checkpoints at each ADL event.
 fn do_adl(
     e: &Env,
-    cached: &Map<u32, (MarketData, i128, i128)>,
+    cached: &Map<u32, (MarketConfig, MarketData, i128, i128)>,
     total_winner_pnl: i128,
     net_pnl: i128,
     vault_balance: i128,
+    total_notional: i128,
 ) {
     let deficit = net_pnl - vault_balance;
     let reduction_pct = deficit.fixed_div_floor(e, &total_winner_pnl, &SCALAR_18);
@@ -137,16 +136,9 @@ fn do_adl(
 
     let trading_config = storage::get_config(e);
 
-    // Compute total notional from cached data for vault-level utilization
-    let total_notional: i128 = cached
-        .iter()
-        .map(|(_, (d, _, _))| d.l_notional + d.s_notional)
-        .sum();
-
     let mut new_total: i128 = 0;
-    for (feed_id, (mut data, long_pnl, short_pnl)) in cached.iter() {
+    for (market_id, (config, mut data, long_pnl, short_pnl)) in cached.iter() {
         // Accrue indices against pre-ADL notionals before reducing them
-        let config = storage::get_market_config(e, feed_id);
         data.accrue(
             e,
             trading_config.r_base,
@@ -164,7 +156,7 @@ fn do_adl(
             data.l_notional = data.l_notional.fixed_mul_floor(e, &factor, &SCALAR_18);
             data.l_entry_wt = data.l_entry_wt.fixed_mul_floor(e, &factor, &SCALAR_18);
             data.l_adl_idx = data.l_adl_idx.fixed_mul_floor(e, &factor, &SCALAR_18);
-            ADLMarket { feed_id, factor, long: true }.publish(e);
+
             changed = true;
         }
 
@@ -172,14 +164,14 @@ fn do_adl(
             data.s_notional = data.s_notional.fixed_mul_floor(e, &factor, &SCALAR_18);
             data.s_entry_wt = data.s_entry_wt.fixed_mul_floor(e, &factor, &SCALAR_18);
             data.s_adl_idx = data.s_adl_idx.fixed_mul_floor(e, &factor, &SCALAR_18);
-            ADLMarket { feed_id, factor, long: false }.publish(e);
+
             changed = true;
         }
 
         new_total += data.l_notional + data.s_notional;
 
         if changed {
-            storage::set_market_data(e, feed_id, &data);
+            storage::set_market_data(e, market_id, &data);
         }
     }
     storage::set_total_notional(e, new_total);

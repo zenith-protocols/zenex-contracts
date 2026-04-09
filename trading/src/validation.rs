@@ -87,6 +87,11 @@ pub fn require_valid_config(e: &Env, config: &TradingConfig) {
 /// - `TradingError::NegativeValueNotAllowed` (735) if margin or liq_fee <= 0
 /// - `TradingError::InvalidConfig` (702) if bounds exceeded or margin <= liq_fee
 pub fn require_valid_market_config(e: &Env, config: &MarketConfig) {
+    // feed_id must be a valid Pyth feed identifier (non-zero)
+    if config.feed_id == 0 {
+        panic_with_error!(e, TradingError::InvalidConfig);
+    }
+
     // margin > 0 required because leverage = 1/margin; margin <= 0 is undefined.
     // liq_fee > 0 required because it doubles as the liquidation threshold.
     if config.margin <= 0

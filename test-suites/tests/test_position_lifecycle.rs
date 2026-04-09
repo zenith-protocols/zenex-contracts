@@ -155,7 +155,7 @@ fn test_long_take_profit_trigger() {
     let tp_price = fixture.btc_price(111_000 * PRICE_SCALAR as i64);
 
     let ids = svec![&fixture.env, position_id];
-    fixture.trading.execute(&keeper, &ids, &tp_price);
+    fixture.trading.execute(&keeper, &FEED_BTC, &ids, &tp_price);
     assert!(!fixture.position_exists(position_id));
 }
 
@@ -177,7 +177,7 @@ fn test_long_stop_loss_trigger() {
     let sl_price = fixture.btc_price(94_000 * PRICE_SCALAR as i64);
 
     let ids = svec![&fixture.env, position_id];
-    fixture.trading.execute(&keeper, &ids, &sl_price);
+    fixture.trading.execute(&keeper, &FEED_BTC, &ids, &sl_price);
     assert!(!fixture.position_exists(position_id));
 }
 
@@ -199,7 +199,7 @@ fn test_short_take_profit_trigger() {
     let tp_price = fixture.btc_price(89_000 * PRICE_SCALAR as i64);
 
     let ids = svec![&fixture.env, position_id];
-    fixture.trading.execute(&keeper, &ids, &tp_price);
+    fixture.trading.execute(&keeper, &FEED_BTC, &ids, &tp_price);
     assert!(!fixture.position_exists(position_id));
 }
 
@@ -221,7 +221,7 @@ fn test_short_stop_loss_trigger() {
     let sl_price = fixture.btc_price(106_000 * PRICE_SCALAR as i64);
 
     let ids = svec![&fixture.env, position_id];
-    fixture.trading.execute(&keeper, &ids, &sl_price);
+    fixture.trading.execute(&keeper, &FEED_BTC, &ids, &sl_price);
     assert!(!fixture.position_exists(position_id));
 }
 
@@ -248,7 +248,7 @@ fn test_limit_order_place_fill_close() {
     // Price drops to entry -- fillable for long limit
     let fill_price = fixture.btc_price(101_000 * PRICE_SCALAR as i64);
     let ids = svec![&fixture.env, position_id];
-    fixture.trading.execute(&keeper, &ids, &fill_price);
+    fixture.trading.execute(&keeper, &FEED_BTC, &ids, &fill_price);
     assert!(fixture.trading.get_position(&position_id).filled);
 
     // Price rises for profit, close
@@ -296,7 +296,7 @@ fn test_limit_order_not_fillable_at_price() {
     // Price moves up to $105k (above entry) -- NOT fillable for a long limit
     let bad_price = fixture.btc_price(105_000 * PRICE_SCALAR as i64);
     let ids = svec![&fixture.env, position_id];
-    fixture.trading.execute(&keeper, &ids, &bad_price);
+    fixture.trading.execute(&keeper, &FEED_BTC, &ids, &bad_price);
 }
 
 // ==========================================
@@ -366,7 +366,7 @@ fn test_execute_keeper_triggers_when_on_ice() {
     let tp_price = fixture.btc_price(111_000 * PRICE_SCALAR as i64);
 
     let ids = svec![&fixture.env, position_id];
-    fixture.trading.execute(&keeper, &ids, &tp_price);
+    fixture.trading.execute(&keeper, &FEED_BTC, &ids, &tp_price);
     assert!(!fixture.position_exists(position_id));
 }
 

@@ -110,7 +110,7 @@ enum FuzzCommand {
 #[derive(Clone, Debug)]
 struct TrackedPosition {
     id: u32,
-    feed_id: u32,
+    market_id: u32,
     is_filled: bool,
 }
 
@@ -275,7 +275,7 @@ fuzz_target!(|input: FuzzInput| {
                 verify_no_host_error(&result, "OpenMarket");
 
                 if let Ok(Ok(pos_id)) = result {
-                    positions.push(TrackedPosition { id: pos_id, feed_id: feed, is_filled: true });
+                    positions.push(TrackedPosition { id: pos_id, market_id: feed, is_filled: true });
                 }
             }
 
@@ -299,7 +299,7 @@ fuzz_target!(|input: FuzzInput| {
                 verify_no_host_error(&result, "PlaceLimit");
 
                 if let Ok(Ok(pos_id)) = result {
-                    positions.push(TrackedPosition { id: pos_id, feed_id: feed, is_filled: false });
+                    positions.push(TrackedPosition { id: pos_id, market_id: feed, is_filled: false });
                 }
             }
 
@@ -311,11 +311,11 @@ fuzz_target!(|input: FuzzInput| {
                 if pending.is_empty() { continue; }
                 let idx = pending[(*position_idx as usize) % pending.len()];
                 let pos = &positions[idx];
-                let price_bytes = build_price(&fixture, pos.feed_id, prices[feed_idx(pos.feed_id)]);
+                let price_bytes = build_price(&fixture, pos.market_id, prices[feed_idx(pos.market_id)]);
                 let keeper = Address::generate(&fixture.env);
 
                 let result = fixture.trading.try_execute(
-                    &keeper, &svec![&fixture.env, pos.id], &price_bytes,
+                    &keeper, &pos.market_id, &svec![&fixture.env, pos.id], &price_bytes,
                 );
                 verify_no_host_error(&result, "FillLimit");
 
@@ -332,7 +332,7 @@ fuzz_target!(|input: FuzzInput| {
                 if filled.is_empty() { continue; }
                 let idx = filled[(*position_idx as usize) % filled.len()];
                 let pos = &positions[idx];
-                let price_bytes = build_price(&fixture, pos.feed_id, prices[feed_idx(pos.feed_id)]);
+                let price_bytes = build_price(&fixture, pos.market_id, prices[feed_idx(pos.market_id)]);
 
                 let result = fixture.trading.try_close_position(&pos.id, &price_bytes);
                 verify_no_host_error(&result, "ClosePosition");
@@ -378,7 +378,7 @@ fuzz_target!(|input: FuzzInput| {
                     (pos_data.col - delta).max(SCALAR_7)
                 };
 
-                let price_bytes = build_price(&fixture, pos.feed_id, prices[feed_idx(pos.feed_id)]);
+                let price_bytes = build_price(&fixture, pos.market_id, prices[feed_idx(pos.market_id)]);
                 let result = fixture.trading.try_modify_collateral(&pos.id, &new_collateral, &price_bytes);
                 verify_no_host_error(&result, "ModifyCollateral");
             }

@@ -41,7 +41,7 @@ pub enum TradingStorageKey {
     TotalNotional,
     LastFundingUpdate,
     // Persistent storage (per-entity)
-    Markets, // Rarely accessed only during ADL and adding markets.
+    Markets, // Accessed during ADL, apply_funding, and market management.
     MarketConfig(u32),
     MarketData(u32),
     UserPositions(Address),
@@ -53,24 +53,6 @@ pub fn extend_instance(e: &Env) {
     e.storage()
         .instance()
         .extend_ttl(LEDGER_THRESHOLD_INSTANCE, LEDGER_BUMP_INSTANCE);
-}
-
-/// Fetch an entry in persistent storage that has a default value if it doesn't exist
-fn get_persistent_default<K: IntoVal<Env, Val>, V: TryFromVal<Env, Val>, F: FnOnce() -> V>(
-    e: &Env,
-    key: &K,
-    default: F,
-    bump_threshold: u32,
-    bump_amount: u32,
-) -> V {
-    if let Some(result) = e.storage().persistent().get::<K, V>(key) {
-        e.storage()
-            .persistent()
-            .extend_ttl(key, bump_threshold, bump_amount);
-        result
-    } else {
-        default()
-    }
 }
 
 pub fn get_config(e: &Env) -> TradingConfig {
@@ -207,13 +189,13 @@ pub fn set_markets(e: &Env, markets: &Vec<u32>) {
         .extend_ttl(&key, LEDGER_THRESHOLD_MARKET, LEDGER_BUMP_MARKET);
 }
 
-pub fn has_market(e: &Env, feed_id: u32) -> bool {
-    let key = TradingStorageKey::MarketConfig(feed_id);
+pub fn has_market(e: &Env, market_id: u32) -> bool {
+    let key = TradingStorageKey::MarketConfig(market_id);
     e.storage().persistent().has(&key)
 }
 
-pub fn get_market_config(e: &Env, feed_id: u32) -> MarketConfig {
-    let key = TradingStorageKey::MarketConfig(feed_id);
+pub fn get_market_config(e: &Env, market_id: u32) -> MarketConfig {
+    let key = TradingStorageKey::MarketConfig(market_id);
     let config: MarketConfig = e
         .storage()
         .persistent()
@@ -225,16 +207,16 @@ pub fn get_market_config(e: &Env, feed_id: u32) -> MarketConfig {
     config
 }
 
-pub fn set_market_config(e: &Env, feed_id: u32, config: &MarketConfig) {
-    let key = TradingStorageKey::MarketConfig(feed_id);
+pub fn set_market_config(e: &Env, market_id: u32, config: &MarketConfig) {
+    let key = TradingStorageKey::MarketConfig(market_id);
     e.storage().persistent().set(&key, config);
     e.storage()
         .persistent()
         .extend_ttl(&key, LEDGER_THRESHOLD_MARKET, LEDGER_BUMP_MARKET);
 }
 
-pub fn get_market_data(e: &Env, feed_id: u32) -> MarketData {
-    let key = TradingStorageKey::MarketData(feed_id);
+pub fn get_market_data(e: &Env, market_id: u32) -> MarketData {
+    let key = TradingStorageKey::MarketData(market_id);
     let result = e
         .storage()
         .persistent()
@@ -246,21 +228,21 @@ pub fn get_market_data(e: &Env, feed_id: u32) -> MarketData {
     result
 }
 
-pub fn set_market_data(e: &Env, feed_id: u32, data: &MarketData) {
-    let key = TradingStorageKey::MarketData(feed_id);
+pub fn set_market_data(e: &Env, market_id: u32, data: &MarketData) {
+    let key = TradingStorageKey::MarketData(market_id);
     e.storage().persistent().set(&key, data);
     e.storage()
         .persistent()
         .extend_ttl(&key, LEDGER_THRESHOLD_MARKET, LEDGER_BUMP_MARKET);
 }
 
-pub fn remove_market_config(e: &Env, feed_id: u32) {
-    let key = TradingStorageKey::MarketConfig(feed_id);
+pub fn remove_market_config(e: &Env, market_id: u32) {
+    let key = TradingStorageKey::MarketConfig(market_id);
     e.storage().persistent().remove(&key);
 }
 
-pub fn remove_market_data(e: &Env, feed_id: u32) {
-    let key = TradingStorageKey::MarketData(feed_id);
+pub fn remove_market_data(e: &Env, market_id: u32) {
+    let key = TradingStorageKey::MarketData(market_id);
     e.storage().persistent().remove(&key);
 }
 
@@ -292,13 +274,14 @@ pub fn remove_position(e: &Env, position_id: u32) {
 
 pub fn get_user_positions(e: &Env, user: &Address) -> Vec<u32> {
     let key = TradingStorageKey::UserPositions(user.clone());
-    get_persistent_default(
-        e,
-        &key,
-        || Vec::new(e),
-        LEDGER_THRESHOLD_POSITION,
-        LEDGER_BUMP_POSITION,
-    )
+    if let Some(positions) = e.storage().persistent().get::<_, Vec<u32>>(&key) {
+        e.storage()
+            .persistent()
+            .extend_ttl(&key, LEDGER_THRESHOLD_POSITION, LEDGER_BUMP_POSITION);
+        positions
+    } else {
+        Vec::new(e)
+    }
 }
 
 pub fn set_user_positions(e: &Env, user: &Address, positions: &Vec<u32>) {

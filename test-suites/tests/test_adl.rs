@@ -31,7 +31,9 @@ fn setup_zero_fee_fixture(vault_tokens: i128) -> TestFixture<'static> {
     mc.r_var_market = 0;
     mc.impact = i128::MAX;
     fixture.create_market(FEED_BTC, &mc);
+    mc.feed_id = FEED_ETH;
     fixture.create_market(FEED_ETH, &mc);
+    mc.feed_id = FEED_XLM;
     fixture.create_market(FEED_XLM, &mc);
 
     fixture
@@ -81,7 +83,9 @@ fn test_adl_multi_market_scenario() {
     let mut mc = default_market(&fixture.env);
     mc.r_var_market = 0; mc.impact = i128::MAX;
     fixture.create_market(FEED_BTC, &mc);
+    mc.feed_id = FEED_ETH;
     fixture.create_market(FEED_ETH, &mc);
+    mc.feed_id = FEED_XLM;
     fixture.create_market(FEED_XLM, &mc);
 
     let alice = Address::generate(&fixture.env);
@@ -268,7 +272,7 @@ fn test_adl_multi_market_scenario() {
     //
     // equity $427.98 < threshold $471.54 → liquidatable (but equity > 0 → NOT underwater)
     let liq_price = fixture.price_for_feed(FEED_BTC, 107_000 * PRICE_SCALAR as i64);
-    fixture.trading.execute(&keeper, &svec![&fixture.env, btc_long_carol], &liq_price);
+    fixture.trading.execute(&keeper, &FEED_BTC, &svec![&fixture.env, btc_long_carol], &liq_price);
     assert!(!fixture.position_exists(btc_long_carol));
 
     // ========================================================
@@ -407,7 +411,9 @@ fn test_adl_cannot_trigger_twice_at_same_prices() {
     let mut mc = default_market(&fixture.env);
     mc.r_var_market = 0; mc.impact = i128::MAX;
     fixture.create_market(FEED_BTC, &mc);
+    mc.feed_id = FEED_ETH;
     fixture.create_market(FEED_ETH, &mc);
+    mc.feed_id = FEED_XLM;
     fixture.create_market(FEED_XLM, &mc);
 
     let alice = Address::generate(&fixture.env);

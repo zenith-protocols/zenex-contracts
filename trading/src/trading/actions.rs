@@ -19,7 +19,7 @@ use soroban_sdk::{panic_with_error, Address, Env};
 pub fn execute_create_limit(
     e: &Env,
     user: &Address,
-    feed_id: u32,
+    market_id: u32,
     collateral: i128,
     notional_size: i128,
     is_long: bool,
@@ -31,8 +31,8 @@ pub fn execute_create_limit(
     user.require_auth();
 
     let config = storage::get_config(e);
-    let market_config = storage::get_market_config(e, feed_id);
-    let (id, position) = Position::create(e, user, feed_id, is_long, entry_price, collateral, notional_size, stop_loss, take_profit);
+    let market_config = storage::get_market_config(e, market_id);
+    let (id, position) = Position::create(e, user, market_id, is_long, entry_price, collateral, notional_size, stop_loss, take_profit);
     position.validate(e, market_config.enabled, config.min_notional, config.max_notional, market_config.margin);
     storage::set_position(e, id, &position);
 
@@ -40,7 +40,7 @@ pub fn execute_create_limit(
     token_client.transfer(user, e.current_contract_address(), &collateral);
 
     PlaceLimit {
-        feed_id,
+        market_id,
         user: user.clone(),
         position_id: id,
     }
@@ -63,7 +63,7 @@ pub fn execute_cancel_position(e: &Env, position_id: u32) -> i128 {
 
     if position.filled {
         // Filled positions can only be cancelled if the market was deleted
-        if storage::has_market(e, position.feed) {
+        if storage::has_market(e, position.market_id) {
             panic_with_error!(e, TradingError::PositionNotPending);
         }
         // Permissionless: anyone can clean up stranded positions on deleted markets
@@ -87,7 +87,7 @@ pub fn execute_cancel_position(e: &Env, position_id: u32) -> i128 {
     storage::remove_position(e, position_id);
 
     RefundPosition {
-        feed_id: position.feed,
+        market_id: position.market_id,
         user: position.user.clone(),
         position_id,
         amount: payout,
@@ -102,10 +102,13 @@ pub fn execute_cancel_position(e: &Env, position_id: u32) -> i128 {
 /// Unlike `execute_create_limit`, this fills the position in the same transaction.
 /// Open fees (base + impact) are deducted from collateral. The remaining fee
 /// portion goes to the vault and treasury.
+///
+/// `Context::load` verifies that `price_data.feed_id` matches the market's configured feed.
 #[allow(clippy::too_many_arguments)]
 pub fn execute_create_market(
     e: &Env,
     user: &Address,
+    market_id: u32,
     collateral: i128,
     notional_size: i128,
     is_long: bool,
@@ -116,27 +119,27 @@ pub fn execute_create_market(
     require_active(e);
     user.require_auth();
 
-    let mut market = Context::load(e, price_data);
+    let mut ctx = Context::load(e, market_id, price_data);
 
-    let (id, mut position) = Position::create(e, user, market.feed_id, is_long, market.price, collateral, notional_size, stop_loss, take_profit);
-    let (base_fee, impact_fee) = market.open(e, &mut position, id);
-    market.store(e);
+    let (id, mut position) = Position::create(e, user, market_id, is_long, ctx.price, collateral, notional_size, stop_loss, take_profit);
+    let (base_fee, impact_fee) = ctx.open(e, &mut position, id);
+    ctx.store(e);
 
     let total_fee = base_fee + impact_fee;
-    let treasury_fee = market.treasury_fee(e, total_fee);
+    let treasury_fee = ctx.treasury_fee(e, total_fee);
     let vault_fee = total_fee - treasury_fee;
 
-    let token_client = TokenClient::new(e, &market.token);
+    let token_client = TokenClient::new(e, &ctx.token);
     token_client.transfer(user, e.current_contract_address(), &collateral);
     if vault_fee > 0 {
-        token_client.transfer(&e.current_contract_address(), &market.vault, &vault_fee);
+        token_client.transfer(&e.current_contract_address(), &ctx.vault, &vault_fee);
     }
     if treasury_fee > 0 {
-        token_client.transfer(&e.current_contract_address(), &market.treasury, &treasury_fee);
+        token_client.transfer(&e.current_contract_address(), &ctx.treasury, &treasury_fee);
     }
 
     OpenMarket {
-        feed_id: market.feed_id,
+        market_id: ctx.market_id,
         user: user.clone(),
         position_id: id,
         base_fee,
@@ -162,39 +165,36 @@ pub fn execute_close_position(e: &Env, position_id: u32, price: soroban_sdk::Byt
     let mut position = storage::get_position(e, position_id);
     position.user.require_auth();
     position.require_closable(e);
-    if price_data.feed_id != position.feed {
-        panic_with_error!(e, TradingError::InvalidPrice);
-    }
 
-    let mut market = Context::load(e, &price_data);
+    let mut ctx = Context::load(e, position.market_id, &price_data);
     let col = position.col;
-    let s = market.close(e, &mut position, position_id);
+    let s = ctx.close(e, &mut position, position_id);
 
     let user_payout = s.equity(col).max(0);
-    let treasury_fee = market.treasury_fee(e, s.protocol_fee());
+    let treasury_fee = ctx.treasury_fee(e, s.protocol_fee());
     let vault_transfer = col - user_payout - treasury_fee;
 
-    let token_client = TokenClient::new(e, &market.token);
+    let token_client = TokenClient::new(e, &ctx.token);
     if vault_transfer < 0 {
-        VaultClient::new(e, &market.vault)
+        VaultClient::new(e, &ctx.vault)
             .strategy_withdraw(&e.current_contract_address(), &(-vault_transfer));
     } else if vault_transfer > 0 {
-        token_client.transfer(&e.current_contract_address(), &market.vault, &vault_transfer);
+        token_client.transfer(&e.current_contract_address(), &ctx.vault, &vault_transfer);
     }
     if treasury_fee > 0 {
-        token_client.transfer(&e.current_contract_address(), &market.treasury, &treasury_fee);
+        token_client.transfer(&e.current_contract_address(), &ctx.treasury, &treasury_fee);
     }
     if user_payout > 0 {
         token_client.transfer(&e.current_contract_address(), &position.user, &user_payout);
     }
 
-    market.store(e);
+    ctx.store(e);
 
     ClosePosition {
-        feed_id: position.feed,
+        market_id: position.market_id,
         user: position.user.clone(),
         position_id,
-        price: market.price,
+        price: ctx.price,
         pnl: s.net_pnl(col),
         base_fee: s.base_fee,
         impact_fee: s.impact_fee,
@@ -219,9 +219,6 @@ pub fn execute_modify_collateral(e: &Env, position_id: u32, new_collateral: i128
     if !position.filled {
         panic_with_error!(e, TradingError::ActionNotAllowedForStatus);
     }
-    if price_data.feed_id != position.feed {
-        panic_with_error!(e, TradingError::InvalidPrice);
-    }
 
     let collateral_diff = new_collateral - position.col;
     if collateral_diff == 0 {
@@ -233,21 +230,21 @@ pub fn execute_modify_collateral(e: &Env, position_id: u32, new_collateral: i128
         let token_client = TokenClient::new(e, &storage::get_token(e));
         token_client.transfer(&position.user, e.current_contract_address(), &collateral_diff);
     } else {
-        let market = Context::load(e, price_data);
-        let token_client = TokenClient::new(e, &market.token);
-        let s = position.settle(e, &market);
+        let ctx = Context::load(e, position.market_id, price_data);
+        let token_client = TokenClient::new(e, &ctx.token);
+        let s = position.settle(e, &ctx);
         let equity = position.col + s.pnl - s.total_fee();
-        if equity < position.notional.fixed_mul_ceil(e, &market.config.margin, &SCALAR_7) {
+        if equity < position.notional.fixed_mul_ceil(e, &ctx.config.margin, &SCALAR_7) {
             panic_with_error!(e, TradingError::WithdrawalBreaksMargin);
         }
 
-        market.store(e);
+        ctx.store(e);
         token_client.transfer(&e.current_contract_address(), &position.user, &-collateral_diff);
     }
 
     storage::set_position(e, position_id, &position);
     ModifyCollateral {
-        feed_id: position.feed,
+        market_id: position.market_id,
         user: position.user.clone(),
         position_id,
         amount: collateral_diff,
@@ -270,7 +267,7 @@ pub fn execute_set_triggers(e: &Env, position_id: u32, take_profit: i128, stop_l
     storage::set_position(e, position_id, &position);
     
     SetTriggers {
-        feed_id: position.feed,
+        market_id: position.market_id,
         user: position.user.clone(),
         position_id,
         take_profit,
@@ -299,9 +296,9 @@ pub fn execute_apply_funding(e: &Env) {
     let vault_balance = VaultClient::new(e, &storage::get_vault(e)).total_assets();
     let total_notional = storage::get_total_notional(e);
 
-    for feed_id in markets.iter() {
-        let market_config = storage::get_market_config(e, feed_id);
-        let mut data = storage::get_market_data(e, feed_id);
+    for market_id in markets.iter() {
+        let market_config = storage::get_market_config(e, market_id);
+        let mut data = storage::get_market_data(e, market_id);
 
         data.accrue(
             e,
@@ -315,7 +312,7 @@ pub fn execute_apply_funding(e: &Env) {
         );
         data.update_funding_rate(e, config.r_funding);
 
-        storage::set_market_data(e, feed_id, &data);
+        storage::set_market_data(e, market_id, &data);
     }
 
     (ApplyFunding {}).publish(e);
@@ -432,7 +429,7 @@ mod tests {
 
         let id = e.as_contract(&contract, || {
             super::execute_create_market(
-                &e, &user, collateral, notional, true, 0, 0, &price_data,
+                &e, &user, FEED_BTC, collateral, notional, true, 0, 0, &price_data,
             )
         });
 
@@ -540,7 +537,7 @@ mod tests {
         // Create a market order (immediately filled)
         let id = e.as_contract(&contract, || {
             super::execute_create_market(
-                &e, &user, 1_000 * SCALAR_7, 10_000 * SCALAR_7, true, 0, 0, &pd,
+                &e, &user, FEED_BTC, 1_000 * SCALAR_7, 10_000 * SCALAR_7, true, 0, 0, &pd,
             )
         });
 
@@ -566,7 +563,7 @@ mod tests {
 
         let id = e.as_contract(&contract, || {
             super::execute_create_market(
-                &e, &user, 1_000 * SCALAR_7, 10_000 * SCALAR_7, true, 0, 0, &pd,
+                &e, &user, FEED_BTC, 1_000 * SCALAR_7, 10_000 * SCALAR_7, true, 0, 0, &pd,
             )
         });
 
@@ -602,7 +599,7 @@ mod tests {
         let collateral = 1_000 * SCALAR_7;
         let id = e.as_contract(&contract, || {
             super::execute_create_market(
-                &e, &user, collateral, 10_000 * SCALAR_7, true, 0, 0, &pd,
+                &e, &user, FEED_BTC, collateral, 10_000 * SCALAR_7, true, 0, 0, &pd,
             )
         });
 
@@ -631,7 +628,7 @@ mod tests {
         let collateral = 5_000 * SCALAR_7;
         let id = e.as_contract(&contract, || {
             super::execute_create_market(
-                &e, &user, collateral, 10_000 * SCALAR_7, true, 0, 0, &pd,
+                &e, &user, FEED_BTC, collateral, 10_000 * SCALAR_7, true, 0, 0, &pd,
             )
         });
 
@@ -662,7 +659,7 @@ mod tests {
 
         let id = e.as_contract(&contract, || {
             super::execute_create_market(
-                &e, &user, 1_000 * SCALAR_7, 10_000 * SCALAR_7, true, 0, 0, &pd,
+                &e, &user, FEED_BTC, 1_000 * SCALAR_7, 10_000 * SCALAR_7, true, 0, 0, &pd,
             )
         });
 
@@ -689,7 +686,7 @@ mod tests {
 
         let id = e.as_contract(&contract, || {
             super::execute_create_market(
-                &e, &user, 1_000 * SCALAR_7, 10_000 * SCALAR_7, true, 0, 0, &pd,
+                &e, &user, FEED_BTC, 1_000 * SCALAR_7, 10_000 * SCALAR_7, true, 0, 0, &pd,
             )
         });
 
@@ -719,7 +716,7 @@ mod tests {
 
         let id = e.as_contract(&contract, || {
             super::execute_create_market(
-                &e, &user, 1_000 * SCALAR_7, 10_000 * SCALAR_7, true,
+                &e, &user, FEED_BTC, 1_000 * SCALAR_7, 10_000 * SCALAR_7, true,
                 110_000 * 100_000_000, 95_000 * 100_000_000, &pd,
             )
         });
@@ -773,7 +770,7 @@ mod tests {
 
         e.as_contract(&contract, || {
             super::execute_create_market(
-                &e, &user, 1_000 * SCALAR_7, 10_000 * SCALAR_7, true, 0, 0, &pd,
+                &e, &user, FEED_BTC, 1_000 * SCALAR_7, 10_000 * SCALAR_7, true, 0, 0, &pd,
             );
         });
     }
@@ -796,7 +793,7 @@ mod tests {
         // Open a filled market position
         let id = e.as_contract(&contract, || {
             super::execute_create_market(
-                &e, &user, 1_000 * SCALAR_7, 10_000 * SCALAR_7, true, 0, 0, &pd,
+                &e, &user, FEED_BTC, 1_000 * SCALAR_7, 10_000 * SCALAR_7, true, 0, 0, &pd,
             )
         });
 
@@ -840,7 +837,7 @@ mod tests {
         // Create filled position, then delete the market
         let id = e.as_contract(&contract, || {
             super::execute_create_market(
-                &e, &user, 1_000 * SCALAR_7, 10_000 * SCALAR_7, true, 0, 0, &pd,
+                &e, &user, FEED_BTC, 1_000 * SCALAR_7, 10_000 * SCALAR_7, true, 0, 0, &pd,
             )
         });
 

@@ -1,5 +1,5 @@
-pub const SCALAR_7: i128 = 10_000_000; // 7-decimal scalar: rates, fees, ratios, utilization, margins
-pub const SCALAR_18: i128 = 1_000_000_000_000_000_000; // 18-decimal scalar: cumulative indices (funding, borrowing, ADL)
+pub const SCALAR_7: i128 = 10_000_000; // 7-decimal scalar: fees, ratios, utilization, margins
+pub const SCALAR_18: i128 = 1_000_000_000_000_000_000; // 18-decimal scalar: rates, cumulative indices (funding, borrowing, ADL)
 
 pub const MAX_ENTRIES: u32 = 50; // max markets or positions per user
 

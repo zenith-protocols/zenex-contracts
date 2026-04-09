@@ -10,7 +10,7 @@ pub struct SetConfig {}
 #[derive(Clone)]
 pub struct SetMarket {
     #[topic]
-    pub feed_id: u32,
+    pub market_id: u32,
 }
 
 /// Emitted when the contract status changes (admin or circuit breaker).
@@ -25,7 +25,7 @@ pub struct SetStatus {
 #[derive(Clone)]
 pub struct PlaceLimit {
     #[topic]
-    pub feed_id: u32,
+    pub market_id: u32,
     #[topic]
     pub user: Address,
     #[topic]
@@ -37,7 +37,7 @@ pub struct PlaceLimit {
 #[derive(Clone)]
 pub struct OpenMarket {
     #[topic]
-    pub feed_id: u32,
+    pub market_id: u32,
     #[topic]
     pub user: Address,
     #[topic]
@@ -51,7 +51,7 @@ pub struct OpenMarket {
 #[derive(Clone)]
 pub struct FillLimit {
     #[topic]
-    pub feed_id: u32,
+    pub market_id: u32,
     #[topic]
     pub user: Address,
     #[topic]
@@ -65,7 +65,7 @@ pub struct FillLimit {
 #[derive(Clone)]
 pub struct ClosePosition {
     #[topic]
-    pub feed_id: u32,
+    pub market_id: u32,
     #[topic]
     pub user: Address,
     #[topic]
@@ -83,7 +83,7 @@ pub struct ClosePosition {
 #[derive(Clone)]
 pub struct Liquidation {
     #[topic]
-    pub feed_id: u32,
+    pub market_id: u32,
     #[topic]
     pub user: Address,
     #[topic]
@@ -101,7 +101,7 @@ pub struct Liquidation {
 #[derive(Clone)]
 pub struct TakeProfit {
     #[topic]
-    pub feed_id: u32,
+    pub market_id: u32,
     #[topic]
     pub user: Address,
     #[topic]
@@ -119,7 +119,7 @@ pub struct TakeProfit {
 #[derive(Clone)]
 pub struct StopLoss {
     #[topic]
-    pub feed_id: u32,
+    pub market_id: u32,
     #[topic]
     pub user: Address,
     #[topic]
@@ -137,7 +137,7 @@ pub struct StopLoss {
 #[derive(Clone)]
 pub struct ModifyCollateral {
     #[topic]
-    pub feed_id: u32,
+    pub market_id: u32,
     #[topic]
     pub user: Address,
     #[topic]
@@ -151,7 +151,7 @@ pub struct ModifyCollateral {
 #[derive(Clone)]
 pub struct SetTriggers {
     #[topic]
-    pub feed_id: u32,
+    pub market_id: u32,
     #[topic]
     pub user: Address,
     #[topic]
@@ -165,7 +165,7 @@ pub struct SetTriggers {
 #[derive(Clone)]
 pub struct DelMarket {
     #[topic]
-    pub feed_id: u32,
+    pub market_id: u32,
 }
 
 /// Emitted when a position is refunded (market disabled or deleted).
@@ -173,7 +173,7 @@ pub struct DelMarket {
 #[derive(Clone)]
 pub struct RefundPosition {
     #[topic]
-    pub feed_id: u32,
+    pub market_id: u32,
     #[topic]
     pub user: Address,
     #[topic]
@@ -185,18 +185,6 @@ pub struct RefundPosition {
 #[contractevent]
 #[derive(Clone)]
 pub struct ApplyFunding {}
-
-/// Emitted per-market when ADL reduces a side's notional.
-#[contractevent]
-#[derive(Clone)]
-pub struct ADLMarket {
-    #[topic]
-    pub feed_id: u32,
-    /// Reduction factor applied (SCALAR_18, e.g. 0.7e18 = 30% reduction).
-    pub factor: i128,
-    /// Which side was reduced: `true` = longs, `false` = shorts.
-    pub long: bool,
-}
 
 /// Emitted once when ADL is triggered, summarizing the overall reduction.
 #[contractevent]

@@ -218,6 +218,7 @@ pub fn default_config() -> TradingConfig {
 
 pub fn default_market(_e: &Env) -> MarketConfig {
     MarketConfig {
+        feed_id: FEED_BTC,
         enabled: true,
         max_util: 5 * SCALAR_7,                           // 5x vault per market
         r_var_market: 10_000_000_000_000,           // 0.001%/hr per-market variable rate (SCALAR_18)

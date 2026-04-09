@@ -8,7 +8,7 @@ pub enum TradingError {
 
     // 700: Config & Market
     InvalidConfig = 700, // config parameter out of valid range
-    MarketNotFound = 701, // no market registered for the given feed_id
+    MarketNotFound = 701, // no market registered for the given market_id
     MarketDisabled = 702, // market is disabled or deleted
     MaxMarketsReached = 703, // MAX_ENTRIES (50) markets already registered
 
