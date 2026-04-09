@@ -69,7 +69,7 @@ impl MarketData {
         max_util: i128,
         max_util_market: i128,
     ) {
-        // No positions → no fees to charge
+        // No positions, no fees to charge
         if self.l_notional == 0 && self.s_notional == 0 {
             return;
         }
@@ -147,10 +147,8 @@ impl MarketData {
     /// ew_delta: pre-computed |notional| / entry_price in price_scalar precision.
     ///
     /// Note: after ADL, sequential floor operations (bulk index reduction on the
-    /// aggregate vs per-position floor at settlement) can leave small rounding dust
-    /// (~1 unit per position per ADL round). This is inherent to fixed-point math
-    /// and does not affect protocol correctness — the dust is negligible relative
-    /// to real notional values and does not compound across ADL rounds.
+    /// aggregate vs per-position floor at settlement) can leave small rounding
+    /// dust in the market data.
     pub fn update_stats(&mut self, is_long: bool, notional_size: i128, ew_delta: i128) {
         if is_long {
             self.l_notional += notional_size;

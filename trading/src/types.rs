@@ -18,7 +18,7 @@ pub struct TradingConfig {
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct MarketConfig {
-    pub feed_id:  u32,   // Pyth price feed identifier (immutable after market creation)
+    pub feed_id:  u32,   // price feed identifier (immutable after market creation)
     pub enabled:  bool,  // true = active, false = disabled (positions refunded)
     pub max_util: i128, // per-market utilization cap (SCALAR_7)
     pub r_var_market: i128, // per-market variable borrowing rate at full market utilization (SCALAR_18)

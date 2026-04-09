@@ -16,7 +16,7 @@ use soroban_sdk::{panic_with_error, Address, Env};
 ///
 /// auto-accrue on load every Context::load call accrues borrowing and funding
 /// indices to the current timestamp, so all subsequent operations see up-to-date
-/// cumulative rates without the caller needing to remember to accrue first.
+/// cumulative rates.
 pub struct Context {
     // Per-market
     pub market_id:    u32,

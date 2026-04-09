@@ -77,12 +77,6 @@ pub fn execute_cancel_position(e: &Env, position_id: u32) -> i128 {
         token_client.transfer(&e.current_contract_address(), &position.user, &payout);
     }
 
-    // Note: no total_notional adjustment needed here.
-    // - Pending positions (not filled) never contributed to total_notional.
-    // - Filled positions on deleted markets: execute_del_market already
-    //   subtracted the market's full OI from total_notional.
-    // - Filled positions on existing markets: unreachable (panics above).
-
     storage::remove_user_position(e, &position.user, position_id);
     storage::remove_position(e, position_id);
 
