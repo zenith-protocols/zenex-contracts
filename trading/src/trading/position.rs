@@ -230,9 +230,15 @@ impl Position {
         };
         let impact_fee = self.notional.fixed_div_floor(e, &market.config.impact, &SCALAR_7);
 
-        // funding uses floor (conservative for receiver), borrowing uses ceil
-        // (protocol never under-collects).
-        let funding = self.notional.fixed_mul_floor(e, &(funding_index - self.fund_idx), &SCALAR_18);
+        // Funding: ceil when paying (positive delta), floor when receiving (negative delta).
+        // This ensures payers never under-pay and receivers never over-receive.
+        // Borrowing: always ceil (protocol never under-collects).
+        let fund_delta = funding_index - self.fund_idx;
+        let funding = if fund_delta >= 0 {
+            self.notional.fixed_mul_ceil(e, &fund_delta, &SCALAR_18)
+        } else {
+            self.notional.fixed_mul_floor(e, &fund_delta, &SCALAR_18)
+        };
         let borrowing_fee = self.notional.fixed_mul_ceil(e, &(borrowing_index - self.borr_idx), &SCALAR_18);
 
         Settlement {
