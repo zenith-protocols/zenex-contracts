@@ -116,28 +116,61 @@ struct TrackedPosition {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-/// All valid TradingError codes from trading/src/errors.rs.
-const VALID_ERROR_CODES: &[u32] = &[
-    1,   // Unauthorized
-    700, 701, 702, 703, // Config & Market
-    710, 711, // Price
-    720, 721, 722, 723, 724, 725, 726, 727, 728, 729, 730, 731, 732, 733, // Position
-    740, 741, 742, // Contract Status
-    750, 751, 752, // Utilization & Funding
+/// Per-operation expected error codes. Any other contract error indicates a bug.
+const OPEN_ERRORS: &[u32] = &[
+    724, // NotionalBelowMinimum
+    725, // NotionalAboveMaximum
+    726, // LeverageAboveMaximum
+    741, // ContractOnIce
+    751, // UtilizationExceeded
+];
+const LIMIT_ERRORS: &[u32] = &[
+    724, // NotionalBelowMinimum
+    725, // NotionalAboveMaximum
+    726, // LeverageAboveMaximum
+    741, // ContractOnIce
+];
+const EXECUTE_ERRORS: &[u32] = &[
+    720, // PositionNotFound
+    731, // NotActionable
+];
+const CLOSE_ERRORS: &[u32] = &[
+    720, // PositionNotFound
+    732, // PositionTooNew
+];
+const CANCEL_ERRORS: &[u32] = &[
+    720, // PositionNotFound
+    721, // PositionNotPending (if somehow filled between place and cancel)
+];
+const MODIFY_ERRORS: &[u32] = &[
+    727, // CollateralUnchanged
+    728, // WithdrawalBreaksMargin
+];
+const TRIGGER_ERRORS: &[u32] = &[
+    729, // InvalidTakeProfitPrice
+    730, // InvalidStopLossPrice
+];
+const FUNDING_ERRORS: &[u32] = &[
+    752, // FundingTooEarly
+];
+const STATUS_ERRORS: &[u32] = &[
+    740, // InvalidStatus (frozen)
+    750, // ThresholdNotMet
 ];
 
-fn verify_no_host_error<T, E: core::fmt::Debug>(
+fn verify_expected_error<T, E: core::fmt::Debug>(
     result: &Result<Result<T, E>, Result<soroban_sdk::Error, soroban_sdk::InvokeError>>,
     context: &str,
+    allowed: &[u32],
 ) {
     match result {
         Ok(Ok(_)) | Ok(Err(_)) => {}
         Err(Ok(e)) if e.is_type(ScErrorType::Contract) => {
             let code = e.get_code();
             assert!(
-                VALID_ERROR_CODES.contains(&code),
-                "[{}] Unknown contract error code: {}",
-                context, code
+                allowed.contains(&code),
+                "[{}] Unexpected contract error {}: not in {:?}",
+                context, code, allowed
             );
         }
         Err(Ok(e)) => panic!("[{}] Host error: {:?}", context, e),
@@ -272,7 +305,7 @@ fuzz_target!(|input: FuzzInput| {
                 let result = fixture.trading.try_open_market(
                     user, &feed, &collateral, &notional, is_long, &0i128, &0i128, &price_bytes,
                 );
-                verify_no_host_error(&result, "OpenMarket");
+                verify_expected_error(&result, "OpenMarket", OPEN_ERRORS);
 
                 if let Ok(Ok(pos_id)) = result {
                     positions.push(TrackedPosition { id: pos_id, market_id: feed, is_filled: true });
@@ -296,7 +329,7 @@ fuzz_target!(|input: FuzzInput| {
                     user, &feed, &collateral, &notional, is_long,
                     &entry_price, &0i128, &0i128,
                 );
-                verify_no_host_error(&result, "PlaceLimit");
+                verify_expected_error(&result, "PlaceLimit", LIMIT_ERRORS);
 
                 if let Ok(Ok(pos_id)) = result {
                     positions.push(TrackedPosition { id: pos_id, market_id: feed, is_filled: false });
@@ -317,7 +350,7 @@ fuzz_target!(|input: FuzzInput| {
                 let result = fixture.trading.try_execute(
                     &keeper, &pos.market_id, &svec![&fixture.env, pos.id], &price_bytes,
                 );
-                verify_no_host_error(&result, "FillLimit");
+                verify_expected_error(&result, "FillLimit", EXECUTE_ERRORS);
 
                 if is_ok(&result) {
                     positions[idx].is_filled = true;
@@ -335,7 +368,7 @@ fuzz_target!(|input: FuzzInput| {
                 let price_bytes = build_price(&fixture, pos.market_id, prices[feed_idx(pos.market_id)]);
 
                 let result = fixture.trading.try_close_position(&pos.id, &price_bytes);
-                verify_no_host_error(&result, "ClosePosition");
+                verify_expected_error(&result, "ClosePosition", CLOSE_ERRORS);
 
                 if is_ok(&result) {
                     positions.remove(idx);
@@ -352,7 +385,7 @@ fuzz_target!(|input: FuzzInput| {
                 let pos_id = positions[idx].id;
 
                 let result = fixture.trading.try_cancel_position(&pos_id);
-                verify_no_host_error(&result, "CancelLimit");
+                verify_expected_error(&result, "CancelLimit", CANCEL_ERRORS);
 
                 if is_ok(&result) {
                     positions.remove(idx);
@@ -380,7 +413,7 @@ fuzz_target!(|input: FuzzInput| {
 
                 let price_bytes = build_price(&fixture, pos.market_id, prices[feed_idx(pos.market_id)]);
                 let result = fixture.trading.try_modify_collateral(&pos.id, &new_collateral, &price_bytes);
-                verify_no_host_error(&result, "ModifyCollateral");
+                verify_expected_error(&result, "ModifyCollateral", MODIFY_ERRORS);
             }
 
             FuzzCommand::SetTriggers {
@@ -412,7 +445,7 @@ fuzz_target!(|input: FuzzInput| {
                 };
 
                 let result = fixture.trading.try_set_triggers(&pos.id, &tp, &sl);
-                verify_no_host_error(&result, "SetTriggers");
+                verify_expected_error(&result, "SetTriggers", TRIGGER_ERRORS);
             }
 
             FuzzCommand::ApplyFunding => {
@@ -420,7 +453,7 @@ fuzz_target!(|input: FuzzInput| {
                 // Only attempt if at least 1 hour has passed (avoid FundingTooEarly)
                 if now.saturating_sub(last_funding_time) >= SECONDS_IN_HOUR {
                     let result = fixture.trading.try_apply_funding();
-                    verify_no_host_error(&result, "ApplyFunding");
+                    verify_expected_error(&result, "ApplyFunding", FUNDING_ERRORS);
                     if is_ok(&result) {
                         last_funding_time = now;
                     }
@@ -430,7 +463,7 @@ fuzz_target!(|input: FuzzInput| {
             FuzzCommand::UpdateStatus => {
                 let price_bytes = build_prices(&fixture, &prices);
                 let result = fixture.trading.try_update_status(&price_bytes);
-                verify_no_host_error(&result, "UpdateStatus");
+                verify_expected_error(&result, "UpdateStatus", STATUS_ERRORS);
             }
 
             FuzzCommand::PassTime { seconds } => {

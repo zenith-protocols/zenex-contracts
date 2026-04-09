@@ -41,15 +41,6 @@ impl StrategyVault {
         if available > 0 { available } else { 0 }
     }
 
-    /// Returns seconds remaining until the lock expires, or 0 if unlocked.
-    pub fn lock_time_remaining(e: &Env, user: &Address) -> u64 {
-        let Some(lock) = storage::get_deposit_lock(e, user) else {
-            return 0;
-        };
-        let unlock_time = lock.timestamp.saturating_add(storage::get_lock_time(e));
-        unlock_time.saturating_sub(e.ledger().timestamp())
-    }
-
     /// Panics if `amount` shares exceed the user's available (unlocked) balance.
     pub fn require_available(e: &Env, user: &Address, amount: i128) {
         if amount > Self::available_shares(e, user) {

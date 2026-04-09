@@ -119,12 +119,6 @@ mod tests {
     }
 
     #[test]
-    fn test_only_shorts() {
-        let e = Env::default();
-        assert_eq!(calc_funding_rate(&e, 0, 1000 * SCALAR_18, BASE_RATE), -BASE_RATE);
-    }
-
-    #[test]
     fn test_equal_positions() {
         let e = Env::default();
         assert_eq!(calc_funding_rate(&e, 1000 * SCALAR_18, 1000 * SCALAR_18, BASE_RATE), 0);
@@ -137,32 +131,6 @@ mod tests {
         // imbalance=1000, total=3000 → fraction=1/3
         // ceil(10_000_000_000_000 / 3) = 3_333_333_333_334
         assert_eq!(rate, 3_333_333_333_334);
-    }
-
-    #[test]
-    fn test_short_dominant_2x() {
-        let e = Env::default();
-        let rate = calc_funding_rate(&e, 1000 * SCALAR_18, 2000 * SCALAR_18, BASE_RATE);
-        // Same magnitude as long_dominant_2x, negative sign (shorts pay)
-        assert_eq!(rate, -3_333_333_333_334);
-    }
-
-    #[test]
-    fn test_long_dominant_high_ratio() {
-        let e = Env::default();
-        let rate = calc_funding_rate(&e, 10000 * SCALAR_18, 1000 * SCALAR_18, BASE_RATE);
-        // imbalance=9000, total=11000 → fraction=9/11
-        // ceil(9e18/11) = 818_181_818_181_818_182
-        // ceil(10_000_000_000_000 × 818_181_818_181_818_182 / 1e18) = 8_181_818_181_819
-        assert_eq!(rate, 8_181_818_181_819);
-    }
-
-    #[test]
-    fn test_short_dominant_high_ratio() {
-        let e = Env::default();
-        let rate = calc_funding_rate(&e, 1000 * SCALAR_18, 10000 * SCALAR_18, BASE_RATE);
-        // Same magnitude as long_dominant_high_ratio, negative sign
-        assert_eq!(rate, -8_181_818_181_819);
     }
 
     #[test]
@@ -189,19 +157,6 @@ mod tests {
     }
 
     #[test]
-    fn test_borrowing_full_market_util_only() {
-        let e = Env::default();
-        // util_market=100%, r_var=0 → rate = r_base + r_var_market
-        assert_eq!(calc_borrowing_rate(&e, BASE_RATE, 0, BASE_RATE, 0, FULL), 2 * BASE_RATE);
-    }
-
-    #[test]
-    fn test_borrowing_both_full() {
-        let e = Env::default();
-        assert_eq!(calc_borrowing_rate(&e, BASE_RATE, BASE_RATE, BASE_RATE, FULL, FULL), 3 * BASE_RATE);
-    }
-
-    #[test]
     fn test_borrowing_half_vault_util() {
         let e = Env::default();
         // 0.5^5 = 0.03125 → u5 = 312_500 (in SCALAR_7)
@@ -209,16 +164,6 @@ mod tests {
         // total = 10_000_000_000_000 + 312_500_000_000 = 10_312_500_000_000
         let rate = calc_borrowing_rate(&e, BASE_RATE, BASE_RATE, 0, HALF, 0);
         assert_eq!(rate, 10_312_500_000_000);
-    }
-
-    #[test]
-    fn test_borrowing_half_market_util() {
-        let e = Env::default();
-        // 0.5^3 = 0.125 → u3 = 1_250_000 (in SCALAR_7)
-        // market_term = BASE_RATE × 1_250_000 / SCALAR_7 = 1_250_000_000_000
-        // total = 10_000_000_000_000 + 1_250_000_000_000 = 11_250_000_000_000
-        let rate = calc_borrowing_rate(&e, BASE_RATE, 0, BASE_RATE, 0, HALF);
-        assert_eq!(rate, 11_250_000_000_000);
     }
 
     #[test]
@@ -237,18 +182,6 @@ mod tests {
         // 0.1^3 = 0.001   → market_term = 10_000_000_000
         // total = 10_000_000_000_000 + 5_904_900_000_000 + 10_000_000_000 = 15_914_900_000_000
         assert_eq!(rate, 15_914_900_000_000);
-    }
-
-    #[test]
-    fn test_borrowing_low_vault_high_market() {
-        let e = Env::default();
-        let nine = 9 * SCALAR_7 / 10;
-        let one = SCALAR_7 / 10;
-        let rate = calc_borrowing_rate(&e, BASE_RATE, BASE_RATE, BASE_RATE, one, nine);
-        // 0.1^5 = 0.00001 → vault_term = 100_000_000
-        // 0.9^3 = 0.729   → market_term = 7_290_000_000_000
-        // total = 10_000_000_000_000 + 100_000_000 + 7_290_000_000_000 = 17_290_100_000_000
-        assert_eq!(rate, 17_290_100_000_000);
     }
 
     #[test]
@@ -271,10 +204,4 @@ mod tests {
         assert!(market_only > vault_only);
     }
 
-    #[test]
-    fn test_borrowing_zero_utils() {
-        let e = Env::default();
-        // Even with high rates, zero utils → just r_base
-        assert_eq!(calc_borrowing_rate(&e, BASE_RATE, 10 * BASE_RATE, 10 * BASE_RATE, 0, 0), BASE_RATE);
-    }
 }

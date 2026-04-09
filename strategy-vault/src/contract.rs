@@ -37,12 +37,6 @@ impl StrategyVaultContract {
         storage::get_lock_time(&e)
     }
 
-    /// Returns seconds remaining until user's lock expires, or 0 if unlocked.
-    pub fn lock_duration(e: Env, user: Address) -> u64 {
-        storage::extend_instance(&e);
-        StrategyVault::lock_time_remaining(&e, &user)
-    }
-
     /// Returns the number of shares the user can currently withdraw/transfer.
     pub fn available_shares(e: Env, user: Address) -> i128 {
         storage::extend_instance(&e);

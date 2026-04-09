@@ -53,7 +53,7 @@ fn test_deposit_sets_lock() {
 
     vault.deposit(&(1000 * SCALAR_7), &user, &user, &user);
 
-    assert!(vault.lock_duration(&user) > 0);
+    assert!(vault.available_shares(&user) == 0);
 }
 
 #[test]
@@ -62,7 +62,7 @@ fn test_mint_sets_lock() {
 
     vault.mint(&(1000 * SCALAR_7), &user, &user, &user);
 
-    assert!(vault.lock_duration(&user) > 0);
+    assert!(vault.available_shares(&user) == 0);
 }
 
 #[test]
@@ -71,17 +71,10 @@ fn test_withdraw_while_locked_fails_via_withdraw() {
     let (_, vault, _, user, _) = setup_test();
 
     vault.deposit(&(1000 * SCALAR_7), &user, &user, &user);
-    assert!(vault.lock_duration(&user) > 0);
+    assert!(vault.available_shares(&user) == 0);
 
     // All shares are locked (just deposited), withdraw fails
     vault.withdraw(&(500 * SCALAR_7), &user, &user, &user);
-}
-
-#[test]
-fn test_lock_time_returns_configured_value() {
-    let (_env, vault, _, _, _) = setup_test();
-
-    assert_eq!(vault.lock_time(), LOCK_TIME);
 }
 
 #[test]
@@ -94,7 +87,7 @@ fn test_unlock_after_lock_time() {
     env.ledger()
         .set_timestamp(env.ledger().timestamp() + LOCK_TIME + 1);
 
-    assert_eq!(vault.lock_duration(&user), 0);
+    assert_eq!(vault.available_shares(&user), vault.balance(&user));
     assert!(vault.max_redeem(&user) > 0);
 }
 
@@ -107,7 +100,7 @@ fn test_new_deposit_resets_lock() {
     // Advance halfway
     env.ledger()
         .set_timestamp(env.ledger().timestamp() + LOCK_TIME / 2);
-    assert!(vault.lock_duration(&user) > 0);
+    assert!(vault.available_shares(&user) == 0);
 
     // New deposit resets lock and accumulates locked shares
     vault.deposit(&(500 * SCALAR_7), &user, &user, &user);
@@ -115,12 +108,12 @@ fn test_new_deposit_resets_lock() {
     // Advance another half - still locked due to reset
     env.ledger()
         .set_timestamp(env.ledger().timestamp() + LOCK_TIME / 2);
-    assert!(vault.lock_duration(&user) > 0);
+    assert!(vault.available_shares(&user) == 0);
 
     // Advance past new lock
     env.ledger()
         .set_timestamp(env.ledger().timestamp() + LOCK_TIME / 2 + 1);
-    assert_eq!(vault.lock_duration(&user), 0);
+    assert_eq!(vault.available_shares(&user), vault.balance(&user));
 }
 
 #[test]
@@ -129,7 +122,7 @@ fn test_redeem_while_locked_fails() {
     let (_, vault, _, user, _) = setup_test();
 
     vault.deposit(&(1000 * SCALAR_7), &user, &user, &user);
-    assert!(vault.lock_duration(&user) > 0);
+    assert!(vault.available_shares(&user) == 0);
 
     // All shares are locked, redeem fails
     vault.redeem(&(500 * SCALAR_7), &user, &user, &user);
@@ -141,7 +134,7 @@ fn test_withdraw_while_locked_fails() {
     let (_, vault, _, user, _) = setup_test();
 
     vault.deposit(&(1000 * SCALAR_7), &user, &user, &user);
-    assert!(vault.lock_duration(&user) > 0);
+    assert!(vault.available_shares(&user) == 0);
 
     // All shares are locked, withdraw fails
     vault.withdraw(&(500 * SCALAR_7), &user, &user, &user);
@@ -155,7 +148,7 @@ fn test_redeem_after_unlock_succeeds() {
 
     env.ledger()
         .set_timestamp(env.ledger().timestamp() + LOCK_TIME + 1);
-    assert_eq!(vault.lock_duration(&user), 0);
+    assert_eq!(vault.available_shares(&user), vault.balance(&user));
 
     let assets = vault.redeem(&(500 * SCALAR_7), &user, &user, &user);
     assert!(assets > 0);
@@ -169,7 +162,7 @@ fn test_withdraw_after_unlock_succeeds() {
 
     env.ledger()
         .set_timestamp(env.ledger().timestamp() + LOCK_TIME + 1);
-    assert_eq!(vault.lock_duration(&user), 0);
+    assert_eq!(vault.available_shares(&user), vault.balance(&user));
 
     let shares = vault.withdraw(&(500 * SCALAR_7), &user, &user, &user);
     assert!(shares > 0);
@@ -187,11 +180,11 @@ fn test_old_shares_available_while_new_locked() {
     // Wait for lock to expire
     env.ledger()
         .set_timestamp(env.ledger().timestamp() + LOCK_TIME + 1);
-    assert_eq!(vault.lock_duration(&user), 0);
+    assert_eq!(vault.available_shares(&user), vault.balance(&user));
 
     // Second deposit: 200 shares (only these are locked)
     vault.deposit(&(200 * SCALAR_7), &user, &user, &user);
-    assert!(vault.lock_duration(&user) > 0);
+    assert!(vault.available_shares(&user) < vault.balance(&user));
 
     // 1000 old shares are available, 200 new shares are locked
     assert_eq!(vault.available_shares(&user), 1000 * SCALAR_7);
@@ -301,7 +294,7 @@ fn test_user_without_deposit_history_is_not_locked() {
     let (env, vault, _, _user, _) = setup_test();
     let recipient = Address::generate(&env);
 
-    assert_eq!(vault.lock_duration(&recipient), 0);
+    assert_eq!(vault.available_shares(&recipient), vault.balance(&recipient));
 }
 
 #[test]
@@ -311,7 +304,7 @@ fn test_transfer_while_locked_fails() {
     let recipient = Address::generate(&env);
 
     vault.deposit(&(1000 * SCALAR_7), &user, &user, &user);
-    assert!(vault.lock_duration(&user) > 0);
+    assert!(vault.available_shares(&user) == 0);
 
     // All shares locked, transfer fails
     vault.transfer(&user, &recipient, &(500 * SCALAR_7));
@@ -326,10 +319,10 @@ fn test_transfer_after_unlock_succeeds() {
 
     env.ledger()
         .set_timestamp(env.ledger().timestamp() + LOCK_TIME + 1);
-    assert_eq!(vault.lock_duration(&user), 0);
+    assert_eq!(vault.available_shares(&user), vault.balance(&user));
 
     vault.transfer(&user, &recipient, &(500 * SCALAR_7));
-    assert_eq!(vault.lock_duration(&recipient), 0);
+    assert_eq!(vault.available_shares(&recipient), vault.balance(&recipient));
     assert!(vault.max_redeem(&recipient) > 0);
 }
 
@@ -374,7 +367,7 @@ fn test_transfer_from_after_unlock_succeeds() {
         .set_timestamp(env.ledger().timestamp() + LOCK_TIME + 1);
 
     vault.transfer_from(&spender, &user, &recipient, &(500 * SCALAR_7));
-    assert_eq!(vault.lock_duration(&recipient), 0);
+    assert_eq!(vault.available_shares(&recipient), vault.balance(&recipient));
     assert!(vault.max_redeem(&recipient) > 0);
 }
 

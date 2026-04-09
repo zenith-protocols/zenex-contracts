@@ -83,29 +83,54 @@ enum StepAction {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-/// All valid TradingError codes from trading/src/errors.rs.
-const VALID_ERROR_CODES: &[u32] = &[
-    1,                                          // Unauthorized
-    700, 701, 702, 703,                         // Config & Market
-    710, 711,                                   // Price
-    720, 721, 722, 723, 724, 725, 726, 727,     // Position
-    728, 729, 730, 731, 732, 733,               // Position (cont)
-    740, 741, 742,                              // Contract Status
-    750, 751, 752,                              // Utilization & Funding
+/// Per-operation expected error codes. Any other contract error is a bug.
+///
+/// open_market: collateral/notional validation, utilization cap, status guards
+const OPEN_ERRORS: &[u32] = &[
+    724, // NotionalBelowMinimum
+    725, // NotionalAboveMaximum
+    726, // LeverageAboveMaximum
+    741, // ContractOnIce (if ADL triggered OnIce earlier in this scenario)
+    751, // UtilizationExceeded
 ];
 
-fn verify_no_host_error<T, E: core::fmt::Debug>(
+/// execute (liquidation): position not actionable, or position already gone
+const EXECUTE_ERRORS: &[u32] = &[
+    720, // PositionNotFound (already liquidated/closed)
+    731, // NotActionable (healthy position, no TP/SL hit)
+];
+
+/// update_status (ADL): threshold not met, or frozen
+const STATUS_ERRORS: &[u32] = &[
+    740, // InvalidStatus (frozen)
+    750, // ThresholdNotMet (PnL below trigger)
+];
+
+/// apply_funding: called too soon
+const FUNDING_ERRORS: &[u32] = &[
+    752, // FundingTooEarly
+];
+
+/// close_position: position not found, frozen, too new
+const CLOSE_ERRORS: &[u32] = &[
+    720, // PositionNotFound (already liquidated)
+    732, // PositionTooNew
+    742, // ContractFrozen
+];
+
+fn verify_expected_error<T, E: core::fmt::Debug>(
     result: &Result<Result<T, E>, Result<soroban_sdk::Error, soroban_sdk::InvokeError>>,
     context: &str,
+    allowed: &[u32],
 ) {
     match result {
         Ok(Ok(_)) | Ok(Err(_)) => {}
         Err(Ok(e)) if e.is_type(ScErrorType::Contract) => {
             let code = e.get_code();
             assert!(
-                VALID_ERROR_CODES.contains(&code),
-                "[{}] Unknown contract error code: {}",
-                context, code
+                allowed.contains(&code),
+                "[{}] Unexpected contract error {}: not in allowed list {:?}",
+                context, code, allowed
             );
         }
         Err(Ok(e)) => panic!("[{}] Host error: {:?}", context, e),
@@ -169,7 +194,7 @@ fuzz_target!(|input: FuzzInput| {
             &user_primary, &FEED_BTC, &collateral, &notional,
             &scenario.is_long, &0i128, &0i128, &price_bytes,
         );
-        verify_no_host_error(&result, "OpenPrimary");
+        verify_expected_error(&result, "OpenPrimary", OPEN_ERRORS);
 
         let primary_id = if let Ok(Ok(id)) = result {
             id
@@ -190,7 +215,7 @@ fuzz_target!(|input: FuzzInput| {
                 &user_counter, &FEED_BTC, &counter_col, &counter_not,
                 &(!scenario.is_long), &0i128, &0i128, &counter_price,
             );
-            verify_no_host_error(&counter_result, "OpenCounter");
+            verify_expected_error(&counter_result, "OpenCounter", OPEN_ERRORS);
 
             if let Ok(Ok(counter_id)) = counter_result {
                 positions.push(counter_id);
@@ -225,7 +250,7 @@ fuzz_target!(|input: FuzzInput| {
                     let result = fixture.trading.try_execute(
                         &keeper, &FEED_BTC, &svec![&fixture.env, primary_id], &price_bytes,
                     );
-                    verify_no_host_error(&result, "TryLiquidate");
+                    verify_expected_error(&result, "TryLiquidate", EXECUTE_ERRORS);
 
                     if is_ok(&result) {
                         // Check position was actually removed
@@ -242,7 +267,7 @@ fuzz_target!(|input: FuzzInput| {
                 StepAction::TryADL => {
                     let price_bytes = build_all_prices(&fixture, btc_price);
                     let result = fixture.trading.try_update_status(&price_bytes);
-                    verify_no_host_error(&result, "TryADL");
+                    verify_expected_error(&result, "TryADL", STATUS_ERRORS);
 
                     // Post-ADL: if succeeded and was ADL (not just status change),
                     // verify ADL index decreased
@@ -259,7 +284,7 @@ fuzz_target!(|input: FuzzInput| {
 
                 StepAction::ApplyFunding => {
                     let result = fixture.trading.try_apply_funding();
-                    verify_no_host_error(&result, "ApplyFunding");
+                    verify_expected_error(&result, "ApplyFunding", FUNDING_ERRORS);
                 }
 
                 StepAction::Observe => {}
@@ -273,7 +298,7 @@ fuzz_target!(|input: FuzzInput| {
         for &pid in &positions {
             let price_bytes = build_btc_price(&fixture, btc_price);
             let result = fixture.trading.try_close_position(&pid, &price_bytes);
-            verify_no_host_error(&result, "Cleanup");
+            verify_expected_error(&result, "Cleanup", CLOSE_ERRORS);
             if !is_ok(&result) {
                 all_closed = false;
             }
