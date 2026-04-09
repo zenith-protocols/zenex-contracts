@@ -39,8 +39,9 @@ pub fn calc_funding_rate(
                 (short_notional - long_notional, false)
             };
 
-            // ceil rounding on funding rate rounds in favor of the receiving side,
-            // ensuring they never receive less than owed.
+            // Ceil rounding on the rate: payers pay a slightly higher rate.
+            // Combined with settlement rounding (ceil for payers, floor for receivers),
+            // the vault retains any rounding difference.
             let fraction = imbalance.fixed_div_ceil(e, &total, &SCALAR_18);
             let rate = base_rate.fixed_mul_ceil(e, &fraction, &SCALAR_18);
 
