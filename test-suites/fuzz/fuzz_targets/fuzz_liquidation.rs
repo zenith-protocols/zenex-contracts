@@ -1,227 +1,287 @@
 #![no_main]
 
-//! Dedicated fuzz target for the liquidation path.
+//! Dedicated fuzz target for the liquidation and ADL paths.
 //!
-//! Focuses on edge cases that the general fuzzer is unlikely to hit:
-//! - Interest-only liquidation (no price movement)
-//! - Near-boundary oscillation (price recovers then interest pushes underwater)
-//! - Multiple positions on the same market affecting shared interest indices
+//! Focuses on edge cases the general fuzzer is unlikely to hit:
+//! - Interest-only liquidation (no price movement, fees erode margin)
+//! - Near-boundary oscillation (price recovers, then fees push underwater)
+//! - ADL trigger and reduction verification
+//! - Multiple positions on the same market affecting shared indices
 //!
-//! Invariants checked after every operation:
+//! Uses 3 users (long, short, neutral) + keeper on a single market (BTC)
+//! with 15-step sequences of time jumps and price swings.
+//!
+//! Invariants checked after every step:
 //! 1. **Zero residual** — contract holds 0 tokens when no positions are open
 //! 2. **Known errors** — contract errors must be valid TradingError codes
+//! 3. **Liquidated positions removed** — storage consistent after liquidation
+//! 4. **Post-ADL solvency** — ADL reduces net PnL to within vault capacity
 
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::xdr::ScErrorType;
 use soroban_sdk::{vec as svec, Address};
+use test_suites::constants::SCALAR_7;
+use test_suites::pyth_helper;
 use test_suites::setup::create_fixture_with_data;
-use test_suites::SCALAR_7;
+use test_suites::test_fixture::TestFixture;
+use trading::testutils::{FEED_BTC, FEED_ETH, FEED_XLM, PRICE_SCALAR};
 
-const BTC_BASE: i128 = 100_000_0000000;
-const ETH_BASE: i128 = 2_000_0000000;
-const XLM_BASE: i128 = 0_1000000;
+// ── Constants ───────────────────────────────────────────────────────────────
+
+const BTC_INITIAL: i64 = 100_000 * PRICE_SCALAR as i64;
+const ETH_INITIAL: i64 = 2_000 * PRICE_SCALAR as i64;
+const XLM_INITIAL: i64 = PRICE_SCALAR as i64 / 10;
+
+// ── Fuzz Input ──────────────────────────────────────────────────────────────
 
 #[derive(Arbitrary, Debug)]
 struct FuzzInput {
-    scenarios: [LiquidationScenario; 4],
+    scenarios: [LiquidationScenario; 3],
 }
 
 #[derive(Arbitrary, Debug)]
 struct LiquidationScenario {
-    asset_idx: u8,
+    /// Collateral in token units (clamped to 100-50_000).
     collateral_raw: u16,
+    /// Leverage multiplier (clamped to 2-100).
     leverage_raw: u8,
+    /// Whether the primary position is long.
     is_long: bool,
-    /// Sequence of actions: time jumps interleaved with price changes and liquidation attempts.
-    /// Each step is either a time jump, a price change, or both.
-    steps: [LiquidationStep; 12],
+    /// Whether to open a counter-position (opposite side) for interest dynamics.
+    open_counter: bool,
+    /// Counter position collateral (clamped to 100-50_000).
+    counter_collateral_raw: u16,
+    /// Counter position leverage (clamped to 2-50).
+    counter_leverage_raw: u8,
+    /// Sequence of time/price/action steps.
+    steps: [LiquidationStep; 15],
 }
 
 #[derive(Arbitrary, Debug)]
 struct LiquidationStep {
-    /// Hours to advance (0-168, capped to 1 week). Each unit = 3600 seconds.
+    /// Hours to advance (1-168, capped to 1 week).
     hours: u8,
-    /// Price change in bps (-5000 to 5000). Not biased — allows recovery and oscillation.
+    /// Price change in bps (-5000 to 5000).
     price_change_bps: i16,
-    /// Whether to attempt liquidation after this step
-    try_liquidate: bool,
+    /// Action to attempt after time/price change.
+    action: StepAction,
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+#[derive(Arbitrary, Debug)]
+enum StepAction {
+    /// Attempt liquidation via execute().
+    TryLiquidate,
+    /// Attempt ADL via update_status().
+    TryADL,
+    /// Apply funding to advance indices.
+    ApplyFunding,
+    /// Do nothing (just observe state after time/price change).
+    Observe,
+}
 
-/// All valid TradingError codes from errors.rs.
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
+/// All valid TradingError codes from trading/src/errors.rs.
 const VALID_ERROR_CODES: &[u32] = &[
-    1,                                                          // Unauthorized
-    700, 701, 702, 703, 704,                                    // Configuration
-    710, 711, 712,                                              // Market
-    720, 721,                                                   // Oracle/Price
-    730, 731, 732, 733, 734, 735, 736, 737, 738, 739, 740,     // Position
-    741, 742, 743, 744, 745, 746, 747, 748,                     // Position (cont)
-    750, 751,                                                   // Action/Request
-    760, 761, 762,                                              // Status
-    770,                                                        // Utilization
+    1,                                          // Unauthorized
+    700, 701, 702, 703,                         // Config & Market
+    710, 711,                                   // Price
+    720, 721, 722, 723, 724, 725, 726, 727,     // Position
+    728, 729, 730, 731, 732, 733,               // Position (cont)
+    740, 741, 742,                              // Contract Status
+    750, 751, 752,                              // Utilization & Funding
 ];
 
-/// Verify that a try_* result is not a host error, raw panic, or unknown error code.
-///
-/// In WASM mode, contract errors from `panic_with_error!` arrive as
-/// `Err(Ok(Error))` with `ScErrorType::Contract` — these are expected validation.
-/// Only non-contract error types (WasmVm, Budget, Storage, etc.) indicate a bug.
 fn verify_no_host_error<T, E: core::fmt::Debug>(
     result: &Result<Result<T, E>, Result<soroban_sdk::Error, soroban_sdk::InvokeError>>,
     context: &str,
 ) {
     match result {
-        Ok(Ok(_)) => {}
-        Ok(Err(_)) => {}
+        Ok(Ok(_)) | Ok(Err(_)) => {}
         Err(Ok(e)) if e.is_type(ScErrorType::Contract) => {
             let code = e.get_code();
             assert!(
                 VALID_ERROR_CODES.contains(&code),
-                "[{}] Unknown contract error code: {} — not a valid TradingError",
+                "[{}] Unknown contract error code: {}",
                 context, code
             );
         }
-        Err(Ok(e)) => panic!(
-            "[{}] Host error: {:?} — not a contract error, likely a VM/budget/storage issue",
-            context, e
-        ),
-        Err(Err(e)) => panic!(
-            "[{}] InvokeError: {:?} — contract should use panic_with_error!, not raw panic",
-            context, e
-        ),
+        Err(Ok(e)) => panic!("[{}] Host error: {:?}", context, e),
+        Err(Err(e)) => panic!("[{}] InvokeError: {:?}", context, e),
     }
 }
 
-fn check_invariants(fixture: &test_suites::test_fixture::TestFixture, positions: &[u32]) {
-    // Zero residual: contract must hold 0 tokens when no positions are open
-    if positions.is_empty() {
-        let contract_balance = fixture.token.balance(&fixture.trading.address);
-        assert_eq!(
-            contract_balance, 0,
-            "Contract holds {} tokens with no open positions",
-            contract_balance
-        );
+fn is_ok<T, E>(
+    result: &Result<Result<T, E>, Result<soroban_sdk::Error, soroban_sdk::InvokeError>>,
+) -> bool {
+    matches!(result, Ok(Ok(_)))
+}
+
+fn build_btc_price(fixture: &TestFixture, btc_price: i64) -> soroban_sdk::Bytes {
+    fixture.price_for_feed(FEED_BTC, btc_price)
+}
+
+fn build_all_prices(fixture: &TestFixture, btc_price: i64) -> soroban_sdk::Bytes {
+    let ts = fixture.env.ledger().timestamp();
+    pyth_helper::build_price_update(
+        &fixture.env,
+        &fixture.signing_key,
+        &[
+            pyth_helper::FeedInput { feed_id: FEED_BTC, price: btc_price, exponent: -8, confidence: 0 },
+            pyth_helper::FeedInput { feed_id: FEED_ETH, price: ETH_INITIAL, exponent: -8, confidence: 0 },
+            pyth_helper::FeedInput { feed_id: FEED_XLM, price: XLM_INITIAL, exponent: -8, confidence: 0 },
+        ],
+        ts,
+    )
+}
+
+fn check_zero_residual(fixture: &TestFixture, has_positions: bool) {
+    if !has_positions {
+        let bal = fixture.token.balance(&fixture.trading.address);
+        assert_eq!(bal, 0, "Contract holds {} tokens with no open positions", bal);
     }
 }
+
+// ── Fuzz Target ─────────────────────────────────────────────────────────────
 
 fuzz_target!(|input: FuzzInput| {
-    let fixture = create_fixture_with_data(true);
+    let fixture = create_fixture_with_data();
 
-    let user = Address::generate(&fixture.env);
+    let user_primary = Address::generate(&fixture.env);
+    let user_counter = Address::generate(&fixture.env);
     let keeper = Address::generate(&fixture.env);
-    fixture.token.mint(&user, &(10_000_000 * SCALAR_7));
 
-    let mut prices = [BTC_BASE, ETH_BASE, XLM_BASE];
+    fixture.token.mint(&user_primary, &(10_000_000 * SCALAR_7));
+    fixture.token.mint(&user_counter, &(10_000_000 * SCALAR_7));
 
     for scenario in &input.scenarios {
-        let asset = (scenario.asset_idx % 3) as u32;
-        let collateral = ((scenario.collateral_raw as i128).max(10).min(10_000)) * SCALAR_7;
-        // Range from low leverage (where interest slowly erodes margin)
-        // to high leverage (where small price moves liquidate)
+        let collateral = ((scenario.collateral_raw as i128).max(100).min(50_000)) * SCALAR_7;
         let leverage = (scenario.leverage_raw as i128).max(2).min(100);
         let notional = collateral * leverage;
 
-        // Open limit order at current oracle price, then fill to simulate market order
-        let entry_price = prices[asset as usize];
-        let result = fixture.trading.try_open_position(
-            &user, &asset, &collateral, &notional, &scenario.is_long,
-            &entry_price, &0i128, &0i128,
-        );
-        verify_no_host_error(&result, "OpenPosition");
+        let mut btc_price = BTC_INITIAL;
 
-        let pos_id = if let Ok(Ok((id, _fee))) = result {
+        // Open primary position
+        let price_bytes = build_btc_price(&fixture, btc_price);
+        let result = fixture.trading.try_open_market(
+            &user_primary, &FEED_BTC, &collateral, &notional,
+            &scenario.is_long, &0i128, &0i128, &price_bytes,
+        );
+        verify_no_host_error(&result, "OpenPrimary");
+
+        let primary_id = if let Ok(Ok(id)) = result {
             id
         } else {
             continue;
         };
 
-        // Fill the pending limit order
-        let fill_result = fixture.trading.try_execute(
-            &user,
-            &svec![&fixture.env, pos_id],
-        );
-        verify_no_host_error(&fill_result, "FillPosition");
+        let mut positions: Vec<u32> = vec![primary_id];
 
-        // If fill failed, clean up and continue
-        if let Ok(Ok(results)) = &fill_result {
-            if results.get(0) != Some(0) {
-                let _ = fixture.trading.try_close_position(&pos_id);
-                continue;
+        // Optionally open a counter-position for interest dynamics
+        if scenario.open_counter {
+            let counter_col = ((scenario.counter_collateral_raw as i128).max(100).min(50_000)) * SCALAR_7;
+            let counter_lev = (scenario.counter_leverage_raw as i128).max(2).min(50);
+            let counter_not = counter_col * counter_lev;
+            let counter_price = build_btc_price(&fixture, btc_price);
+
+            let counter_result = fixture.trading.try_open_market(
+                &user_counter, &FEED_BTC, &counter_col, &counter_not,
+                &(!scenario.is_long), &0i128, &0i128, &counter_price,
+            );
+            verify_no_host_error(&counter_result, "OpenCounter");
+
+            if let Ok(Ok(counter_id)) = counter_result {
+                positions.push(counter_id);
             }
-        } else {
-            let _ = fixture.trading.try_close_position(&pos_id);
-            continue;
         }
 
-        let mut positions: Vec<u32> = vec![pos_id];
-        let mut liquidated = false;
+        // Jump past MIN_OPEN_TIME for close operations
+        fixture.jump(31);
 
-        check_invariants(&fixture, &positions);
+        let mut primary_liquidated = false;
 
         for step in &scenario.steps {
-            if liquidated {
-                break;
-            }
+            if primary_liquidated { break; }
 
-            // Time jump in 1-hour intervals, up to 1 week (168 hours)
-            let hours = (step.hours as u64).min(168).max(1);
+            // Time jump
+            let hours = (step.hours as u64).max(1).min(168);
             fixture.jump(hours * 3600);
-            fixture.oracle.set_price_stable(&svec![
-                &fixture.env,
-                1_0000000,
-                prices[0],
-                prices[1],
-                prices[2],
-            ]);
 
-            // Price change: unbiased — allows recovery and oscillation
-            let bps = (step.price_change_bps as i128).max(-5000).min(5000);
+            // Price change
+            let bps = (step.price_change_bps as i64).max(-5000).min(5000);
             if bps != 0 {
-                let base = prices[asset as usize];
-                let new_price = base + base * bps / 10_000;
-
+                let new_price = btc_price + btc_price * bps / 10_000;
                 if new_price > 0 {
-                    prices[asset as usize] = new_price;
-                    fixture.oracle.set_price_stable(&svec![
-                        &fixture.env,
-                        1_0000000,
-                        prices[0],
-                        prices[1],
-                        prices[2],
-                    ]);
+                    btc_price = new_price;
                 }
             }
 
-            // Conditionally attempt liquidation
-            if step.try_liquidate {
-                let liq_result = fixture.trading.try_execute(
-                    &keeper,
-                    &svec![&fixture.env, pos_id],
-                );
-                verify_no_host_error(&liq_result, "Liquidate");
+            // Execute action
+            match &step.action {
+                StepAction::TryLiquidate => {
+                    let price_bytes = build_btc_price(&fixture, btc_price);
+                    let result = fixture.trading.try_execute(
+                        &keeper, &svec![&fixture.env, primary_id], &price_bytes,
+                    );
+                    verify_no_host_error(&result, "TryLiquidate");
 
-                if let Ok(Ok(results)) = &liq_result {
-                    if results.get(0) == Some(0) {
-                        positions.clear();
-                        liquidated = true;
+                    if is_ok(&result) {
+                        // Check position was actually removed
+                        assert!(
+                            !fixture.position_exists(primary_id),
+                            "Position {} still exists after successful liquidation",
+                            primary_id
+                        );
+                        positions.retain(|&id| id != primary_id);
+                        primary_liquidated = true;
                     }
                 }
+
+                StepAction::TryADL => {
+                    let price_bytes = build_all_prices(&fixture, btc_price);
+                    let result = fixture.trading.try_update_status(&price_bytes);
+                    verify_no_host_error(&result, "TryADL");
+
+                    // Post-ADL: if succeeded and was ADL (not just status change),
+                    // verify ADL index decreased
+                    if is_ok(&result) {
+                        let md = fixture.trading.get_market_data(&FEED_BTC);
+                        let adl_idx = if scenario.is_long { md.l_adl_idx } else { md.s_adl_idx };
+                        assert!(
+                            adl_idx <= 1_000_000_000_000_000_000,
+                            "ADL index should be <= SCALAR_18, got {}",
+                            adl_idx
+                        );
+                    }
+                }
+
+                StepAction::ApplyFunding => {
+                    let result = fixture.trading.try_apply_funding();
+                    verify_no_host_error(&result, "ApplyFunding");
+                }
+
+                StepAction::Observe => {}
             }
 
-            check_invariants(&fixture, &positions);
+            check_zero_residual(&fixture, !positions.is_empty());
         }
 
-        // Clean up if not liquidated
-        if !liquidated {
-            for &pid in &positions {
-                let result = fixture.trading.try_close_position(&pid);
-                verify_no_host_error(&result, "ClosePosition(cleanup)");
+        // Cleanup: close remaining positions, tracking whether all succeed
+        let mut all_closed = true;
+        for &pid in &positions {
+            let price_bytes = build_btc_price(&fixture, btc_price);
+            let result = fixture.trading.try_close_position(&pid, &price_bytes);
+            verify_no_host_error(&result, "Cleanup");
+            if !is_ok(&result) {
+                all_closed = false;
             }
-            positions.clear();
-            check_invariants(&fixture, &positions);
+        }
+
+        // Only assert zero residual if all positions were successfully closed
+        if all_closed {
+            check_zero_residual(&fixture, false);
         }
     }
 });

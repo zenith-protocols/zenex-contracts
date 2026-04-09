@@ -213,6 +213,64 @@ mod tests {
         client.set_status(&(ContractStatus::OnIce as u32));
     }
 
+    /// Frozen blocks all management (require_can_manage panics with #742).
+    /// Active, OnIce, and AdminOnIce all allow management.
+    #[test]
+    fn test_frozen_blocks_management() {
+        let e = Env::default();
+        e.mock_all_auths();
+        jump(&e, 1000);
+
+        let (contract, _owner) = create_trading(&e);
+
+        e.as_contract(&contract, || {
+            use crate::validation::{require_active, require_can_manage};
+
+            // Active: both pass
+            storage::set_status(&e, ContractStatus::Active as u32);
+            require_active(&e);
+            require_can_manage(&e);
+
+            // OnIce: require_active fails, require_can_manage passes
+            storage::set_status(&e, ContractStatus::OnIce as u32);
+            require_can_manage(&e);
+
+            // AdminOnIce: require_active fails, require_can_manage passes
+            storage::set_status(&e, ContractStatus::AdminOnIce as u32);
+            require_can_manage(&e);
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #742)")]
+    fn test_frozen_panics_require_can_manage() {
+        let e = Env::default();
+        e.mock_all_auths();
+        jump(&e, 1000);
+
+        let (contract, _owner) = create_trading(&e);
+
+        e.as_contract(&contract, || {
+            storage::set_status(&e, ContractStatus::Frozen as u32);
+            crate::validation::require_can_manage(&e);
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #741)")]
+    fn test_onice_panics_require_active() {
+        let e = Env::default();
+        e.mock_all_auths();
+        jump(&e, 1000);
+
+        let (contract, _owner) = create_trading(&e);
+
+        e.as_contract(&contract, || {
+            storage::set_status(&e, ContractStatus::OnIce as u32);
+            crate::validation::require_active(&e);
+        });
+    }
+
     #[test]
     fn test_set_market_enabled_toggle() {
         let e = Env::default();

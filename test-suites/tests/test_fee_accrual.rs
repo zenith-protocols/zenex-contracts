@@ -3,8 +3,9 @@ use soroban_sdk::testutils::Address as _;
 use soroban_sdk::Address;
 use test_suites::setup::create_fixture_with_data;
 use test_suites::test_fixture::TestFixture;
-use test_suites::constants::{BTC_PRICE_I64, SCALAR_7, SECONDS_IN_HOUR};
-use trading::testutils::{default_config, default_market, FEED_BTC};
+use test_suites::pyth_helper;
+use test_suites::constants::{BTC_PRICE_I64, SCALAR_7, SCALAR_18, SECONDS_IN_HOUR};
+use trading::testutils::{default_config, default_market, FEED_BTC, FEED_ETH, FEED_XLM, PRICE_SCALAR};
 
 fn setup_fixture() -> TestFixture<'static> {
     create_fixture_with_data()
@@ -235,53 +236,6 @@ fn test_borrowing_curve_at_utilization_points() {
 }
 
 // ==========================================
-// 5. Borrowing: dominant side only
-// ==========================================
-
-#[test]
-fn test_borrowing_dominant_side_only() {
-    let fixture = setup_fixture();
-    let user1 = Address::generate(&fixture.env);
-    let user2 = Address::generate(&fixture.env);
-
-    fixture.token.mint(&user1, &(500_000 * SCALAR_7));
-    fixture.token.mint(&user2, &(500_000 * SCALAR_7));
-
-    // Long dominant: 20k long > 10k short
-    let _long_pos = fixture.open_long(&user1, FEED_BTC, 5_000, 20_000, BTC_PRICE_I64);
-
-    let _short_pos = fixture.open_short(&user2, FEED_BTC, 5_000, 10_000, BTC_PRICE_I64);
-
-    // Read initial indices
-    let market_initial = fixture.trading.get_market_data(&(FEED_BTC));
-    let initial_l_borr_idx = market_initial.l_borr_idx;
-    let initial_s_borr_idx = market_initial.s_borr_idx;
-
-    // Jump 1 hour and apply funding to trigger accrual
-    fixture.jump(SECONDS_IN_HOUR);
-    fixture.trading.apply_funding();
-
-    // Read updated indices
-    let market_after = fixture.trading.get_market_data(&(FEED_BTC));
-
-    // Long is dominant -> long borrowing index should advance
-    assert!(
-        market_after.l_borr_idx > initial_l_borr_idx,
-        "dominant side (long) borrowing index should advance: initial={}, after={}",
-        initial_l_borr_idx,
-        market_after.l_borr_idx
-    );
-
-    // Short is non-dominant -> short borrowing index should be unchanged
-    assert_eq!(
-        market_after.s_borr_idx, initial_s_borr_idx,
-        "non-dominant side (short) borrowing index should not change: initial={}, after={}",
-        initial_s_borr_idx,
-        market_after.s_borr_idx
-    );
-}
-
-// ==========================================
 // 6. Fee accrual increases with time
 // ==========================================
 
@@ -331,3 +285,198 @@ fn test_fee_accrual_increases_with_time() {
     assert!(total_cost > 0, "user should have paid net fees");
 }
 
+fn price_update_all(fixture: &TestFixture, btc: i64, eth: i64, xlm: i64) -> soroban_sdk::Bytes {
+    let ts = fixture.env.ledger().timestamp();
+    pyth_helper::build_price_update(
+        &fixture.env,
+        &fixture.signing_key,
+        &[
+            pyth_helper::FeedInput { feed_id: 1, price: btc, exponent: -8, confidence: 0 },
+            pyth_helper::FeedInput { feed_id: 2, price: eth, exponent: -8, confidence: 0 },
+            pyth_helper::FeedInput { feed_id: 3, price: xlm, exponent: -8, confidence: 0 },
+        ],
+        ts,
+    )
+}
+
+// ==========================================
+// 7. Funding rounding dust bounded
+// ==========================================
+
+/// 100 hours of funding with Alice 100k long (dominant), Bob 50k short.
+/// The rounding residual (alice_paid - bob_received) should be < 10k units.
+#[test]
+fn test_funding_rounding_dust_bounded() {
+    let fixture = create_fixture_with_data();
+
+    let mut config = fixture.trading.get_config();
+    config.fee_dom = 0; config.fee_non_dom = 0;
+    config.r_base = 0; config.r_var = 0;
+    fixture.trading.set_config(&config);
+
+    let mut mc = default_market(&fixture.env);
+    mc.r_var_market = 0; mc.impact = i128::MAX;
+    fixture.create_market(FEED_BTC, &mc);
+
+    let alice = Address::generate(&fixture.env);
+    let bob = Address::generate(&fixture.env);
+    fixture.token.mint(&alice, &(200_000 * SCALAR_7));
+    fixture.token.mint(&bob, &(200_000 * SCALAR_7));
+
+    let alice_pos = fixture.open_long(&alice, FEED_BTC, 20_000, 100_000, BTC_PRICE_I64);
+    let bob_pos = fixture.open_short(&bob, FEED_BTC, 10_000, 50_000, BTC_PRICE_I64);
+
+    let vault_before = fixture.vault.total_assets();
+
+    for _ in 0..100 {
+        fixture.jump(SECONDS_IN_HOUR);
+        fixture.trading.apply_funding();
+    }
+
+    let close_bytes = fixture.btc_price(BTC_PRICE_I64);
+    let payout_alice = fixture.trading.close_position(&alice_pos, &close_bytes);
+    let payout_bob = fixture.trading.close_position(&bob_pos, &close_bytes);
+
+    let vault_after = fixture.vault.total_assets();
+    let alice_loss = 20_000 * SCALAR_7 - payout_alice;
+    let bob_gain = payout_bob - 10_000 * SCALAR_7;
+    let residual = alice_loss - bob_gain;
+    let vault_change = vault_after - vault_before;
+
+    assert_eq!(vault_change, residual);
+    assert!(residual.abs() < 10_000, "rounding residual {} exceeds bound", residual);
+}
+
+// ==========================================
+// 8. Borrowing dominance flip accrual timing
+// ==========================================
+
+/// Opens longs-dominant (200k vs 100k), jumps 30 min, then Carol opens 250k short
+/// flipping dominance. Verifies accrual uses pre-trade dominance (longs charged,
+/// not shorts). This is correct behavior, not a bug.
+#[test]
+fn test_borrowing_dominance_flip_accrual_timing() {
+    let fixture = create_fixture_with_data();
+
+    let mut config = fixture.trading.get_config();
+    config.r_funding = 0; config.fee_dom = 0; config.fee_non_dom = 0;
+    fixture.trading.set_config(&config);
+
+    let mut mc = default_market(&fixture.env);
+    mc.impact = i128::MAX;
+    fixture.create_market(FEED_BTC, &mc);
+
+    let alice = Address::generate(&fixture.env);
+    let bob = Address::generate(&fixture.env);
+    let carol = Address::generate(&fixture.env);
+    fixture.token.mint(&alice, &(500_000 * SCALAR_7));
+    fixture.token.mint(&bob, &(500_000 * SCALAR_7));
+    fixture.token.mint(&carol, &(500_000 * SCALAR_7));
+
+    fixture.open_long(&alice, FEED_BTC, 50_000, 200_000, BTC_PRICE_I64);
+    fixture.open_short(&bob, FEED_BTC, 50_000, 100_000, BTC_PRICE_I64);
+
+    let data_after_open = fixture.trading.get_market_data(&FEED_BTC);
+    let l_borr_after_open = data_after_open.l_borr_idx;
+    let s_borr_after_open = data_after_open.s_borr_idx;
+
+    fixture.jump(1800); // 30 min, no accrual yet
+
+    // Carol's open triggers Context::load → accrue with PRE-TRADE dominance
+    fixture.open_short(&carol, FEED_BTC, 100_000, 250_000, BTC_PRICE_I64);
+
+    let data_after_carol = fixture.trading.get_market_data(&FEED_BTC);
+
+    // Longs were dominant at accrual → l_borr_idx advanced
+    assert!(data_after_carol.l_borr_idx > l_borr_after_open);
+    // Shorts were non-dominant → s_borr_idx unchanged
+    assert_eq!(data_after_carol.s_borr_idx, s_borr_after_open);
+
+    // After Carol: shorts now dominant (350k > 200k)
+    fixture.jump(SECONDS_IN_HOUR);
+    fixture.trading.apply_funding();
+
+    let data_after_flip = fixture.trading.get_market_data(&FEED_BTC);
+
+    // Now shorts dominant → s_borr_idx advances, l_borr_idx stays
+    assert!(data_after_flip.s_borr_idx > data_after_carol.s_borr_idx);
+    assert_eq!(data_after_flip.l_borr_idx, data_after_carol.l_borr_idx);
+}
+
+// ==========================================
+// 9. ADL funding undercharge bounded
+// ==========================================
+
+/// After ADL reduces notional, the simplified funding formula under-charges
+/// relative to the correct two-phase calculation. This is a known design
+/// tradeoff. The gap should be < 0.1% of vault TVL.
+#[test]
+fn test_adl_funding_undercharge_bounded() {
+    let fixture = TestFixture::create();
+    fixture.token.mint(&fixture.owner, &(500_000 * SCALAR_7));
+    fixture.vault.deposit(&(500_000 * SCALAR_7), &fixture.owner, &fixture.owner, &fixture.owner);
+
+    let mut config = fixture.trading.get_config();
+    config.fee_dom = 0; config.fee_non_dom = 0;
+    config.r_base = 0; config.r_var = 0;
+    config.r_funding = 100_000_000_000_000; // max rate for measurable effect
+    fixture.trading.set_config(&config);
+
+    let mut mc = default_market(&fixture.env);
+    mc.r_var_market = 0; mc.impact = i128::MAX;
+    fixture.create_market(FEED_BTC, &mc);
+    fixture.create_market(FEED_ETH, &mc);
+    fixture.create_market(FEED_XLM, &mc);
+
+    let alice = Address::generate(&fixture.env);
+    let bob = Address::generate(&fixture.env);
+    fixture.token.mint(&alice, &(200_000 * SCALAR_7));
+    fixture.token.mint(&bob, &(200_000 * SCALAR_7));
+
+    let alice_pos = fixture.open_long(&alice, FEED_BTC, 50_000, 200_000, BTC_PRICE_I64);
+    fixture.open_short(&bob, FEED_BTC, 50_000, 100_000, BTC_PRICE_I64);
+
+    let alice_data = fixture.trading.get_position(&alice_pos);
+    let original_notional = alice_data.notional;
+    let alice_fund_idx_at_open = alice_data.fund_idx;
+
+    // Pre-ADL: 2 hours of funding
+    fixture.jump(SECONDS_IN_HOUR);
+    fixture.trading.apply_funding();
+    fixture.jump(SECONDS_IN_HOUR);
+    fixture.trading.apply_funding();
+
+    let fund_idx_pre_adl = fixture.trading.get_market_data(&FEED_BTC).l_fund_idx;
+
+    // ADL at BTC $700k
+    fixture.trading.update_status(&price_update_all(
+        &fixture, 700_000 * PRICE_SCALAR as i64, 200_000_000_000, 10_000_000,
+    ));
+    let adl_idx = fixture.trading.get_market_data(&FEED_BTC).l_adl_idx;
+    assert!(adl_idx < SCALAR_18);
+
+    // Post-ADL: 2 more hours of funding
+    fixture.jump(SECONDS_IN_HOUR);
+    fixture.trading.apply_funding();
+    fixture.jump(SECONDS_IN_HOUR);
+    fixture.trading.apply_funding();
+
+    let fund_idx_final = fixture.trading.get_market_data(&FEED_BTC).l_fund_idx;
+
+    fixture.jump(31);
+    let payout_alice = fixture.trading.close_position(&alice_pos, &fixture.btc_price(BTC_PRICE_I64));
+
+    let alice_col = 50_000 * SCALAR_7;
+    let actual_funding = alice_col - payout_alice;
+
+    let pre_adl_delta = fund_idx_pre_adl - alice_fund_idx_at_open;
+    let post_adl_delta = fund_idx_final - fund_idx_pre_adl;
+    let reduced_notional = original_notional * adl_idx / SCALAR_18;
+
+    let correct_funding = original_notional * pre_adl_delta / SCALAR_18
+        + reduced_notional * post_adl_delta / SCALAR_18;
+
+    let gap = correct_funding - actual_funding;
+    assert!(gap >= 0, "gap should be non-negative: {}", gap);
+    assert!(gap < 500_000 * SCALAR_7 / 1_000, "gap {} exceeds 0.1% of vault", gap);
+}

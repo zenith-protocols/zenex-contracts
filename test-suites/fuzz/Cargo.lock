@@ -594,6 +594,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ca81e6b4777c89fd810c25a4be2b1bd93ea034fbe58e6a75216a34c6b82c539b"
 
 [[package]]
+name = "factory"
+version = "0.0.0"
+dependencies = [
+ "soroban-sdk",
+]
+
+[[package]]
 name = "ff"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -655,6 +662,16 @@ dependencies = [
  "libc",
  "r-efi",
  "wasip2",
+]
+
+[[package]]
+name = "governance"
+version = "0.0.0"
+dependencies = [
+ "soroban-sdk",
+ "stellar-access",
+ "stellar-contract-utils",
+ "stellar-macros",
 ]
 
 [[package]]
@@ -1003,6 +1020,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "price-verifier"
+version = "0.0.0"
+dependencies = [
+ "soroban-sdk",
+ "stellar-access",
+ "stellar-macros",
+]
+
+[[package]]
 name = "primeorder"
 version = "0.13.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1163,24 +1189,6 @@ name = "semver"
 version = "1.0.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d767eb0aabc880b29956c35734170f26ed551a859dbd361d140cdbeca61ab1e2"
-
-[[package]]
-name = "sep-40-oracle"
-version = "1.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7e93431de4795bf920a17467d3f76c538d53807c11628a9fb584b360ad834829"
-dependencies = [
- "soroban-sdk",
-]
-
-[[package]]
-name = "sep-41-token"
-version = "1.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c716d354c687e254c5b0500f3cc962f8d231799c901a41ea6821c977cb89a25"
-dependencies = [
- "soroban-sdk",
-]
 
 [[package]]
 name = "serde"
@@ -1404,9 +1412,9 @@ dependencies = [
 
 [[package]]
 name = "soroban-ledger-snapshot"
-version = "25.1.0"
+version = "25.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "99c5285c83e7a5581879b7a65033eae53b24ac9689975aa6887f1d8ee3e941c9"
+checksum = "2ca06e6c5029d1285e66219cb387a234224e26969ce8ad2bc2d5017e9395d63b"
 dependencies = [
  "serde",
  "serde_json",
@@ -1418,9 +1426,9 @@ dependencies = [
 
 [[package]]
 name = "soroban-sdk"
-version = "25.1.0"
+version = "25.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b1262aa83e99a0fb3e8cd56d6e5ca4c28ac4f9871ac7173f65301a8b9a12c20f"
+checksum = "4502f2e018f238a4c5d3212d7d20ea6abcdc6e58babd63b642b693739db30fd1"
 dependencies = [
  "arbitrary",
  "bytes-lit",
@@ -1442,9 +1450,9 @@ dependencies = [
 
 [[package]]
 name = "soroban-sdk-macros"
-version = "25.1.0"
+version = "25.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "93b62c526917a1e77b6dce3cd841b6c271f0fff344ea93ad92a8c45afe8051b6"
+checksum = "ca03e9cf61d241cb9afdd6ddf41f6c25698b3f566a875e7009ea799b89e2bf0a"
 dependencies = [
  "darling 0.20.11",
  "heck",
@@ -1462,11 +1470,12 @@ dependencies = [
 
 [[package]]
 name = "soroban-spec"
-version = "25.1.0"
+version = "25.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0186c943a78de7038ce7eee478f521f7a7665440101ae0d24b4a59833fb6d833"
+checksum = "aa02e07f507cc27406ae0834db4dcf309b78c4cc8776eb3b2d662d66e8859d25"
 dependencies = [
  "base64",
+ "sha2",
  "stellar-xdr",
  "thiserror",
  "wasmparser",
@@ -1474,9 +1483,9 @@ dependencies = [
 
 [[package]]
 name = "soroban-spec-rust"
-version = "25.1.0"
+version = "25.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7a948196ed0633be3a4125e0c7a4fc0bb6337942e538813b1f171331738f9058"
+checksum = "6835bb510763ef3fa5405e89036e3c8ea6ef5abe55fc52cfe9ac0e38be9d531c"
 dependencies = [
  "prettyplease",
  "proc-macro2",
@@ -1531,24 +1540,32 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
 name = "stellar-access"
-version = "0.6.0"
-source = "git+https://github.com/OpenZeppelin/stellar-contracts#63167bb707edf4ad25e46572df11d4332d10b68e"
+version = "0.7.0"
+source = "git+https://github.com/OpenZeppelin/stellar-contracts?tag=v0.7.0#9e8df92a065bff9ffa595b3697f4bd3c243a6d02"
 dependencies = [
  "soroban-sdk",
 ]
 
 [[package]]
 name = "stellar-contract-utils"
-version = "0.6.0"
-source = "git+https://github.com/OpenZeppelin/stellar-contracts#63167bb707edf4ad25e46572df11d4332d10b68e"
+version = "0.7.0"
+source = "git+https://github.com/OpenZeppelin/stellar-contracts?tag=v0.7.0#9e8df92a065bff9ffa595b3697f4bd3c243a6d02"
+dependencies = [
+ "soroban-sdk",
+]
+
+[[package]]
+name = "stellar-governance"
+version = "0.7.0"
+source = "git+https://github.com/OpenZeppelin/stellar-contracts?tag=v0.7.0#9e8df92a065bff9ffa595b3697f4bd3c243a6d02"
 dependencies = [
  "soroban-sdk",
 ]
 
 [[package]]
 name = "stellar-macros"
-version = "0.6.0"
-source = "git+https://github.com/OpenZeppelin/stellar-contracts#63167bb707edf4ad25e46572df11d4332d10b68e"
+version = "0.7.0"
+source = "git+https://github.com/OpenZeppelin/stellar-contracts?tag=v0.7.0#9e8df92a065bff9ffa595b3697f4bd3c243a6d02"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1577,6 +1594,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "stellar-tokens"
+version = "0.7.0"
+source = "git+https://github.com/OpenZeppelin/stellar-contracts?tag=v0.7.0#9e8df92a065bff9ffa595b3697f4bd3c243a6d02"
+dependencies = [
+ "soroban-sdk",
+ "stellar-contract-utils",
+ "stellar-governance",
+]
+
+[[package]]
 name = "stellar-xdr"
 version = "25.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1593,6 +1620,14 @@ dependencies = [
  "serde_with",
  "sha2",
  "stellar-strkey 0.0.13",
+]
+
+[[package]]
+name = "strategy-vault"
+version = "0.0.0"
+dependencies = [
+ "soroban-sdk",
+ "stellar-tokens",
 ]
 
 [[package]]
@@ -1633,11 +1668,16 @@ dependencies = [
 name = "test-suites"
 version = "0.0.1"
 dependencies = [
- "sep-40-oracle",
- "sep-41-token",
+ "ed25519-dalek",
+ "factory",
+ "governance",
+ "price-verifier",
  "soroban-fixed-point-math",
  "soroban-sdk",
+ "stellar-access",
+ "strategy-vault",
  "trading",
+ "treasury",
 ]
 
 [[package]]
@@ -1645,9 +1685,9 @@ name = "test-suites-fuzz"
 version = "0.0.0"
 dependencies = [
  "arbitrary",
+ "ed25519-dalek",
  "libfuzzer-sys",
- "sep-40-oracle",
- "sep-41-token",
+ "soroban-fixed-point-math",
  "soroban-sdk",
  "test-suites",
  "trading",
@@ -1708,12 +1748,19 @@ dependencies = [
 name = "trading"
 version = "0.0.0"
 dependencies = [
- "sep-40-oracle",
- "sep-41-token",
  "soroban-fixed-point-math",
  "soroban-sdk",
  "stellar-access",
  "stellar-contract-utils",
+ "stellar-macros",
+]
+
+[[package]]
+name = "treasury"
+version = "0.0.0"
+dependencies = [
+ "soroban-sdk",
+ "stellar-access",
  "stellar-macros",
 ]
 

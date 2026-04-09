@@ -2,8 +2,40 @@ use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{vec as svec, Address};
 use test_suites::test_fixture::TestFixture;
 use test_suites::pyth_helper;
-use test_suites::constants::{SCALAR_7, SCALAR_18};
+use test_suites::constants::{SCALAR_7, SCALAR_18, BTC_PRICE_I64};
 use trading::testutils::{default_market, FEED_BTC, FEED_ETH, FEED_XLM, PRICE_SCALAR};
+
+const ETH_2K: i64 = 200_000_000_000;
+const XLM_010: i64 = 10_000_000;
+
+/// Create a fixture with the given vault size, all fees/rates zeroed, 3 markets.
+fn setup_zero_fee_fixture(vault_tokens: i128) -> TestFixture<'static> {
+    let fixture = TestFixture::create();
+    fixture.token.mint(&fixture.owner, &(vault_tokens * SCALAR_7));
+    fixture.vault.deposit(
+        &(vault_tokens * SCALAR_7),
+        &fixture.owner,
+        &fixture.owner,
+        &fixture.owner,
+    );
+
+    let mut config = fixture.trading.get_config();
+    config.r_funding = 0;
+    config.r_base = 0;
+    config.r_var = 0;
+    config.fee_dom = 0;
+    config.fee_non_dom = 0;
+    fixture.trading.set_config(&config);
+
+    let mut mc = default_market(&fixture.env);
+    mc.r_var_market = 0;
+    mc.impact = i128::MAX;
+    fixture.create_market(FEED_BTC, &mc);
+    fixture.create_market(FEED_ETH, &mc);
+    fixture.create_market(FEED_XLM, &mc);
+
+    fixture
+}
 
 fn price_update_all(fixture: &TestFixture, btc: i64, eth: i64, xlm: i64) -> soroban_sdk::Bytes {
     let ts = fixture.env.ledger().timestamp();
@@ -326,6 +358,7 @@ fn test_adl_multi_market_scenario() {
 
     // Two ADL rounds of floor division can leave up to 2 units of rounding dust
     // per market side (1 unit per round × 2 rounds).
+    // This is inherent to sequential floor operations: floor(floor(N*f/S18)/P) ≠ floor(floor(N/P)*f/S18)
     let btc_f = fixture.trading.get_market_data(&FEED_BTC);
     assert!(btc_f.l_notional <= 2, "btc_l remaining: {}", btc_f.l_notional);
     assert_eq!(btc_f.s_notional, 0);
@@ -335,6 +368,16 @@ fn test_adl_multi_market_scenario() {
     let xlm_f = fixture.trading.get_market_data(&FEED_XLM);
     assert_eq!(xlm_f.l_notional, 0);
     assert_eq!(xlm_f.s_notional, 0);
+
+    // Global total_notional: sum of all per-market dust (at most 4 units across 3 markets)
+    let total_notional: i128 = fixture.env.as_contract(&fixture.trading.address, || {
+        fixture.env
+            .storage()
+            .instance()
+            .get(&trading::storage::TradingStorageKey::TotalNotional)
+            .unwrap_or(0i128)
+    });
+    assert!(total_notional <= 4, "total_notional dust: {}", total_notional);
 
     // New position on BTC snapshots the compound ADL index (~0.9431)
     let new_btc = fixture.open_long(&alice, FEED_BTC, 1_000, 10_000, 107_000 * PRICE_SCALAR as i64);
@@ -420,4 +463,132 @@ fn test_adl_cannot_trigger_twice_at_same_prices() {
     fixture.trading.update_status(
         &price_update_all(&fixture, 186_000 * PRICE_SCALAR as i64, 200_000_000_000, 10_000_000),
     );
+}
+
+/// Entry-weight aggregate PnL diverges from sum of individual PnLs due to
+/// floor-division rounding in `entry_wt = floor(notional / entry_price)`.
+///
+/// 10 longs at $99k-$100.8k, each 10k notional. At $110k:
+///   Aggregate PnL:  101_137_070_000
+///   Individual sum: 101_137_508_000
+///   Drift: -438_000 (~0.04 tokens)
+///
+/// Conservative for vault: aggregate understates PnL, so ADL triggers slightly later.
+#[test]
+fn test_entry_weight_aggregate_vs_individual_pnl() {
+    let fixture = setup_zero_fee_fixture(500_000);
+
+    let users: Vec<Address> = (0..10)
+        .map(|_| {
+            let u = Address::generate(&fixture.env);
+            fixture.token.mint(&u, &(100_000 * SCALAR_7));
+            u
+        })
+        .collect();
+
+    // 10 BTC longs at $99k, $99.2k, ..., $100.8k
+    let entry_prices: Vec<i64> = (0..10)
+        .map(|i| ((99_000 + i * 200) as i64) * PRICE_SCALAR as i64)
+        .collect();
+
+    for (i, user) in users.iter().enumerate() {
+        fixture.open_long(user, FEED_BTC, 5_000, 10_000, entry_prices[i]);
+    }
+
+    let dummy = Address::generate(&fixture.env);
+    fixture.token.mint(&dummy, &(100_000 * SCALAR_7));
+    fixture.open_long(&dummy, FEED_ETH, 5_000, 10_000, ETH_2K);
+    fixture.open_short(&dummy, FEED_ETH, 5_000, 10_000, ETH_2K);
+    fixture.open_long(&dummy, FEED_XLM, 1_000, 10_000, XLM_010);
+    fixture.open_short(&dummy, FEED_XLM, 1_000, 10_000, XLM_010);
+
+    fixture.jump(31);
+
+    let btc_data = fixture.trading.get_market_data(&FEED_BTC);
+    assert_eq!(btc_data.l_entry_wt, 10_010_337);
+    assert_eq!(btc_data.l_notional, 100_000 * SCALAR_7);
+
+    // Aggregate PnL at $110k (what ADL uses)
+    let close_price: i128 = 110_000 * PRICE_SCALAR;
+    let agg_pnl = close_price * btc_data.l_entry_wt / PRICE_SCALAR - btc_data.l_notional;
+    assert_eq!(agg_pnl, 101_137_070_000);
+
+    // Sum of individual PnLs at $110k
+    let notional: i128 = 10_000 * SCALAR_7;
+    let mut indiv_sum: i128 = 0;
+    for price_i64 in &entry_prices {
+        let entry = *price_i64 as i128;
+        let ratio = (close_price - entry) * PRICE_SCALAR / entry;
+        indiv_sum += notional * ratio / PRICE_SCALAR;
+    }
+    assert_eq!(indiv_sum, 101_137_508_000);
+
+    // Drift is bounded: < 10 token units for 10 positions
+    let diff = agg_pnl - indiv_sum;
+    assert_eq!(diff, -438_000);
+    assert!(diff.abs() < 10 * SCALAR_7, "drift {} exceeds bound", diff);
+}
+
+/// Entry-weight rounding dust after ADL: sequential floor operations leave
+/// ~1 unit residual per position per ADL round in l_entry_wt and l_notional.
+///
+/// ADL scales in bulk: `l_entry_wt = floor(ew * factor / S18)`
+/// Close subtracts per-position: `ew_delta = floor(reduced_notional / entry_price)`
+/// floor(floor(N*f/S18)/P) ≠ floor(floor(N/P)*f/S18) → dust remains.
+#[test]
+fn test_entry_weight_dust_after_adl() {
+    let fixture = setup_zero_fee_fixture(500_000);
+
+    let alice = Address::generate(&fixture.env);
+    let bob = Address::generate(&fixture.env);
+    let carol = Address::generate(&fixture.env);
+
+    for u in [&alice, &bob, &carol] {
+        fixture.token.mint(u, &(200_000 * SCALAR_7));
+    }
+
+    let alice_pos = fixture.open_long(&alice, FEED_BTC, 3_000, 200_000, BTC_PRICE_I64);
+    let carol_pos = fixture.open_long(&carol, FEED_BTC, 25_000, 300_000, 80_000 * PRICE_SCALAR as i64);
+    let bob_pos = fixture.open_short(&bob, FEED_BTC, 25_000, 100_000, BTC_PRICE_I64);
+
+    fixture.open_long(&alice, FEED_ETH, 5_000, 50_000, ETH_2K);
+    fixture.open_short(&bob, FEED_ETH, 5_000, 50_000, ETH_2K);
+    fixture.open_long(&alice, FEED_XLM, 1_000, 10_000, XLM_010);
+    fixture.open_short(&bob, FEED_XLM, 1_000, 10_000, XLM_010);
+
+    fixture.jump(31);
+
+    // Pre-ADL: alice_ew=20M, carol_ew=37.5M → l_entry_wt=57.5M
+    let btc_pre = fixture.trading.get_market_data(&FEED_BTC);
+    assert_eq!(btc_pre.l_entry_wt, 57_500_000);
+
+    // ADL at BTC $200k → factor 923_076_923_076_923_077
+    fixture.trading.update_status(
+        &price_update_all(&fixture, 200_000 * PRICE_SCALAR as i64, ETH_2K, XLM_010),
+    );
+
+    let btc_post = fixture.trading.get_market_data(&FEED_BTC);
+    assert_eq!(btc_post.l_entry_wt, 53_076_923);
+    assert_eq!(btc_post.l_notional, 4_615_384_615_384);
+
+    // Restore Active at $98,900
+    fixture.trading.update_status(
+        &price_update_all(&fixture, 98_900 * PRICE_SCALAR as i64, ETH_2K, XLM_010),
+    );
+
+    // Close all BTC positions
+    let btc_989 = fixture.price_for_feed(FEED_BTC, 98_900 * PRICE_SCALAR as i64);
+    let pay_alice = fixture.trading.close_position(&alice_pos, &btc_989);
+    assert_eq!(pay_alice, 9_692_307_692);
+    let pay_carol = fixture.trading.close_position(&carol_pos, &btc_989);
+    assert_eq!(pay_carol, 904_230_769_230);
+    let pay_bob = fixture.trading.close_position(&bob_pos, &btc_989);
+    assert_eq!(pay_bob, 261_000_000_000);
+
+    // Dust: 1 unit each in l_entry_wt and l_notional
+    let btc_final = fixture.trading.get_market_data(&FEED_BTC);
+    assert_eq!(btc_final.l_entry_wt, 1);
+    assert_eq!(btc_final.l_notional, 1);
+    assert_eq!(btc_final.s_entry_wt, 0);
+    assert_eq!(btc_final.s_notional, 0);
 }

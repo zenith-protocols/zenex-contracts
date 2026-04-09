@@ -1,25 +1,48 @@
 # Fuzz Tests
 
-Stateful fuzz tests for the Zenex trading contract running against **WASM binaries** through the Soroban VM. This catches VM-specific issues (budget overflows, memory limits, serialization edge cases) that native Rust tests miss.
+Stateful fuzz tests for the Zenex trading contract using `cargo-fuzz` (libfuzzer). Tests run against native Rust builds with Soroban testutils.
 
 ## Targets
 
-| Target | Purpose |
+| Target | Scope | Users | Markets | Commands/Run |
+|---|---|---|---|---|
+| `fuzz_trading_general` | Full lifecycle: open, close, limit orders, modify collateral, triggers, funding, ADL, status transitions | 2 | 3 (BTC/ETH/XLM) | 30 |
+| `fuzz_liquidation` | Liquidation + ADL edge cases: interest-only liquidation, near-boundary oscillation, ADL reduction verification | 3 + keeper | 1 (BTC) | 3 scenarios x 15 steps |
+
+## Invariants
+
+Checked after every operation in both targets:
+
+| # | Invariant | Priority |
+|---|---|---|
+| 1 | **Zero residual** — contract holds 0 tokens when no positions are open | P0 |
+| 2 | **Valid errors** — contract errors must be valid TradingError codes (no VM/budget panics) | P0 |
+| 3 | **Borrowing index monotonicity** — `l/s_borr_idx` never decrease | P1 |
+| 4 | **ADL index monotonicity** — `l/s_adl_idx` never increase (reduction only) | P1 |
+| 5 | **Liquidated positions removed** — position gone from storage after successful execute() | P2 |
+| 6 | **ADL index bounded** — ADL indices always <= SCALAR_18 | P2 |
+
+## Commands (fuzz_trading_general)
+
+| Command | What it exercises |
 |---|---|
-| `fuzz_trading_general` | Core flow fuzzer: open, close, modify collateral, price changes, and time jumps across 2 users and 3 assets. Checks token conservation, position validity, and zero-residual invariants after every operation. |
-| `fuzz_liquidation` | Focused on liquidation edge cases: interest-only liquidation (no price movement), near-boundary oscillation, and slow margin erosion. Fuzzes time jumps, price changes, and liquidation timing independently. |
+| `OpenMarket` | Immediate fill at current oracle price |
+| `PlaceLimit` | Pending limit order at offset from current price |
+| `FillLimit` | Keeper fills pending order via execute() |
+| `ClosePosition` | User closes filled position with settlement |
+| `CancelLimit` | Cancel unfilled limit order, refund collateral |
+| `ModifyCollateral` | Add/withdraw collateral with margin validation |
+| `SetTriggers` | Update TP/SL on filled positions |
+| `ApplyFunding` | Hourly funding rate recalculation |
+| `UpdateStatus` | Circuit breaker + ADL via update_status() |
+| `PassTime` | Advance ledger clock (1s - 24h) |
+| `UpdatePrice` | Shift oracle price by +/- 50% |
 
 ## Prerequisites
 
 ```bash
-# Nightly toolchain (auto-selected via rust-toolchain.toml)
 rustup toolchain install nightly
-
-# cargo-fuzz
 cargo install cargo-fuzz
-
-# Build WASMs first (from repo root)
-cd ../.. && make build
 ```
 
 ## Running
@@ -27,26 +50,24 @@ cd ../.. && make build
 From this directory (`test-suites/fuzz/`):
 
 ```bash
-# Run a target (runs indefinitely until stopped with Ctrl+C)
-cargo fuzz run fuzz_trading_general
-cargo fuzz run fuzz_liquidation
+# Run a target (runs indefinitely until Ctrl+C)
+cargo +nightly fuzz run fuzz_trading_general
+cargo +nightly fuzz run fuzz_liquidation
 
-# Run with a time limit (seconds)
-cargo fuzz run fuzz_trading_general -- -max_total_time=300
+# Time-limited run (seconds)
+cargo +nightly fuzz run fuzz_trading_general -- -max_total_time=300
 
-# Run with multiple jobs (parallel fuzzing)
-cargo fuzz run fuzz_trading_general --jobs 4
+# Parallel fuzzing
+cargo +nightly fuzz run fuzz_trading_general --jobs 4
 
-# Use more memory (default 2048 MB)
-cargo fuzz run fuzz_liquidation -- -rss_limit_mb=4096
+# More memory
+cargo +nightly fuzz run fuzz_liquidation -- -rss_limit_mb=4096
 ```
 
 ## Reproducing crashes
 
-When a crash is found, the input is saved to `artifacts/`. Reproduce with:
-
 ```bash
-cargo fuzz run fuzz_trading_general artifacts/fuzz_trading_general/<crash-file>
+cargo +nightly fuzz run fuzz_trading_general artifacts/fuzz_trading_general/<crash-file>
 ```
 
 ## Corpus

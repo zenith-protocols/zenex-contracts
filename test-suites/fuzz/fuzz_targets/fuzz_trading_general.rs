@@ -1,125 +1,248 @@
 #![no_main]
 
-//! Stateful fuzz target for the Zenex trading contract core flow.
+//! Stateful fuzz target for the Zenex trading contract.
 //!
-//! Focuses on the operations that matter for the general path:
-//! open → modify collateral / price change / time jump → close
+//! Exercises the full trading lifecycle across 2 users, 3 markets (BTC/ETH/XLM),
+//! and 30 sequential random commands per run.
 //!
-//! Trigger-based paths (TP/SL, fill, liquidation) require specific price
-//! conditions that random movements almost never hit — those are covered
-//! by the dedicated fuzz_liquidation target instead.
+//! Commands: OpenMarket, PlaceLimit, FillLimit, ClosePosition, CancelLimit,
+//! ModifyCollateral, SetTriggers, ApplyFunding, UpdateStatus, PassTime, UpdatePrice.
 //!
 //! Invariants checked after every operation:
 //! 1. **Zero residual** — contract holds 0 tokens when no positions are open
 //! 2. **Known errors** — contract errors must be valid TradingError codes
+//! 3. **Borrowing index monotonicity** — borrowing indices never decrease
+//!    (funding indices are bidirectional and not checked for monotonicity)
+//! 4. **ADL index monotonicity** — ADL indices never increase (only shrink)
 
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::xdr::ScErrorType;
 use soroban_sdk::{vec as svec, Address};
+use test_suites::constants::{SCALAR_7, SECONDS_IN_HOUR};
+use test_suites::pyth_helper;
 use test_suites::setup::create_fixture_with_data;
-use test_suites::SCALAR_7;
+use test_suites::test_fixture::TestFixture;
+use trading::testutils::{FEED_BTC, FEED_ETH, FEED_XLM, PRICE_SCALAR};
 
-// Base oracle prices matching the test fixture setup
-const BTC_BASE: i128 = 100_000_0000000; // $100,000
-const ETH_BASE: i128 = 2_000_0000000; // $2,000
-const XLM_BASE: i128 = 0_1000000; // $0.10
+// ── Constants ───────────────────────────────────────────────────────────────
 
-/// Top-level fuzz input: a fixed sequence of 20 random commands.
+const FEEDS: [u32; 3] = [FEED_BTC, FEED_ETH, FEED_XLM];
+
+/// Initial oracle prices in Pyth raw format (exponent -8).
+const INITIAL_PRICES: [i64; 3] = [
+    100_000 * PRICE_SCALAR as i64, // BTC $100k
+    2_000 * PRICE_SCALAR as i64,   // ETH $2k
+    PRICE_SCALAR as i64 / 10,      // XLM $0.10
+];
+
+// ── Fuzz Input ──────────────────────────────────────────────────────────────
+
 #[derive(Arbitrary, Debug)]
 struct FuzzInput {
-    commands: [FuzzCommand; 20],
+    commands: [FuzzCommand; 30],
 }
 
-/// A single trading operation to execute against the contract.
 #[derive(Arbitrary, Debug, Clone)]
 enum FuzzCommand {
-    /// Open a new market position
-    OpenPosition {
+    /// Open a market order (filled immediately at current price).
+    OpenMarket {
         user_idx: bool,
         asset_idx: u8,
         collateral_raw: u16,
         leverage_raw: u8,
         is_long: bool,
     },
-    /// Close an existing position
+    /// Place a limit order (pending, needs fill via execute).
+    PlaceLimit {
+        user_idx: bool,
+        asset_idx: u8,
+        collateral_raw: u16,
+        leverage_raw: u8,
+        is_long: bool,
+        /// Entry price offset in bps from current price (-2000 to +2000).
+        price_offset_bps: i16,
+    },
+    /// Attempt to fill pending limit orders via execute().
+    FillLimit {
+        position_idx: u8,
+    },
+    /// Close a filled position.
     ClosePosition {
         position_idx: u8,
     },
-    /// Add or remove collateral from an existing position
+    /// Cancel a pending limit order.
+    CancelLimit {
+        position_idx: u8,
+    },
+    /// Add or remove collateral from a filled position.
     ModifyCollateral {
         position_idx: u8,
         amount_raw: u16,
         is_increase: bool,
     },
-    /// Advance the ledger clock and refresh oracle prices
+    /// Set or update take-profit / stop-loss on a filled position.
+    SetTriggers {
+        position_idx: u8,
+        /// TP offset from entry in bps (positive for longs, negative for shorts).
+        tp_offset_bps: u16,
+        /// SL offset from entry in bps (negative for longs, positive for shorts).
+        sl_offset_bps: u16,
+    },
+    /// Trigger hourly funding rate recalculation.
+    ApplyFunding,
+    /// Permissionless circuit breaker / ADL check.
+    UpdateStatus,
+    /// Advance the ledger clock.
     PassTime {
         seconds: u16,
     },
-    /// Change an asset's oracle price
+    /// Change an asset's oracle price.
     UpdatePrice {
         asset_idx: u8,
         change_bps: i16,
     },
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+// ── Position Tracking ───────────────────────────────────────────────────────
 
-/// All valid TradingError codes from errors.rs.
+#[derive(Clone, Debug)]
+struct TrackedPosition {
+    id: u32,
+    feed_id: u32,
+    is_filled: bool,
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
+/// All valid TradingError codes from trading/src/errors.rs.
 const VALID_ERROR_CODES: &[u32] = &[
-    1,                                                          // Unauthorized
-    700, 701, 702, 703, 704,                                    // Configuration
-    710, 711, 712,                                              // Market
-    720, 721,                                                   // Oracle/Price
-    730, 731, 732, 733, 734, 735, 736, 737, 738, 739, 740,     // Position
-    741, 742, 743, 744, 745, 746, 747, 748,                     // Position (cont)
-    750, 751,                                                   // Action/Request
-    760, 761, 762,                                              // Status
-    770,                                                        // Utilization
+    1,   // Unauthorized
+    700, 701, 702, 703, // Config & Market
+    710, 711, // Price
+    720, 721, 722, 723, 724, 725, 726, 727, 728, 729, 730, 731, 732, 733, // Position
+    740, 741, 742, // Contract Status
+    750, 751, 752, // Utilization & Funding
 ];
 
-/// Verify that a try_* result is not a host error, raw panic, or unknown error code.
-///
-/// In WASM mode, contract errors from `panic_with_error!` arrive as
-/// `Err(Ok(Error))` with `ScErrorType::Contract` — these are expected validation.
-/// Only non-contract error types (WasmVm, Budget, Storage, etc.) indicate a bug.
 fn verify_no_host_error<T, E: core::fmt::Debug>(
     result: &Result<Result<T, E>, Result<soroban_sdk::Error, soroban_sdk::InvokeError>>,
     context: &str,
 ) {
     match result {
-        Ok(Ok(_)) => {}
-        Ok(Err(_)) => {}
+        Ok(Ok(_)) | Ok(Err(_)) => {}
         Err(Ok(e)) if e.is_type(ScErrorType::Contract) => {
             let code = e.get_code();
             assert!(
                 VALID_ERROR_CODES.contains(&code),
-                "[{}] Unknown contract error code: {} — not a valid TradingError",
+                "[{}] Unknown contract error code: {}",
                 context, code
             );
         }
-        Err(Ok(e)) => panic!(
-            "[{}] Host error: {:?} — not a contract error, likely a VM/budget/storage issue",
-            context, e
-        ),
-        Err(Err(e)) => panic!(
-            "[{}] InvokeError: {:?} — contract should use panic_with_error!, not raw panic",
-            context, e
-        ),
+        Err(Ok(e)) => panic!("[{}] Host error: {:?}", context, e),
+        Err(Err(e)) => panic!("[{}] InvokeError: {:?}", context, e),
     }
 }
 
-/// Returns true if the result is a success.
 fn is_ok<T, E>(
     result: &Result<Result<T, E>, Result<soroban_sdk::Error, soroban_sdk::InvokeError>>,
 ) -> bool {
     matches!(result, Ok(Ok(_)))
 }
 
+/// Build a signed multi-feed price update at the current ledger timestamp.
+fn build_prices(fixture: &TestFixture, prices: &[i64; 3]) -> soroban_sdk::Bytes {
+    let ts = fixture.env.ledger().timestamp();
+    pyth_helper::build_price_update(
+        &fixture.env,
+        &fixture.signing_key,
+        &[
+            pyth_helper::FeedInput { feed_id: FEED_BTC, price: prices[0], exponent: -8, confidence: 0 },
+            pyth_helper::FeedInput { feed_id: FEED_ETH, price: prices[1], exponent: -8, confidence: 0 },
+            pyth_helper::FeedInput { feed_id: FEED_XLM, price: prices[2], exponent: -8, confidence: 0 },
+        ],
+        ts,
+    )
+}
+
+/// Build a single-feed signed price update at the current ledger timestamp.
+fn build_price(fixture: &TestFixture, feed_id: u32, price: i64) -> soroban_sdk::Bytes {
+    fixture.price_for_feed(feed_id, price)
+}
+
+/// Look up the price array index for a given feed_id.
+fn feed_idx(feed_id: u32) -> usize {
+    FEEDS.iter().position(|&f| f == feed_id)
+        .expect("tracked position has unknown feed_id")
+}
+
+/// Index snapshot for monotonicity checks.
+#[derive(Clone, Default)]
+struct IndexSnapshot {
+    l_borr_idx: [i128; 3],
+    s_borr_idx: [i128; 3],
+    l_fund_idx: [i128; 3],
+    s_fund_idx: [i128; 3],
+    l_adl_idx: [i128; 3],
+    s_adl_idx: [i128; 3],
+}
+
+fn take_snapshot(fixture: &TestFixture) -> IndexSnapshot {
+    let mut snap = IndexSnapshot::default();
+    for (i, &feed) in FEEDS.iter().enumerate() {
+        let md = fixture.trading.get_market_data(&feed);
+        snap.l_borr_idx[i] = md.l_borr_idx;
+        snap.s_borr_idx[i] = md.s_borr_idx;
+        snap.l_fund_idx[i] = md.l_fund_idx;
+        snap.s_fund_idx[i] = md.s_fund_idx;
+        snap.l_adl_idx[i] = md.l_adl_idx;
+        snap.s_adl_idx[i] = md.s_adl_idx;
+    }
+    snap
+}
+
+fn check_invariants(
+    fixture: &TestFixture,
+    positions: &[TrackedPosition],
+    prev: &IndexSnapshot,
+) -> IndexSnapshot {
+    // 1. Zero residual when no positions open
+    if positions.is_empty() {
+        let bal = fixture.token.balance(&fixture.trading.address);
+        assert_eq!(bal, 0, "Contract holds {} tokens with no open positions", bal);
+    }
+
+    // 2. Index monotonicity
+    let curr = take_snapshot(fixture);
+    for i in 0..3 {
+        // Borrowing indices never decrease
+        assert!(
+            curr.l_borr_idx[i] >= prev.l_borr_idx[i],
+            "l_borr_idx[{}] decreased: {} -> {}", i, prev.l_borr_idx[i], curr.l_borr_idx[i]
+        );
+        assert!(
+            curr.s_borr_idx[i] >= prev.s_borr_idx[i],
+            "s_borr_idx[{}] decreased: {} -> {}", i, prev.s_borr_idx[i], curr.s_borr_idx[i]
+        );
+
+        // ADL indices never increase (reduction only)
+        assert!(
+            curr.l_adl_idx[i] <= prev.l_adl_idx[i],
+            "l_adl_idx[{}] increased: {} -> {}", i, prev.l_adl_idx[i], curr.l_adl_idx[i]
+        );
+        assert!(
+            curr.s_adl_idx[i] <= prev.s_adl_idx[i],
+            "s_adl_idx[{}] increased: {} -> {}", i, prev.s_adl_idx[i], curr.s_adl_idx[i]
+        );
+    }
+    curr
+}
+
+// ── Fuzz Target ─────────────────────────────────────────────────────────────
+
 fuzz_target!(|input: FuzzInput| {
-    // ===== SETUP =====
-    let fixture = create_fixture_with_data(true);
+    let fixture = create_fixture_with_data();
 
     let user0 = Address::generate(&fixture.env);
     let user1 = Address::generate(&fixture.env);
@@ -128,63 +251,90 @@ fuzz_target!(|input: FuzzInput| {
     fixture.token.mint(&user0, &(10_000_000 * SCALAR_7));
     fixture.token.mint(&user1, &(10_000_000 * SCALAR_7));
 
-    let mut positions: Vec<u32> = Vec::new();
-    let mut prices = [BTC_BASE, ETH_BASE, XLM_BASE];
+    let mut positions: Vec<TrackedPosition> = Vec::new();
+    let mut prices = INITIAL_PRICES;
+    let mut last_funding_time: u64 = 0;
+    let mut snapshot = take_snapshot(&fixture);
 
-    // ===== EXECUTE COMMAND SEQUENCE =====
     for cmd in &input.commands {
         match cmd {
-            FuzzCommand::OpenPosition {
-                user_idx,
-                asset_idx,
-                collateral_raw,
-                leverage_raw,
-                is_long,
+            FuzzCommand::OpenMarket {
+                user_idx, asset_idx, collateral_raw, leverage_raw, is_long,
             } => {
                 let user = users[*user_idx as usize];
-                let asset = (*asset_idx % 3) as u32;
+                let feed = FEEDS[(*asset_idx % 3) as usize];
                 let collateral = ((*collateral_raw as i128).max(10).min(10_000)) * SCALAR_7;
                 let leverage = (*leverage_raw as i128).max(2).min(100);
                 let notional = collateral * leverage;
+                let price = prices[(*asset_idx % 3) as usize];
+                let price_bytes = build_price(&fixture, feed, price);
 
-                // Use current oracle price as entry_price so the limit order is immediately fillable
-                let entry_price = prices[asset as usize];
-                let result = fixture.trading.try_open_position(
-                    user, &asset, &collateral, &notional, is_long, &entry_price, &0i128, &0i128,
+                let result = fixture.trading.try_open_market(
+                    user, &feed, &collateral, &notional, is_long, &0i128, &0i128, &price_bytes,
                 );
-                verify_no_host_error(&result, "OpenPosition");
+                verify_no_host_error(&result, "OpenMarket");
 
-                if let Ok(Ok((pos_id, _fee))) = result {
-                    // Fill the pending limit order immediately
-                    let fill_result = fixture.trading.try_execute(
-                        user,
-                        &svec![&fixture.env, pos_id],
-                    );
-                    verify_no_host_error(&fill_result, "FillPosition");
+                if let Ok(Ok(pos_id)) = result {
+                    positions.push(TrackedPosition { id: pos_id, feed_id: feed, is_filled: true });
+                }
+            }
 
-                    let filled = if let Ok(Ok(results)) = &fill_result {
-                        results.get(0) == Some(0)
-                    } else {
-                        false
-                    };
+            FuzzCommand::PlaceLimit {
+                user_idx, asset_idx, collateral_raw, leverage_raw, is_long, price_offset_bps,
+            } => {
+                let user = users[*user_idx as usize];
+                let feed = FEEDS[(*asset_idx % 3) as usize];
+                let collateral = ((*collateral_raw as i128).max(10).min(10_000)) * SCALAR_7;
+                let leverage = (*leverage_raw as i128).max(2).min(100);
+                let notional = collateral * leverage;
+                let base_price = prices[(*asset_idx % 3) as usize] as i128;
+                let offset = (*price_offset_bps as i128).max(-2000).min(2000);
+                let entry_price = base_price + base_price * offset / 10_000;
+                if entry_price <= 0 { continue; }
 
-                    if filled {
-                        positions.push(pos_id);
-                    } else {
-                        // Cancel the unfilled limit order to avoid residual balance
-                        let _ = fixture.trading.try_close_position(&pos_id);
-                    }
+                let result = fixture.trading.try_place_limit(
+                    user, &feed, &collateral, &notional, is_long,
+                    &entry_price, &0i128, &0i128,
+                );
+                verify_no_host_error(&result, "PlaceLimit");
+
+                if let Ok(Ok(pos_id)) = result {
+                    positions.push(TrackedPosition { id: pos_id, feed_id: feed, is_filled: false });
+                }
+            }
+
+            FuzzCommand::FillLimit { position_idx } => {
+                let pending: Vec<usize> = positions.iter().enumerate()
+                    .filter(|(_, p)| !p.is_filled)
+                    .map(|(i, _)| i)
+                    .collect();
+                if pending.is_empty() { continue; }
+                let idx = pending[(*position_idx as usize) % pending.len()];
+                let pos = &positions[idx];
+                let price_bytes = build_price(&fixture, pos.feed_id, prices[feed_idx(pos.feed_id)]);
+                let keeper = Address::generate(&fixture.env);
+
+                let result = fixture.trading.try_execute(
+                    &keeper, &svec![&fixture.env, pos.id], &price_bytes,
+                );
+                verify_no_host_error(&result, "FillLimit");
+
+                if is_ok(&result) {
+                    positions[idx].is_filled = true;
                 }
             }
 
             FuzzCommand::ClosePosition { position_idx } => {
-                if positions.is_empty() {
-                    continue;
-                }
-                let idx = (*position_idx as usize) % positions.len();
-                let pos_id = positions[idx];
+                let filled: Vec<usize> = positions.iter().enumerate()
+                    .filter(|(_, p)| p.is_filled)
+                    .map(|(i, _)| i)
+                    .collect();
+                if filled.is_empty() { continue; }
+                let idx = filled[(*position_idx as usize) % filled.len()];
+                let pos = &positions[idx];
+                let price_bytes = build_price(&fixture, pos.feed_id, prices[feed_idx(pos.feed_id)]);
 
-                let result = fixture.trading.try_close_position(&pos_id);
+                let result = fixture.trading.try_close_position(&pos.id, &price_bytes);
                 verify_no_host_error(&result, "ClosePosition");
 
                 if is_ok(&result) {
@@ -192,79 +342,114 @@ fuzz_target!(|input: FuzzInput| {
                 }
             }
 
+            FuzzCommand::CancelLimit { position_idx } => {
+                let pending: Vec<usize> = positions.iter().enumerate()
+                    .filter(|(_, p)| !p.is_filled)
+                    .map(|(i, _)| i)
+                    .collect();
+                if pending.is_empty() { continue; }
+                let idx = pending[(*position_idx as usize) % pending.len()];
+                let pos_id = positions[idx].id;
+
+                let result = fixture.trading.try_cancel_position(&pos_id);
+                verify_no_host_error(&result, "CancelLimit");
+
+                if is_ok(&result) {
+                    positions.remove(idx);
+                }
+            }
+
             FuzzCommand::ModifyCollateral {
-                position_idx,
-                amount_raw,
-                is_increase,
+                position_idx, amount_raw, is_increase,
             } => {
-                if positions.is_empty() {
-                    continue;
-                }
-                let idx = (*position_idx as usize) % positions.len();
-                let pos_id = positions[idx];
+                let filled: Vec<usize> = positions.iter().enumerate()
+                    .filter(|(_, p)| p.is_filled)
+                    .map(|(i, _)| i)
+                    .collect();
+                if filled.is_empty() { continue; }
+                let idx = filled[(*position_idx as usize) % filled.len()];
+                let pos = &positions[idx];
 
-                let pos_result = fixture.trading.try_get_position(&pos_id);
-                if let Ok(Ok(pos)) = pos_result {
-                    let delta = ((*amount_raw as i128).max(1).min(5000)) * SCALAR_7;
-                    let new_collateral = if *is_increase {
-                        pos.collateral + delta
-                    } else {
-                        (pos.collateral - delta).max(SCALAR_7)
-                    };
+                let pos_data = fixture.trading.get_position(&pos.id);
+                let delta = ((*amount_raw as i128).max(1).min(5_000)) * SCALAR_7;
+                let new_collateral = if *is_increase {
+                    pos_data.col + delta
+                } else {
+                    (pos_data.col - delta).max(SCALAR_7)
+                };
 
-                    let result = fixture.trading.try_modify_collateral(&pos_id, &new_collateral);
-                    verify_no_host_error(&result, "ModifyCollateral");
+                let price_bytes = build_price(&fixture, pos.feed_id, prices[feed_idx(pos.feed_id)]);
+                let result = fixture.trading.try_modify_collateral(&pos.id, &new_collateral, &price_bytes);
+                verify_no_host_error(&result, "ModifyCollateral");
+            }
+
+            FuzzCommand::SetTriggers {
+                position_idx, tp_offset_bps, sl_offset_bps,
+            } => {
+                let filled: Vec<usize> = positions.iter().enumerate()
+                    .filter(|(_, p)| p.is_filled)
+                    .map(|(i, _)| i)
+                    .collect();
+                if filled.is_empty() { continue; }
+                let idx = filled[(*position_idx as usize) % filled.len()];
+                let pos = &positions[idx];
+                let pos_data = fixture.trading.get_position(&pos.id);
+
+                // Compute TP/SL based on entry price and offsets
+                let tp_bps = (*tp_offset_bps as i128).min(5000).max(100);
+                let sl_bps = (*sl_offset_bps as i128).min(5000).max(100);
+
+                let (tp, sl) = if pos_data.long {
+                    (
+                        pos_data.entry_price + pos_data.entry_price * tp_bps / 10_000,
+                        pos_data.entry_price - pos_data.entry_price * sl_bps / 10_000,
+                    )
+                } else {
+                    (
+                        pos_data.entry_price - pos_data.entry_price * tp_bps / 10_000,
+                        pos_data.entry_price + pos_data.entry_price * sl_bps / 10_000,
+                    )
+                };
+
+                let result = fixture.trading.try_set_triggers(&pos.id, &tp, &sl);
+                verify_no_host_error(&result, "SetTriggers");
+            }
+
+            FuzzCommand::ApplyFunding => {
+                let now = fixture.env.ledger().timestamp();
+                // Only attempt if at least 1 hour has passed (avoid FundingTooEarly)
+                if now.saturating_sub(last_funding_time) >= SECONDS_IN_HOUR {
+                    let result = fixture.trading.try_apply_funding();
+                    verify_no_host_error(&result, "ApplyFunding");
+                    if is_ok(&result) {
+                        last_funding_time = now;
+                    }
                 }
+            }
+
+            FuzzCommand::UpdateStatus => {
+                let price_bytes = build_prices(&fixture, &prices);
+                let result = fixture.trading.try_update_status(&price_bytes);
+                verify_no_host_error(&result, "UpdateStatus");
             }
 
             FuzzCommand::PassTime { seconds } => {
-                let secs = (*seconds as u64).max(1).min(86400);
+                let secs = (*seconds as u64).max(1).min(86_400);
                 fixture.jump(secs);
-
-                // Refresh oracle prices to prevent PriceStale errors
-                fixture.oracle.set_price_stable(&svec![
-                    &fixture.env,
-                    1_0000000,
-                    prices[0],
-                    prices[1],
-                    prices[2],
-                ]);
             }
 
-            FuzzCommand::UpdatePrice {
-                asset_idx,
-                change_bps,
-            } => {
+            FuzzCommand::UpdatePrice { asset_idx, change_bps } => {
                 let idx = (*asset_idx % 3) as usize;
-                let bps = (*change_bps as i128).max(-5000).min(5000);
+                let bps = (*change_bps as i64).max(-5000).min(5000);
                 let base = prices[idx];
                 let new_price = base + base * bps / 10_000;
 
-                if new_price <= 0 {
-                    continue;
+                if new_price > 0 {
+                    prices[idx] = new_price;
                 }
-
-                prices[idx] = new_price;
-
-                fixture.oracle.set_price_stable(&svec![
-                    &fixture.env,
-                    1_0000000,
-                    prices[0],
-                    prices[1],
-                    prices[2],
-                ]);
             }
         }
 
-        // ===== INVARIANT CHECK =====
-        // Zero residual: contract must hold 0 tokens when no positions are open
-        if positions.is_empty() {
-            let contract_balance = fixture.token.balance(&fixture.trading.address);
-            assert_eq!(
-                contract_balance, 0,
-                "Contract holds {} tokens with no open positions",
-                contract_balance
-            );
-        }
+        snapshot = check_invariants(&fixture, &positions, &snapshot);
     }
 });
