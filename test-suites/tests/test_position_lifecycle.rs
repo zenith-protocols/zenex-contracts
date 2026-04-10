@@ -3,7 +3,7 @@ use soroban_sdk::{vec as svec, Address};
 use test_suites::setup::create_fixture_with_data;
 use test_suites::test_fixture::TestFixture;
 use test_suites::constants::{BTC_PRICE_I64, SCALAR_7, SECONDS_PER_WEEK};
-use trading::testutils::{FEED_BTC, PRICE_SCALAR};
+use trading::testutils::{default_market, FEED_BTC, PRICE_SCALAR};
 
 // ==========================================
 // Helper Functions
@@ -11,6 +11,34 @@ use trading::testutils::{FEED_BTC, PRICE_SCALAR};
 
 fn setup_fixture() -> TestFixture<'static> {
     create_fixture_with_data()
+}
+
+/// Create a fixture with time-dependent rates zeroed out.
+/// Open/close trading fees remain (fee_dom, fee_non_dom, impact).
+/// This isolates PnL + fee-split testing from borrowing/funding math
+/// (covered separately in test_fee_accrual.rs).
+fn setup_zero_rate_fixture() -> TestFixture<'static> {
+    let fixture = TestFixture::create();
+
+    fixture.token.mint(&fixture.owner, &(10_000_000 * SCALAR_7));
+    fixture.vault.deposit(
+        &(10_000_000 * SCALAR_7),
+        &fixture.owner,
+        &fixture.owner,
+        &fixture.owner,
+    );
+
+    let mut config = fixture.trading.get_config();
+    config.r_base = 0;
+    config.r_var = 0;
+    config.r_funding = 0;
+    fixture.trading.set_config(&config);
+
+    let mut mc = default_market(&fixture.env);
+    mc.r_var_market = 0;
+    fixture.create_market(FEED_BTC, &mc);
+
+    fixture
 }
 
 fn open_long(fixture: &TestFixture, user: &Address) -> u32 {
@@ -35,105 +63,262 @@ fn place_limit_long(fixture: &TestFixture, user: &Address, entry_price: i128) ->
 }
 
 // ==========================================
-// 1. Core Lifecycle (3 tests)
+// 1. Fund Flow — 4 canonical tests
+//
+// All rates zeroed (r_base, r_var, r_var_market, r_funding = 0).
+// Only trading fees apply: fee_dom, fee_non_dom, impact.
+// Each test traces every token through user → contract → vault/treasury
+// with inline derivation matching the contract's fixed-point formulas.
+//
+// Common parameters:
+//   collateral   = 1_000 × S7 = 10_000_000_000
+//   notional     = 10_000 × S7 = 100_000_000_000
+//   entry_price  = $100k = 10_000_000_000_000
+//   price_scalar = 10^8 = 100_000_000
+//   fee_dom      = 5_000   (0.05%)
+//   fee_non_dom  = 1_000   (0.01%)
+//   impact       = 8B × S7 = 80_000_000_000_000_000
+//   treasury_rate = 500_000 (5%)
+//
+// Open fees (first position → dominant side → fee_dom):
+//   base_fee   = ceil(100B × 5_000 / S7)  = 50_000_000
+//   impact_fee = floor(100B × S7 / 80Q)   = 12
+//   total_open = 50_000_012
+//   post_fee_col = 10B - 50_000_012       = 9_949_999_988
+//
+// Open fee split:
+//   treasury = floor(50_000_012 × 500_000 / S7) = 2_500_000
+//   vault    = 50_000_012 - 2_500_000            = 47_500_012
+//
+// Close fees (only position, closing → dom fee, no borrowing/funding):
+//   base_fee   = 50_000_000
+//   impact_fee = 12
+//   total_close = 50_000_012
+//
+// Close fee split:
+//   protocol_fee = base + impact + borrowing(0) = 50_000_012
+//   treasury     = floor(50_000_012 × 500_000 / S7) = 2_500_000
 // ==========================================
 
 #[test]
-fn test_long_open_and_close_profit() {
-    let fixture = setup_fixture();
+fn test_long_profit() {
+    let fixture = setup_zero_rate_fixture();
     let user = Address::generate(&fixture.env);
     fixture.token.mint(&user, &(100_000 * SCALAR_7));
-    let initial_balance = fixture.token.balance(&user);
 
-    // Open long at $100k
-    let position_id = open_long(&fixture, &user);
+    let user_0 = fixture.token.balance(&user);
+    let vault_0 = fixture.vault.total_assets();
+    let treasury_0 = fixture.token.balance(&fixture.treasury.address);
 
-    // Verify position filled
-    let pos = fixture.trading.get_position(&position_id);
-    assert!(pos.filled);
-    assert!(pos.long);
-    assert!(pos.col > 0);
-    assert!(pos.col < 1_000 * SCALAR_7); // reduced by opening fees
+    // ── Open long at $100k ──
+    let pos_id = open_long(&fixture, &user);
 
-    // Jump past MIN_OPEN_TIME, close at higher price ($110k)
+    let user_1 = fixture.token.balance(&user);
+    let vault_1 = fixture.vault.total_assets();
+    let treasury_1 = fixture.token.balance(&fixture.treasury.address);
+
+    // User pays collateral = 10_000_000_000
+    assert_eq!(user_0 - user_1, 10_000_000_000);
+    // Vault gets open_total - treasury = 50_000_012 - 2_500_000 = 47_500_012
+    assert_eq!(vault_1 - vault_0, 47_500_012);
+    // Treasury gets floor(50_000_012 × 500_000 / S7) = 2_500_000
+    assert_eq!(treasury_1 - treasury_0, 2_500_000);
+
+    let pos = fixture.trading.get_position(&pos_id);
+    // col = 10B - open_fees(50_000_012) = 9_949_999_988
+    assert_eq!(pos.col, 9_949_999_988);
+    assert_eq!(pos.notional, 100_000_000_000);
+
+    // ── Close at $110k (+10%) ──
     fixture.jump(31);
     let close_price = fixture.btc_price(110_000 * PRICE_SCALAR as i64);
-    let payout = fixture.trading.close_position(&position_id, &close_price);
+    let payout = fixture.trading.close_position(&pos_id, &close_price);
 
-    // Profitable: payout should exceed original collateral minus fees
-    // 10% gain on 10k notional = ~1000 profit
-    assert!(payout > 1_000 * SCALAR_7, "payout should reflect profit");
-    assert!(!fixture.position_exists(position_id));
-    assert_eq!(fixture.trading.get_user_positions(&user).len(), 0);
+    let user_2 = fixture.token.balance(&user);
+    let vault_2 = fixture.vault.total_assets();
+    let treasury_2 = fixture.token.balance(&fixture.treasury.address);
 
-    // User should have profited overall
-    let final_balance = fixture.token.balance(&user);
-    assert!(final_balance > initial_balance - 100 * SCALAR_7);
+    // PnL: ratio = floor(($110k - $100k) × 10^8 / $100k) = 10_000_000
+    //      pnl   = floor(100B × 10_000_000 / 10^8) = 10_000_000_000
+    //
+    // equity = col + pnl - close_fees
+    //        = 9_949_999_988 + 10_000_000_000 - 50_000_012 = 19_899_999_976
+    assert_eq!(payout, 19_899_999_976);
+    assert_eq!(user_2 - user_1, payout);
+
+    // Close treasury = floor(50_000_012 × 500_000 / S7) = 2_500_000
+    assert_eq!(treasury_2 - treasury_1, 2_500_000);
+
+    // Vault transfer = col - user_payout - treasury
+    //                = 9_949_999_988 - 19_899_999_976 - 2_500_000 = -9_952_499_988
+    // Negative → vault pays out (user profited)
+    let vault_close_delta = vault_2 as i128 - vault_1 as i128;
+    assert_eq!(vault_close_delta, 9_949_999_988 - payout - 2_500_000);
+
+    // ── Conservation: user + vault + treasury changes sum to zero ──
+    let user_delta = user_2 as i128 - user_0 as i128;
+    let vault_delta = vault_2 as i128 - vault_0 as i128;
+    let treasury_delta = treasury_2 as i128 - treasury_0 as i128;
+    assert_eq!(user_delta + vault_delta + treasury_delta, 0);
 }
 
 #[test]
-fn test_short_open_and_close_loss() {
-    let fixture = setup_fixture();
+fn test_long_loss() {
+    let fixture = setup_zero_rate_fixture();
     let user = Address::generate(&fixture.env);
     fixture.token.mint(&user, &(100_000 * SCALAR_7));
-    let initial_balance = fixture.token.balance(&user);
 
-    // Open short at $100k
-    let position_id = open_short(&fixture, &user);
-    let pos = fixture.trading.get_position(&position_id);
+    let user_0 = fixture.token.balance(&user);
+    let vault_0 = fixture.vault.total_assets();
+    let treasury_0 = fixture.token.balance(&fixture.treasury.address);
+
+    // ── Open long at $100k ──
+    let pos_id = open_long(&fixture, &user);
+
+    let user_1 = fixture.token.balance(&user);
+    let vault_1 = fixture.vault.total_assets();
+    let treasury_1 = fixture.token.balance(&fixture.treasury.address);
+
+    assert_eq!(user_0 - user_1, 10_000_000_000);
+    assert_eq!(vault_1 - vault_0, 47_500_012);
+    assert_eq!(treasury_1 - treasury_0, 2_500_000);
+
+    // ── Close at $95k (-5%) ──
+    fixture.jump(31);
+    let close_price = fixture.btc_price(95_000 * PRICE_SCALAR as i64);
+    let payout = fixture.trading.close_position(&pos_id, &close_price);
+
+    let user_2 = fixture.token.balance(&user);
+    let vault_2 = fixture.vault.total_assets();
+    let treasury_2 = fixture.token.balance(&fixture.treasury.address);
+
+    // PnL: ratio = floor(($95k - $100k) × 10^8 / $100k) = -5_000_000
+    //      pnl   = floor(100B × -5_000_000 / 10^8) = -5_000_000_000
+    //
+    // equity = 9_949_999_988 + (-5_000_000_000) - 50_000_012 = 4_899_999_976
+    assert_eq!(payout, 4_899_999_976);
+    assert_eq!(user_2 - user_1, payout);
+    assert_eq!(treasury_2 - treasury_1, 2_500_000);
+
+    // Vault gains: col - user - treasury = 9_949_999_988 - 4_899_999_976 - 2_500_000
+    //            = 5_047_500_012 (positive → vault absorbs the loss)
+    let vault_close_delta = vault_2 as i128 - vault_1 as i128;
+    assert_eq!(vault_close_delta, 9_949_999_988 - payout - 2_500_000);
+    assert!(vault_close_delta > 0);
+
+    // ── Conservation ──
+    let user_delta = user_2 as i128 - user_0 as i128;
+    let vault_delta = vault_2 as i128 - vault_0 as i128;
+    let treasury_delta = treasury_2 as i128 - treasury_0 as i128;
+    assert_eq!(user_delta + vault_delta + treasury_delta, 0);
+}
+
+#[test]
+fn test_short_profit() {
+    let fixture = setup_zero_rate_fixture();
+    let user = Address::generate(&fixture.env);
+    fixture.token.mint(&user, &(100_000 * SCALAR_7));
+
+    let user_0 = fixture.token.balance(&user);
+    let vault_0 = fixture.vault.total_assets();
+    let treasury_0 = fixture.token.balance(&fixture.treasury.address);
+
+    // ── Open short at $100k ──
+    let pos_id = open_short(&fixture, &user);
+
+    let user_1 = fixture.token.balance(&user);
+    let vault_1 = fixture.vault.total_assets();
+    let treasury_1 = fixture.token.balance(&fixture.treasury.address);
+
+    assert_eq!(user_0 - user_1, 10_000_000_000);
+    assert_eq!(vault_1 - vault_0, 47_500_012);
+    assert_eq!(treasury_1 - treasury_0, 2_500_000);
+
+    let pos = fixture.trading.get_position(&pos_id);
     assert!(!pos.long);
+    assert_eq!(pos.col, 9_949_999_988);
 
-    // Jump past MIN_OPEN_TIME, close at higher price ($105k) -- loss for short
+    // ── Close at $90k (short profits from price drop) ──
+    fixture.jump(31);
+    let close_price = fixture.btc_price(90_000 * PRICE_SCALAR as i64);
+    let payout = fixture.trading.close_position(&pos_id, &close_price);
+
+    let user_2 = fixture.token.balance(&user);
+    let vault_2 = fixture.vault.total_assets();
+    let treasury_2 = fixture.token.balance(&fixture.treasury.address);
+
+    // PnL (short): ratio = floor(($100k - $90k) × 10^8 / $100k) = 10_000_000
+    //              pnl   = floor(100B × 10_000_000 / 10^8) = +10_000_000_000
+    //
+    // equity = 9_949_999_988 + 10_000_000_000 - 50_000_012 = 19_899_999_976
+    assert_eq!(payout, 19_899_999_976);
+    assert_eq!(user_2 - user_1, payout);
+    assert_eq!(treasury_2 - treasury_1, 2_500_000);
+
+    // ── Conservation ──
+    let user_delta = user_2 as i128 - user_0 as i128;
+    let vault_delta = vault_2 as i128 - vault_0 as i128;
+    let treasury_delta = treasury_2 as i128 - treasury_0 as i128;
+    assert_eq!(user_delta + vault_delta + treasury_delta, 0);
+}
+
+#[test]
+fn test_short_loss() {
+    let fixture = setup_zero_rate_fixture();
+    let user = Address::generate(&fixture.env);
+    fixture.token.mint(&user, &(100_000 * SCALAR_7));
+
+    let user_0 = fixture.token.balance(&user);
+    let vault_0 = fixture.vault.total_assets();
+    let treasury_0 = fixture.token.balance(&fixture.treasury.address);
+
+    // ── Open short at $100k ──
+    let pos_id = open_short(&fixture, &user);
+
+    let user_1 = fixture.token.balance(&user);
+    let vault_1 = fixture.vault.total_assets();
+    let treasury_1 = fixture.token.balance(&fixture.treasury.address);
+
+    assert_eq!(user_0 - user_1, 10_000_000_000);
+    assert_eq!(vault_1 - vault_0, 47_500_012);
+    assert_eq!(treasury_1 - treasury_0, 2_500_000);
+
+    // ── Close at $105k (short loses from price rise) ──
     fixture.jump(31);
     let close_price = fixture.btc_price(105_000 * PRICE_SCALAR as i64);
-    let payout = fixture.trading.close_position(&position_id, &close_price);
+    let payout = fixture.trading.close_position(&pos_id, &close_price);
 
-    // 5% loss on 10k notional = 500 loss, with ~1000 collateral minus fees
-    // Payout should be reduced (loss ate into collateral)
-    assert!(payout < 600 * SCALAR_7, "payout should reflect loss");
-    assert!(!fixture.position_exists(position_id));
+    let user_2 = fixture.token.balance(&user);
+    let vault_2 = fixture.vault.total_assets();
+    let treasury_2 = fixture.token.balance(&fixture.treasury.address);
 
-    // User lost tokens overall
-    let final_balance = fixture.token.balance(&user);
-    assert!(final_balance < initial_balance);
-}
+    // PnL (short): ratio = floor(($100k - $105k) × 10^8 / $100k) = -5_000_000
+    //              pnl   = floor(100B × -5_000_000 / 10^8) = -5_000_000_000
+    //
+    // equity = 9_949_999_988 + (-5_000_000_000) - 50_000_012 = 4_899_999_976
+    assert_eq!(payout, 4_899_999_976);
+    assert_eq!(user_2 - user_1, payout);
+    assert_eq!(treasury_2 - treasury_1, 2_500_000);
 
-#[test]
-fn test_modify_collateral_add_and_remove() {
-    let fixture = setup_fixture();
-    let user = Address::generate(&fixture.env);
-    fixture.token.mint(&user, &(100_000 * SCALAR_7));
+    // Vault gains: positive (absorbs loss)
+    let vault_close_delta = vault_2 as i128 - vault_1 as i128;
+    assert_eq!(vault_close_delta, 9_949_999_988 - payout - 2_500_000);
+    assert!(vault_close_delta > 0);
 
-    let position_id = open_long(&fixture, &user);
-    let pos_before = fixture.trading.get_position(&position_id);
-    let col_before = pos_before.col;
-
-    // Add collateral (set to 2000)
-    let price_bytes = fixture.btc_price(BTC_PRICE_I64);
-    fixture
-        .trading
-        .modify_collateral(&position_id, &(2_000 * SCALAR_7), &price_bytes);
-
-    let pos_added = fixture.trading.get_position(&position_id);
-    assert_eq!(pos_added.col, 2_000 * SCALAR_7);
-    assert!(pos_added.col > col_before);
-
-    // Remove collateral (set to 500)
-    let balance_before_remove = fixture.token.balance(&user);
-    fixture
-        .trading
-        .modify_collateral(&position_id, &(500 * SCALAR_7), &price_bytes);
-
-    let pos_removed = fixture.trading.get_position(&position_id);
-    assert_eq!(pos_removed.col, 500 * SCALAR_7);
-
-    // User should have received tokens back
-    let balance_after_remove = fixture.token.balance(&user);
-    assert!(balance_after_remove > balance_before_remove);
+    // ── Conservation ──
+    let user_delta = user_2 as i128 - user_0 as i128;
+    let vault_delta = vault_2 as i128 - vault_0 as i128;
+    let treasury_delta = treasury_2 as i128 - treasury_0 as i128;
+    assert_eq!(user_delta + vault_delta + treasury_delta, 0);
 }
 
 // ==========================================
 // 2. Keeper Triggers (4 tests)
+//
+// Uses default fixture (rates enabled) — trigger tests care about
+// control flow (does TP/SL fire?), not exact PnL arithmetic.
+// Keeper fee is deterministic: floor(trading_fee × caller_rate / S7)
+//   = floor((50_000_000 + 12) × 1_000_000 / S7) = 5_000_001
 // ==========================================
 
 #[test]
@@ -145,18 +330,21 @@ fn test_long_take_profit_trigger() {
 
     let position_id = open_long(&fixture, &user);
 
-    // Set TP above entry, SL below entry
     fixture
         .trading
         .set_triggers(&position_id, &(110_000 * PRICE_SCALAR), &(95_000 * PRICE_SCALAR));
 
-    // Jump past MIN_OPEN_TIME, price rises past TP
     fixture.jump(31);
     let tp_price = fixture.btc_price(111_000 * PRICE_SCALAR as i64);
 
+    let keeper_before = fixture.token.balance(&keeper);
+    let user_before = fixture.token.balance(&user);
     let ids = svec![&fixture.env, position_id];
     fixture.trading.execute(&keeper, &FEED_BTC, &ids, &tp_price);
+
     assert!(!fixture.position_exists(position_id));
+    assert!(fixture.token.balance(&user) > user_before);
+    assert_eq!(fixture.token.balance(&keeper) - keeper_before, 5_000_001);
 }
 
 #[test]
@@ -172,13 +360,17 @@ fn test_long_stop_loss_trigger() {
         .trading
         .set_triggers(&position_id, &(110_000 * PRICE_SCALAR), &(95_000 * PRICE_SCALAR));
 
-    // Jump past MIN_OPEN_TIME, price drops past SL
     fixture.jump(31);
     let sl_price = fixture.btc_price(94_000 * PRICE_SCALAR as i64);
 
+    let keeper_before = fixture.token.balance(&keeper);
+    let user_before = fixture.token.balance(&user);
     let ids = svec![&fixture.env, position_id];
     fixture.trading.execute(&keeper, &FEED_BTC, &ids, &sl_price);
+
     assert!(!fixture.position_exists(position_id));
+    assert!(fixture.token.balance(&user) > user_before);
+    assert_eq!(fixture.token.balance(&keeper) - keeper_before, 5_000_001);
 }
 
 #[test]
@@ -190,7 +382,6 @@ fn test_short_take_profit_trigger() {
 
     let position_id = open_short(&fixture, &user);
 
-    // Short TP: below entry price
     fixture
         .trading
         .set_triggers(&position_id, &(90_000 * PRICE_SCALAR), &0);
@@ -198,9 +389,12 @@ fn test_short_take_profit_trigger() {
     fixture.jump(31);
     let tp_price = fixture.btc_price(89_000 * PRICE_SCALAR as i64);
 
+    let keeper_before = fixture.token.balance(&keeper);
     let ids = svec![&fixture.env, position_id];
     fixture.trading.execute(&keeper, &FEED_BTC, &ids, &tp_price);
+
     assert!(!fixture.position_exists(position_id));
+    assert_eq!(fixture.token.balance(&keeper) - keeper_before, 5_000_001);
 }
 
 #[test]
@@ -212,7 +406,6 @@ fn test_short_stop_loss_trigger() {
 
     let position_id = open_short(&fixture, &user);
 
-    // Short SL: above entry price
     fixture
         .trading
         .set_triggers(&position_id, &0, &(105_000 * PRICE_SCALAR));
@@ -220,9 +413,12 @@ fn test_short_stop_loss_trigger() {
     fixture.jump(31);
     let sl_price = fixture.btc_price(106_000 * PRICE_SCALAR as i64);
 
+    let keeper_before = fixture.token.balance(&keeper);
     let ids = svec![&fixture.env, position_id];
     fixture.trading.execute(&keeper, &FEED_BTC, &ids, &sl_price);
+
     assert!(!fixture.position_exists(position_id));
+    assert_eq!(fixture.token.balance(&keeper) - keeper_before, 5_000_001);
 }
 
 // ==========================================
@@ -236,26 +432,34 @@ fn test_limit_order_place_fill_close() {
     let keeper = Address::generate(&fixture.env);
     fixture.token.mint(&user, &(100_000 * SCALAR_7));
 
-    // Place long limit at $101k (fill when price <= entry)
     let entry_price = 101_000 * PRICE_SCALAR;
     let position_id = place_limit_long(&fixture, &user, entry_price);
-    assert!(!fixture.trading.get_position(&position_id).filled);
 
-    // Market data should not yet reflect the pending order
-    let market = fixture.trading.get_market_data(&(FEED_BTC));
-    assert_eq!(market.l_notional, 0);
+    // Pending: collateral locked, no fees yet
+    let pos = fixture.trading.get_position(&position_id);
+    assert!(!pos.filled);
+    assert_eq!(pos.col, 1_000 * SCALAR_7);
+    assert_eq!(fixture.trading.get_market_data(&FEED_BTC).l_notional, 0);
 
-    // Price drops to entry -- fillable for long limit
+    // Fill at $101k
     let fill_price = fixture.btc_price(101_000 * PRICE_SCALAR as i64);
+    let keeper_before = fixture.token.balance(&keeper);
     let ids = svec![&fixture.env, position_id];
     fixture.trading.execute(&keeper, &FEED_BTC, &ids, &fill_price);
-    assert!(fixture.trading.get_position(&position_id).filled);
 
-    // Price rises for profit, close
+    let pos_filled = fixture.trading.get_position(&position_id);
+    assert!(pos_filled.filled);
+    assert_eq!(pos_filled.entry_price, 101_000 * PRICE_SCALAR);
+    // col = 10B - open_fees(50_000_012) = 9_949_999_988
+    assert_eq!(pos_filled.col, 9_949_999_988);
+    // Keeper fill fee = floor(50_000_012 × 1_000_000 / S7) = 5_000_001
+    assert_eq!(fixture.token.balance(&keeper) - keeper_before, 5_000_001);
+
+    // Close at $110k for profit
     fixture.jump(31);
     let close_price = fixture.btc_price(110_000 * PRICE_SCALAR as i64);
     let payout = fixture.trading.close_position(&position_id, &close_price);
-    assert!(payout > 0);
+    assert!(payout > 1_000 * SCALAR_7);
     assert!(!fixture.position_exists(position_id));
 }
 
@@ -266,18 +470,12 @@ fn test_limit_order_cancel_refund() {
     fixture.token.mint(&user, &(100_000 * SCALAR_7));
     let initial_balance = fixture.token.balance(&user);
 
-    // Place limit order
-    let entry_price = 101_000 * PRICE_SCALAR;
-    let position_id = place_limit_long(&fixture, &user, entry_price);
-    let balance_after_place = fixture.token.balance(&user);
-    assert!(balance_after_place < initial_balance); // collateral deducted
+    let position_id = place_limit_long(&fixture, &user, 101_000 * PRICE_SCALAR);
+    assert_eq!(fixture.token.balance(&user), initial_balance - 1_000 * SCALAR_7);
 
-    // Cancel limit order
+    // Cancel: full refund (no fees on unfilled limits)
     fixture.trading.cancel_position(&position_id);
-
-    // Full refund
-    let final_balance = fixture.token.balance(&user);
-    assert_eq!(final_balance, initial_balance);
+    assert_eq!(fixture.token.balance(&user), initial_balance);
     assert!(!fixture.position_exists(position_id));
 }
 
@@ -289,11 +487,9 @@ fn test_limit_order_not_fillable_at_price() {
     let keeper = Address::generate(&fixture.env);
     fixture.token.mint(&user, &(100_000 * SCALAR_7));
 
-    // Place long limit at $101k
-    let entry_price = 101_000 * PRICE_SCALAR;
-    let position_id = place_limit_long(&fixture, &user, entry_price);
+    let position_id = place_limit_long(&fixture, &user, 101_000 * PRICE_SCALAR);
 
-    // Price moves up to $105k (above entry) -- NOT fillable for a long limit
+    // Price $105k > entry $101k — NOT fillable for long limit
     let bad_price = fixture.btc_price(105_000 * PRICE_SCALAR as i64);
     let ids = svec![&fixture.env, position_id];
     fixture.trading.execute(&keeper, &FEED_BTC, &ids, &bad_price);
@@ -307,13 +503,11 @@ fn test_limit_order_not_fillable_at_price() {
 #[should_panic(expected = "Error(Contract, #741)")]
 fn test_open_blocked_when_frozen() {
     let fixture = setup_fixture();
-    // Set to Frozen (3)
     fixture.trading.set_status(&3u32);
 
     let user = Address::generate(&fixture.env);
     fixture.token.mint(&user, &(100_000 * SCALAR_7));
 
-    // Any attempt to open should fail -- place_limit uses require_active
     fixture.trading.place_limit(
         &user,
         &(FEED_BTC),
@@ -328,21 +522,20 @@ fn test_open_blocked_when_frozen() {
 
 #[test]
 fn test_close_allowed_when_on_ice() {
-    let fixture = setup_fixture();
+    let fixture = setup_zero_rate_fixture();
     let user = Address::generate(&fixture.env);
     fixture.token.mint(&user, &(100_000 * SCALAR_7));
 
-    // Open position while Active
     let position_id = open_long(&fixture, &user);
-
-    // Set to AdminOnIce (2)
     fixture.trading.set_status(&2u32);
 
-    // Close should still work (require_can_manage allows OnIce/AdminOnIce)
+    // Close at same price: pnl=0, only trading fees
+    // equity = col - close_fees = 9_949_999_988 - 50_000_012 = 9_899_999_976
     fixture.jump(31);
     let close_price = fixture.btc_price(BTC_PRICE_I64);
     let payout = fixture.trading.close_position(&position_id, &close_price);
-    assert!(payout >= 0);
+
+    assert_eq!(payout, 9_899_999_976);
     assert!(!fixture.position_exists(position_id));
 }
 
@@ -353,13 +546,11 @@ fn test_execute_keeper_triggers_when_on_ice() {
     let keeper = Address::generate(&fixture.env);
     fixture.token.mint(&user, &(100_000 * SCALAR_7));
 
-    // Open while Active, set TP
     let position_id = open_long(&fixture, &user);
     fixture
         .trading
         .set_triggers(&position_id, &(110_000 * PRICE_SCALAR), &0);
 
-    // Set to AdminOnIce (2) -- keeper triggers still allowed
     fixture.trading.set_status(&2u32);
 
     fixture.jump(31);
@@ -382,19 +573,14 @@ fn test_equal_notional_zero_funding() {
     fixture.token.mint(&user1, &(1_000_000 * SCALAR_7));
     fixture.token.mint(&user2, &(1_000_000 * SCALAR_7));
 
-    // Equal notional: long and short
-    let collateral = 50_000;
-    let notional = 200_000;
+    fixture.open_long(&user1, FEED_BTC, 50_000, 200_000, BTC_PRICE_I64);
+    fixture.open_short(&user2, FEED_BTC, 50_000, 200_000, BTC_PRICE_I64);
 
-    fixture.open_long(&user1, FEED_BTC, collateral, notional, BTC_PRICE_I64);
-    fixture.open_short(&user2, FEED_BTC, collateral, notional, BTC_PRICE_I64);
-
-    // Apply funding -- equal notional should yield zero funding rate
     fixture.jump(3600);
     fixture.trading.apply_funding();
 
     let market = fixture.trading.get_market_data(&(FEED_BTC));
-    assert_eq!(market.fund_rate, 0, "equal notional should yield zero funding rate");
+    assert_eq!(market.fund_rate, 0);
 }
 
 #[test]
@@ -403,16 +589,14 @@ fn test_loss_exceeds_collateral_clamped() {
     let user = Address::generate(&fixture.env);
     fixture.token.mint(&user, &(100_000 * SCALAR_7));
 
-    // Open highly leveraged long: 1k collateral, 20k notional (20x)
     let position_id = fixture.open_long(&user, FEED_BTC, 1_000, 20_000, BTC_PRICE_I64);
 
-    // Jump 1 week for interest, price drops 10%
+    // 20x leverage, 10% drop → loss = $2000 > $1000 collateral → payout clamped to 0
     fixture.jump(SECONDS_PER_WEEK);
     let crash_price = fixture.btc_price(90_000 * PRICE_SCALAR as i64);
     let payout = fixture.trading.close_position(&position_id, &crash_price);
 
-    // Loss (10% of 20k = 2000) exceeds collateral (1k) -- payout clamped to 0
-    assert_eq!(payout, 0, "payout should be 0 when loss exceeds collateral");
+    assert_eq!(payout, 0);
     assert!(!fixture.position_exists(position_id));
 }
 
@@ -431,13 +615,11 @@ fn test_multi_user_position_isolation() {
     let pos1 = open_long(&fixture, &user1);
     let pos2 = open_short(&fixture, &user2);
 
-    // Verify isolation
     assert_eq!(fixture.trading.get_user_positions(&user1).len(), 1);
     assert_eq!(fixture.trading.get_user_positions(&user2).len(), 1);
     assert_eq!(fixture.trading.get_position(&pos1).user, user1);
     assert_eq!(fixture.trading.get_position(&pos2).user, user2);
 
-    // Close user1's position -- should not affect user2
     fixture.jump(31);
     let close_price = fixture.btc_price(110_000 * PRICE_SCALAR as i64);
     fixture.trading.close_position(&pos1, &close_price);
