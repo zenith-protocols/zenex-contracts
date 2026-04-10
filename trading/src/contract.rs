@@ -203,8 +203,8 @@ pub trait Trading {
 
     /// Update take-profit and stop-loss trigger prices on an existing position.
     ///
-    /// Set a trigger to 0 to clear it. Validates that TP > entry for longs
-    /// (TP < entry for shorts), and SL < entry for longs (SL > entry for shorts).
+    /// Set a trigger to 0 to clear it. TP/SL are pure price triggers — no
+    /// entry-price validation. Invalid values simply never fire.
     ///
     /// # Parameters
     /// - `position_id` - ID of the position
