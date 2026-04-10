@@ -22,8 +22,8 @@ pub trait Trading {
     /// - `config` - New [`TradingConfig`]
     ///
     /// # Panics
-    /// - `TradingError::InvalidConfig` (702) if bounds check fails
-    /// - `TradingError::NegativeValueNotAllowed` (735) if any rate/fee is negative
+    /// - `TradingError::InvalidConfig` (700) if bounds check fails
+    /// - `TradingError::NegativeValueNotAllowed` (723) if any rate/fee is negative
     fn set_config(e: Env, config: TradingConfig);
 
     /// (Owner only) Register a new market or update an existing market's configuration.
@@ -36,9 +36,9 @@ pub trait Trading {
     /// - `config` - Per-market parameters (see [`MarketConfig`], includes `feed_id`)
     ///
     /// # Panics
-    /// - `TradingError::MaxMarketsReached` (770) if `MAX_ENTRIES` markets exist
-    /// - `TradingError::InvalidConfig` (702) if market config bounds fail or feed_id changed
-    /// - `TradingError::NegativeValueNotAllowed` (735) if any rate/fee is negative
+    /// - `TradingError::MaxMarketsReached` (703) if `MAX_ENTRIES` markets exist
+    /// - `TradingError::InvalidConfig` (700) if market config bounds fail or feed_id changed
+    /// - `TradingError::NegativeValueNotAllowed` (723) if any rate/fee is negative
     fn set_market(e: Env, market_id: u32, config: MarketConfig);
 
     /// (Owner only) Remove a market. Subtracts remaining OI from total_notional
@@ -48,7 +48,7 @@ pub trait Trading {
     /// - `market_id` - Market to remove
     ///
     /// # Panics
-    /// - `TradingError::MarketNotFound` (710) if market_id not registered
+    /// - `TradingError::MarketNotFound` (701) if market_id not registered
     fn del_market(e: Env, market_id: u32);
 
     /// (Owner only) Set contract status to an admin-level state.
@@ -56,7 +56,7 @@ pub trait Trading {
     /// Valid targets: `Active` (0), `AdminOnIce` (2), `Frozen` (3).
     ///
     /// # Panics
-    /// - `TradingError::InvalidStatus` (760) if status is `OnIce`
+    /// - `TradingError::InvalidStatus` (740) if status is `OnIce`
     fn set_status(e: Env, status: u32);
 
     /// Permissionless circuit breaker and ADL trigger.
@@ -71,9 +71,9 @@ pub trait Trading {
     /// - `price` - Binary-encoded Pyth Lazer price payload covering all registered markets
     ///
     /// # Panics
-    /// - `TradingError::ThresholdNotMet` (780) if PnL below trigger threshold
-    /// - `TradingError::InvalidStatus` (760) if contract is Frozen
-    /// - `TradingError::InvalidPrice` (720) if feeds don't match registered markets
+    /// - `TradingError::ThresholdNotMet` (750) if PnL below trigger threshold
+    /// - `TradingError::InvalidStatus` (740) if contract is Frozen
+    /// - `TradingError::InvalidPrice` (710) if feeds don't match registered markets
     fn update_status(e: Env, price: Bytes);
 
     /// Place a pending limit order. Collateral is transferred to the contract immediately.
@@ -94,11 +94,11 @@ pub trait Trading {
     /// Position ID.
     ///
     /// # Panics
-    /// - `TradingError::ContractOnIce` (761) if contract is not Active
-    /// - `TradingError::NegativeValueNotAllowed` (735) if any value <= 0
-    /// - `TradingError::NotionalBelowMinimum` (736) / `NotionalAboveMaximum` (737)
-    /// - `TradingError::LeverageAboveMaximum` (739) if notional * margin > collateral
-    /// - `TradingError::MarketDisabled` (712) if market is not enabled
+    /// - `TradingError::ContractOnIce` (741) if contract is not Active
+    /// - `TradingError::NegativeValueNotAllowed` (723) if any value <= 0
+    /// - `TradingError::NotionalBelowMinimum` (724) / `NotionalAboveMaximum` (725)
+    /// - `TradingError::LeverageAboveMaximum` (726) if notional * margin > collateral
+    /// - `TradingError::MarketDisabled` (702) if market is not enabled
     fn place_limit(
         e: Env,
         user: Address,
@@ -131,13 +131,13 @@ pub trait Trading {
     /// Position ID.
     ///
     /// # Panics
-    /// - `TradingError::ContractOnIce` (761) if contract is not Active
-    /// - `TradingError::NegativeValueNotAllowed` (735) if any value <= 0
-    /// - `TradingError::NotionalBelowMinimum` (736) / `NotionalAboveMaximum` (737)
-    /// - `TradingError::LeverageAboveMaximum` (739) if notional * margin > collateral
-    /// - `TradingError::MarketDisabled` (712) if market is not enabled
-    /// - `TradingError::InvalidPrice` (720) if feed_id mismatch
-    /// - `TradingError::UtilizationExceeded` (791) if per-market or global cap exceeded
+    /// - `TradingError::ContractOnIce` (741) if contract is not Active
+    /// - `TradingError::NegativeValueNotAllowed` (723) if any value <= 0
+    /// - `TradingError::NotionalBelowMinimum` (724) / `NotionalAboveMaximum` (725)
+    /// - `TradingError::LeverageAboveMaximum` (726) if notional * margin > collateral
+    /// - `TradingError::MarketDisabled` (702) if market is not enabled
+    /// - `TradingError::InvalidPrice` (710) if feed_id mismatch
+    /// - `TradingError::UtilizationExceeded` (751) if per-market or global cap exceeded
     fn open_market(
         e: Env,
         user: Address,
@@ -163,9 +163,9 @@ pub trait Trading {
     /// Collateral amount returned to the user (token_decimals).
     ///
     /// # Panics
-    /// - `TradingError::PositionNotPending` (733) if position is filled and market still exists (use `close_position` instead)
-    /// - `TradingError::ContractFrozen` (762) if contract is Frozen
-    /// - `TradingError::PositionNotFound` (730) if position_id is invalid
+    /// - `TradingError::PositionNotPending` (721) if position is filled and market still exists (use `close_position` instead)
+    /// - `TradingError::ContractFrozen` (742) if contract is Frozen
+    /// - `TradingError::PositionNotFound` (720) if position_id is invalid
     fn cancel_position(e: Env, position_id: u32) -> i128;
 
     /// Close a filled position at the current oracle price with full settlement.
@@ -178,9 +178,9 @@ pub trait Trading {
     /// User payout (token_decimals).
     ///
     /// # Panics
-    /// - `TradingError::ContractFrozen` (762) if contract is Frozen
-    /// - `TradingError::PositionTooNew` (748) if MIN_OPEN_TIME not elapsed (normal path only)
-    /// - `TradingError::InvalidPrice` (720) if feed_id mismatch (normal path only)
+    /// - `TradingError::ContractFrozen` (742) if contract is Frozen
+    /// - `TradingError::PositionTooNew` (732) if MIN_OPEN_TIME not elapsed (normal path only)
+    /// - `TradingError::InvalidPrice` (710) if feed_id mismatch (normal path only)
     fn close_position(e: Env, position_id: u32, price: Bytes) -> i128;
 
     /// Add or withdraw collateral on an open (filled) position.
@@ -195,10 +195,10 @@ pub trait Trading {
     /// - `price` - Binary-encoded price payload (needed for margin check on withdrawal)
     ///
     /// # Panics
-    /// - `TradingError::ContractFrozen` (762) if contract is Frozen
-    /// - `TradingError::ActionNotAllowedForStatus` (750) if position is not filled
-    /// - `TradingError::CollateralUnchanged` (740) if new_collateral == current
-    /// - `TradingError::WithdrawalBreaksMargin` (741) if withdrawal leaves insufficient margin
+    /// - `TradingError::ContractFrozen` (742) if contract is Frozen
+    /// - `TradingError::ActionNotAllowedForStatus` (733) if position is not filled
+    /// - `TradingError::CollateralUnchanged` (727) if new_collateral == current
+    /// - `TradingError::WithdrawalBreaksMargin` (728) if withdrawal leaves insufficient margin
     fn modify_collateral(e: Env, position_id: u32, new_collateral: i128, price: Bytes);
 
     /// Update take-profit and stop-loss trigger prices on an existing position.
@@ -212,7 +212,7 @@ pub trait Trading {
     /// - `stop_loss` - New SL price, 0 = clear (price_scalar units)
     ///
     /// # Panics
-    /// - `TradingError::ContractFrozen` (762) if contract is Frozen
+    /// - `TradingError::ContractFrozen` (742) if contract is Frozen
     fn set_triggers(e: Env, position_id: u32, take_profit: i128, stop_loss: i128);
 
     /// Execute a batch of keeper actions for positions in a single market.
@@ -229,9 +229,9 @@ pub trait Trading {
     /// - `price` - Binary-encoded price payload (single feed)
     ///
     /// # Panics
-    /// - `TradingError::ContractFrozen` (762) if contract is Frozen
-    /// - `TradingError::InvalidPrice` (720) if position feed doesn't match price feed
-    /// - `TradingError::NotActionable` (747) if no valid action for the position
+    /// - `TradingError::ContractFrozen` (742) if contract is Frozen
+    /// - `TradingError::InvalidPrice` (710) if position feed doesn't match price feed
+    /// - `TradingError::NotActionable` (731) if no valid action for the position
     fn execute(e: Env, caller: Address, market_id: u32, position_ids: Vec<u32>, price: Bytes);
 
     /// Recalculate and store funding rates for all markets. Permissionless, callable
@@ -241,7 +241,7 @@ pub trait Trading {
     /// then recalculates funding rates based on current OI imbalance.
     ///
     /// # Panics
-    /// - `TradingError::FundingTooEarly` (790) if < 1 hour since last call
+    /// - `TradingError::FundingTooEarly` (752) if < 1 hour since last call
     fn apply_funding(e: Env);
 
     /// Returns the position for the given ID.
@@ -291,8 +291,8 @@ impl TradingContract {
     /// - `config` - Global trading parameters (see [`TradingConfig`])
     ///
     /// # Panics
-    /// - `TradingError::InvalidConfig` (702) if config fails validation bounds
-    /// - `TradingError::NegativeValueNotAllowed` (735) if any rate/fee is negative
+    /// - `TradingError::InvalidConfig` (700) if config fails validation bounds
+    /// - `TradingError::NegativeValueNotAllowed` (723) if any rate/fee is negative
     pub fn __constructor(
         e: Env,
         owner: Address,

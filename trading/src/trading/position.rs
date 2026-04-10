@@ -88,10 +88,10 @@ impl Position {
     /// - `margin` - Initial margin requirement (SCALAR_7, e.g. 1e6 = 10% = 10x max leverage)
     ///
     /// # Panics
-    /// - `TradingError::NegativeValueNotAllowed` (735) if notional, price, or col <= 0
-    /// - `TradingError::MarketDisabled` (712) if market is not enabled
-    /// - `TradingError::NotionalBelowMinimum` (736) / `NotionalAboveMaximum` (737)
-    /// - `TradingError::LeverageAboveMaximum` (739) if `notional * margin > col`
+    /// - `TradingError::NegativeValueNotAllowed` (723) if notional, price, or col <= 0
+    /// - `TradingError::MarketDisabled` (702) if market is not enabled
+    /// - `TradingError::NotionalBelowMinimum` (724) / `NotionalAboveMaximum` (725)
+    /// - `TradingError::LeverageAboveMaximum` (726) if `notional * margin > col`
     pub fn validate(&self, e: &Env, enabled: bool, min_notional: i128, max_notional: i128, margin: i128) {
         if self.notional <= 0 || self.entry_price <= 0 || self.col <= 0 || self.tp < 0 || self.sl < 0 {
             panic_with_error!(e, TradingError::NegativeValueNotAllowed);
@@ -113,8 +113,8 @@ impl Position {
     /// Guard for user-initiated close: position must be filled and at least MIN_OPEN_TIME old.
     ///
     /// # Panics
-    /// - `TradingError::ActionNotAllowedForStatus` (750) if position is not filled
-    /// - `TradingError::PositionTooNew` (748) if < 30s since fill
+    /// - `TradingError::ActionNotAllowedForStatus` (733) if position is not filled
+    /// - `TradingError::PositionTooNew` (732) if < 30s since fill
     ///
     /// MIN_OPEN_TIME (30 seconds) prevents same-block open+close price arbitrage.
     /// Without it, a user could open and close in the same ledger using the two

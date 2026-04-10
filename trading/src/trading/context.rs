@@ -141,7 +141,7 @@ impl Context {
     /// - `impact_fee`: `notional / impact` (SCALAR_7), simulates price impact.
     ///
     /// # Panics
-    /// - `TradingError::UtilizationExceeded` (791) if position pushes utilization past caps
+    /// - `TradingError::UtilizationExceeded` (751) if position pushes utilization past caps
     /// - All panics from `Position::validate()`
     pub fn open(&mut self, e: &Env, position: &mut Position, position_id: u32) -> (i128, i128) {
         let base_fee = if self.data.is_dominant(position.long, position.notional) {

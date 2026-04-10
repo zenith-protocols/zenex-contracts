@@ -13,7 +13,7 @@ use soroban_sdk::{panic_with_error, Env};
 /// can still be managed (closed, liquidated) under OnIce/AdminOnIce.
 ///
 /// # Panics
-/// - `TradingError::ContractOnIce` (761)
+/// - `TradingError::ContractOnIce` (741)
 pub fn require_active(e: &Env) {
     let status = ContractStatus::from_u32(e, storage::get_status(e));
     match status {
@@ -28,7 +28,7 @@ pub fn require_active(e: &Env) {
 /// permit existing position operations so users can always exit.
 ///
 /// # Panics
-/// - `TradingError::ContractFrozen` (762)
+/// - `TradingError::ContractFrozen` (742)
 pub fn require_can_manage(e: &Env) {
     let status = ContractStatus::from_u32(e, storage::get_status(e));
     match status {
@@ -40,8 +40,8 @@ pub fn require_can_manage(e: &Env) {
 /// Validate global trading configuration parameters against safety bounds.
 ///
 /// # Panics
-/// - `TradingError::NegativeValueNotAllowed` (735) if any rate/fee is negative
-/// - `TradingError::InvalidConfig` (702) if any value exceeds its upper bound or
+/// - `TradingError::NegativeValueNotAllowed` (723) if any rate/fee is negative
+/// - `TradingError::InvalidConfig` (700) if any value exceeds its upper bound or
 ///   if min_notional/max_notional/max_util are logically invalid
 pub fn require_valid_config(e: &Env, config: &TradingConfig) {
     // Lower bounds: rates and fees must be non-negative
@@ -84,8 +84,8 @@ pub fn require_valid_config(e: &Env, config: &TradingConfig) {
 /// Validate per-market configuration parameters against safety bounds.
 ///
 /// # Panics
-/// - `TradingError::NegativeValueNotAllowed` (735) if margin or liq_fee <= 0
-/// - `TradingError::InvalidConfig` (702) if bounds exceeded or margin <= liq_fee
+/// - `TradingError::NegativeValueNotAllowed` (723) if margin or liq_fee <= 0
+/// - `TradingError::InvalidConfig` (700) if bounds exceeded or margin <= liq_fee
 pub fn require_valid_market_config(e: &Env, config: &MarketConfig) {
     // feed_id must be a valid Pyth feed identifier (non-zero)
     if config.feed_id == 0 {

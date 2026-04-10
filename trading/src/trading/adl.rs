@@ -22,9 +22,9 @@ use soroban_sdk::{panic_with_error, Env, Map, Vec};
 /// - `feeds` - Verified price data for ALL registered markets (must match length)
 ///
 /// # Panics
-/// - `TradingError::ThresholdNotMet` (780) if PnL below trigger threshold
-/// - `TradingError::InvalidStatus` (760) if contract is Frozen
-/// - `TradingError::InvalidPrice` (720) if feeds length doesn't match markets
+/// - `TradingError::ThresholdNotMet` (750) if PnL below trigger threshold
+/// - `TradingError::InvalidStatus` (740) if contract is Frozen
+/// - `TradingError::InvalidPrice` (710) if feeds length doesn't match markets
 pub fn execute_update_status(e: &Env, feeds: &Vec<PriceData>) {
     let current = ContractStatus::from_u32(e, storage::get_status(e));
     let vault = storage::get_vault(e);

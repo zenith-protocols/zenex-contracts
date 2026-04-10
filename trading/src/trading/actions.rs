@@ -273,7 +273,7 @@ pub fn execute_set_triggers(e: &Env, position_id: u32, take_profit: i128, stop_l
 /// next accrual period.
 ///
 /// # Panics
-/// - `TradingError::FundingTooEarly` (790) if < 1 hour since last call
+/// - `TradingError::FundingTooEarly` (752) if < 1 hour since last call
 pub fn execute_apply_funding(e: &Env) {
     let last_funding_update = storage::get_last_funding_update(e);
     let elapsed = e.ledger().timestamp() - last_funding_update;

@@ -41,14 +41,14 @@ pub trait Governance {
     ///
     /// # Panics
     /// - `GovernanceError::Unauthorized` (1) if caller is not the owner
-    /// - `GovernanceError::NotQueued` (601) if nonce not found
+    /// - `GovernanceError::NotQueued` (770) if nonce not found
     fn cancel(e: Env, nonce: u32);
 
     /// (Permissionless) Execute a queued call after the delay has passed.
     ///
     /// # Panics
-    /// - `GovernanceError::NotQueued` (601) if nonce not found
-    /// - `GovernanceError::NotUnlocked` (602) if delay has not yet passed
+    /// - `GovernanceError::NotQueued` (770) if nonce not found
+    /// - `GovernanceError::NotUnlocked` (771) if delay has not yet passed
     fn execute(e: Env, nonce: u32);
 
     /// (Owner only) Immediately call `set_status` on a target contract, bypassing the delay.
@@ -65,8 +65,8 @@ pub trait Governance {
     /// (Permissionless) Apply a pending delay change after the current delay has passed.
     ///
     /// # Panics
-    /// - `GovernanceError::NotQueued` (601) if no pending delay change
-    /// - `GovernanceError::NotUnlocked` (602) if current delay has not yet passed
+    /// - `GovernanceError::NotQueued` (770) if no pending delay change
+    /// - `GovernanceError::NotUnlocked` (771) if current delay has not yet passed
     fn apply_delay(e: Env);
 
     /// Returns the current delay in seconds.
@@ -75,7 +75,7 @@ pub trait Governance {
     /// Returns a queued call by nonce.
     ///
     /// # Panics
-    /// - `GovernanceError::NotQueued` (601) if nonce not found or expired
+    /// - `GovernanceError::NotQueued` (770) if nonce not found or expired
     fn get_queued(e: Env, nonce: u32) -> QueuedCall;
 }
 
