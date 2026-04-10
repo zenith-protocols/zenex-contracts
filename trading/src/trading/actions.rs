@@ -245,8 +245,8 @@ pub fn execute_modify_collateral(e: &Env, position_id: u32, new_collateral: i128
 
 /// Update take-profit and stop-loss trigger prices on a position.
 ///
-/// Set to 0 to clear a trigger. Validates direction constraints (TP must be
-/// above entry for longs, below for shorts; SL is the reverse).
+/// Set to 0 to clear a trigger. TP/SL are pure price triggers — no
+/// entry-price validation. Invalid values simply never fire.
 pub fn execute_set_triggers(e: &Env, position_id: u32, take_profit: i128, stop_loss: i128) {
     require_can_manage(e);
     let mut position = storage::get_position(e, position_id);
@@ -254,7 +254,6 @@ pub fn execute_set_triggers(e: &Env, position_id: u32, take_profit: i128, stop_l
 
     position.tp = take_profit;
     position.sl = stop_loss;
-    position.validate_triggers(e);
     storage::set_position(e, position_id, &position);
     
     SetTriggers {

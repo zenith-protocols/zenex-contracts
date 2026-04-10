@@ -142,30 +142,6 @@ impl Position {
         }
     }
 
-    // Validate SL/TP: if set (> 0), TP must be above entry for long (below for short),
-    // and SL must be below entry for long (above for short).
-    pub fn validate_triggers(&self, e: &Env) {
-        if self.tp < 0 || self.sl < 0 {
-            panic_with_error!(e, TradingError::NegativeValueNotAllowed);
-        }
-        if self.tp > 0 {
-            if self.long && self.tp <= self.entry_price {
-                panic_with_error!(e, TradingError::InvalidTakeProfitPrice);
-            }
-            if !self.long && self.tp >= self.entry_price {
-                panic_with_error!(e, TradingError::InvalidTakeProfitPrice);
-            }
-        }
-        if self.sl > 0 {
-            if self.long && self.sl >= self.entry_price {
-                panic_with_error!(e, TradingError::InvalidStopLossPrice);
-            }
-            if !self.long && self.sl <= self.entry_price {
-                panic_with_error!(e, TradingError::InvalidStopLossPrice);
-            }
-        }
-    }
-
     /// Transition pending → filled. Snapshots funding/borrowing/ADL indices.
     pub fn fill(&mut self, e: &Env, data: &MarketData) {
         self.filled = true;

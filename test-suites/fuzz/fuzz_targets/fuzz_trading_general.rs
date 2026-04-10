@@ -147,10 +147,7 @@ const MODIFY_ERRORS: &[u32] = &[
     727, // CollateralUnchanged
     728, // WithdrawalBreaksMargin
 ];
-const TRIGGER_ERRORS: &[u32] = &[
-    729, // InvalidTakeProfitPrice
-    730, // InvalidStopLossPrice
-];
+const TRIGGER_ERRORS: &[u32] = &[];
 const FUNDING_ERRORS: &[u32] = &[
     752, // FundingTooEarly
 ];

@@ -213,8 +213,6 @@ pub trait Trading {
     ///
     /// # Panics
     /// - `TradingError::ContractFrozen` (762) if contract is Frozen
-    /// - `TradingError::InvalidTakeProfitPrice` (742) if TP on wrong side of entry
-    /// - `TradingError::InvalidStopLossPrice` (743) if SL on wrong side of entry
     fn set_triggers(e: Env, position_id: u32, take_profit: i128, stop_loss: i128);
 
     /// Execute a batch of keeper actions for positions in a single market.

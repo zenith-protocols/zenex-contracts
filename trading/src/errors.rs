@@ -26,8 +26,6 @@ pub enum TradingError {
     LeverageAboveMaximum = 726, // effective leverage exceeds 1/margin
     CollateralUnchanged = 727, // modify_collateral called with unchanged amount
     WithdrawalBreaksMargin = 728, // collateral withdrawal would breach margin requirement
-    InvalidTakeProfitPrice = 729, // TP price on wrong side of entry
-    InvalidStopLossPrice = 730, // SL price on wrong side of entry
     NotActionable = 731, // no valid action for this position
     PositionTooNew = 732, // close attempted before MIN_OPEN_TIME (30s)
     ActionNotAllowedForStatus = 733, // action not allowed for position status
