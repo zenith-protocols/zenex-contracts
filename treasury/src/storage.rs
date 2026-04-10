@@ -11,6 +11,8 @@ pub fn extend_instance(e: &Env) {
         .extend_ttl(LEDGER_THRESHOLD_INSTANCE, LEDGER_BUMP_INSTANCE);
 }
 
+/// Returns the current fee rate (SCALAR_7 fraction). Defaults to 0 if not set.
+/// Invariant: always set in __constructor for an initialized contract.
 pub fn get_rate(e: &Env) -> i128 {
     e.storage()
         .instance()

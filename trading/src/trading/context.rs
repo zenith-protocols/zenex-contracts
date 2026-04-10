@@ -88,6 +88,10 @@ impl Context {
     }
 
     /// Panics if per-market or global utilization exceeds caps.
+    ///
+    /// Computes util = notional / vault_balance directly (not scaled by max_util
+    /// like `calc_util` used in rate computation). The bound check against
+    /// `config.max_util` is equivalent: notional / vault_balance <= max_util.
     fn require_within_util(&self, e: &Env) {
         if self.vault_balance <= 0 {
             panic_with_error!(e, TradingError::UtilizationExceeded);
@@ -103,6 +107,11 @@ impl Context {
         }
     }
 
+    /// Compute the treasury's cut from a revenue amount.
+    ///
+    /// Returns `floor(revenue × rate / SCALAR_7)` where rate is queried from
+    /// the treasury contract (SCALAR_7 fraction, e.g. 500_000 = 5%).
+    /// Returns 0 when revenue <= 0 or rate is 0.
     pub(crate) fn treasury_fee(&self, e: &Env, revenue: i128) -> i128 {
         if revenue > 0 {
             let rate = TreasuryClient::new(e, &self.treasury).get_rate();

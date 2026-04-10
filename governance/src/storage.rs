@@ -31,9 +31,10 @@ pub const MIN_TTL_LEDGERS: u32 = ONE_DAY_LEDGERS; // 1 day floor
 
 /// Compute TTL for a queued entry: 2x delay with a minimum of 1 day.
 /// Returns (threshold, bump) in ledger units.
+const LEDGER_TIME_SECS: u64 = 5; // assumed ledger close time on Stellar
+
 pub fn ttl_for_delay(delay_seconds: u64) -> (u32, u32) {
-    // 5 seconds per ledger
-    let delay_ledgers = (delay_seconds / 5) as u32;
+    let delay_ledgers = (delay_seconds / LEDGER_TIME_SECS) as u32;
     let threshold = (delay_ledgers * 2).max(MIN_TTL_LEDGERS);
     let bump = threshold + ONE_DAY_LEDGERS;
     (threshold, bump)

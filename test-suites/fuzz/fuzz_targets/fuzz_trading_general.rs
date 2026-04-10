@@ -143,6 +143,7 @@ const CANCEL_ERRORS: &[u32] = &[
     721, // PositionNotPending (if somehow filled between place and cancel)
 ];
 const MODIFY_ERRORS: &[u32] = &[
+    720, // PositionNotFound (position closed/liquidated between filter and modify)
     727, // CollateralUnchanged
     728, // WithdrawalBreaksMargin
 ];

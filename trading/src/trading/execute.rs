@@ -179,6 +179,9 @@ fn settle_liquidation(
     s: &Settlement,
     equity: i128,
 ) {
+    // liq_fee is the residual equity at liquidation (clamped to 0 from below).
+    // The configured liq_fee threshold gates the liquidation path above; this
+    // gives the keeper whatever equity remains. Underwater positions yield 0.
     let liq_fee = equity.max(0);
     let revenue = (s.protocol_fee() + liq_fee).min(col);
     let treasury_fee = ctx.treasury_fee(e, revenue);
@@ -216,6 +219,8 @@ fn apply_fill(
         panic_with_error!(e, TradingError::PositionNotPending);
     }
 
+    // Long limit: fills when market price falls to or below the entry (buy at or better).
+    // Short limit: fills when market price rises to or above the entry (sell at or better).
     let can_fill = if position.long {
         ctx.price <= position.entry_price
     } else {

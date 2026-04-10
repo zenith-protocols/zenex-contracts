@@ -49,10 +49,7 @@ pub fn execute_create_limit(
     id
 }
 
-/// Cancel a pending (unfilled) limit order. Returns collateral to user.
-///
-/// No fees are charged on cancellation since the order was never filled.
-/// Cancel a position and refund collateral. No oracle price needed.
+/// Cancel a position and refund collateral. No settlement or fees applied.
 ///
 /// - **Pending** (not filled): requires user auth, cancels the limit order.
 /// - **Filled + market deleted**: permissionless (anyone can clean up stranded positions).

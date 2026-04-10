@@ -1,6 +1,6 @@
 #![cfg(any(test, feature = "testutils"))]
 
-use crate::constants::{SCALAR_7, SCALAR_18};
+use crate::constants::SCALAR_7;
 use crate::contract::TradingContract;
 use crate::storage;
 use crate::types::{MarketConfig, MarketData, TradingConfig};
@@ -284,8 +284,6 @@ pub fn setup_contract(e: &Env) -> (Address, StellarAssetClient<'_>) {
         storage::set_market_config(e, FEED_BTC, &default_market(e));
         let mut market_data = default_market_data();
         market_data.last_update = e.ledger().timestamp();
-        market_data.l_fund_idx = SCALAR_18;
-        market_data.s_fund_idx = SCALAR_18;
         storage::set_market_data(e, FEED_BTC, &market_data);
         let mut markets = storage::get_markets(e);
         markets.push_back(FEED_BTC);

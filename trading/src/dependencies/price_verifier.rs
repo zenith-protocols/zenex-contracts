@@ -11,7 +11,6 @@ pub struct PriceData {
 }
 
 /// Price-verifier contract interface.
-#[allow(dead_code)]
 #[contractclient(name = "PriceVerifierClient")]
 pub trait PriceVerifier {
     fn verify_price(env: Env, update_data: Bytes) -> PriceData;

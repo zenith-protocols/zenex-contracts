@@ -103,7 +103,8 @@ impl MarketData {
             }
         }
 
-        // Funding is peer-to-peer — skip if either side is empty.
+        // Funding is peer-to-peer: if either side is empty there is no counterparty
+        // to receive payment, so no accrual occurs even if fund_rate is non-zero.
         if self.fund_rate == 0 || self.l_notional == 0 || self.s_notional == 0 {
             return;
         }

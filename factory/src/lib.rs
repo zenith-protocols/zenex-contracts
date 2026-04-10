@@ -16,19 +16,18 @@ use soroban_sdk::{
 };
 
 /// Mirrors trading::TradingConfig. Same XDR encoding on-chain.
-/// r_var is the vault-level variable borrowing rate (SCALAR_18).
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct TradingConfig {
-    pub caller_rate:  i128,
-    pub min_notional: i128,
-    pub max_notional: i128,
-    pub fee_dom:      i128,
-    pub fee_non_dom:  i128,
-    pub max_util:     i128,
-    pub r_funding:    i128,
-    pub r_base:       i128,
-    pub r_var:        i128,
+    pub caller_rate:  i128, // keeper's share of trading fees (SCALAR_7)
+    pub min_notional: i128, // minimum notional per position (token_decimals)
+    pub max_notional: i128, // maximum notional per position (token_decimals)
+    pub fee_dom:      i128, // dominant-side trading fee rate (SCALAR_7)
+    pub fee_non_dom:  i128, // non-dominant-side trading fee rate (SCALAR_7)
+    pub max_util:     i128, // global utilization cap (SCALAR_7)
+    pub r_funding:    i128, // base hourly funding rate (SCALAR_18)
+    pub r_base:       i128, // base hourly borrowing rate (SCALAR_18)
+    pub r_var:        i128, // vault-level variable borrowing rate (SCALAR_18)
 }
 
 /// Factory contract for atomic deployment of trading pools (trading + vault).

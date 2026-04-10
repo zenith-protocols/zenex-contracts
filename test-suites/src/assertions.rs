@@ -12,6 +12,9 @@ pub fn assert_approx_eq_abs(a: i128, b: i128, delta: i128) {
     );
 }
 
+/// Asserts |a - b| < b * delta / 100 using SCALAR_7 fixed-point math.
+/// `delta` is in SCALAR_7 units (e.g. 100_000 = 1%).
+/// Denominator 100_0000000 = 100 * SCALAR_7 converts the percentage.
 pub fn assert_approx_eq_rel(a: i128, b: i128, delta: i128) {
     assert!(
         a > b
