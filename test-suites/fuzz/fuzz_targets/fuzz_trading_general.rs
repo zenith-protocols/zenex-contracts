@@ -110,6 +110,7 @@ enum FuzzCommand {
 #[derive(Clone, Debug)]
 struct TrackedPosition {
     id: u32,
+    user: Address,
     market_id: u32,
     is_filled: bool,
 }
@@ -306,7 +307,7 @@ fuzz_target!(|input: FuzzInput| {
                 verify_expected_error(&result, "OpenMarket", OPEN_ERRORS);
 
                 if let Ok(Ok(pos_id)) = result {
-                    positions.push(TrackedPosition { id: pos_id, market_id: feed, is_filled: true });
+                    positions.push(TrackedPosition { id: pos_id, user: user.clone(), market_id: feed, is_filled: true });
                 }
             }
 
@@ -330,7 +331,7 @@ fuzz_target!(|input: FuzzInput| {
                 verify_expected_error(&result, "PlaceLimit", LIMIT_ERRORS);
 
                 if let Ok(Ok(pos_id)) = result {
-                    positions.push(TrackedPosition { id: pos_id, market_id: feed, is_filled: false });
+                    positions.push(TrackedPosition { id: pos_id, user: user.clone(), market_id: feed, is_filled: false });
                 }
             }
 
@@ -346,7 +347,7 @@ fuzz_target!(|input: FuzzInput| {
                 let keeper = Address::generate(&fixture.env);
 
                 let result = fixture.trading.try_execute(
-                    &keeper, &pos.market_id, &svec![&fixture.env, pos.id], &price_bytes,
+                    &keeper, &pos.market_id, &svec![&fixture.env, pos.user.clone()], &svec![&fixture.env, pos.id], &price_bytes,
                 );
                 verify_expected_error(&result, "FillLimit", EXECUTE_ERRORS);
 
@@ -365,7 +366,7 @@ fuzz_target!(|input: FuzzInput| {
                 let pos = &positions[idx];
                 let price_bytes = build_price(&fixture, pos.market_id, prices[feed_idx(pos.market_id)]);
 
-                let result = fixture.trading.try_close_position(&pos.id, &price_bytes);
+                let result = fixture.trading.try_close_position(&pos.user, &pos.id, &price_bytes);
                 verify_expected_error(&result, "ClosePosition", CLOSE_ERRORS);
 
                 if is_ok(&result) {
@@ -380,9 +381,9 @@ fuzz_target!(|input: FuzzInput| {
                     .collect();
                 if pending.is_empty() { continue; }
                 let idx = pending[(*position_idx as usize) % pending.len()];
-                let pos_id = positions[idx].id;
+                let pos = &positions[idx];
 
-                let result = fixture.trading.try_cancel_position(&pos_id);
+                let result = fixture.trading.try_cancel_position(&pos.user, &pos.id);
                 verify_expected_error(&result, "CancelLimit", CANCEL_ERRORS);
 
                 if is_ok(&result) {
@@ -401,7 +402,7 @@ fuzz_target!(|input: FuzzInput| {
                 let idx = filled[(*position_idx as usize) % filled.len()];
                 let pos = &positions[idx];
 
-                let pos_data = fixture.trading.get_position(&pos.id);
+                let pos_data = fixture.trading.get_position(&pos.user, &pos.id);
                 let delta = ((*amount_raw as i128).max(1).min(5_000)) * SCALAR_7;
                 let new_collateral = if *is_increase {
                     pos_data.col + delta
@@ -410,7 +411,7 @@ fuzz_target!(|input: FuzzInput| {
                 };
 
                 let price_bytes = build_price(&fixture, pos.market_id, prices[feed_idx(pos.market_id)]);
-                let result = fixture.trading.try_modify_collateral(&pos.id, &new_collateral, &price_bytes);
+                let result = fixture.trading.try_modify_collateral(&pos.user, &pos.id, &new_collateral, &price_bytes);
                 verify_expected_error(&result, "ModifyCollateral", MODIFY_ERRORS);
             }
 
@@ -424,7 +425,7 @@ fuzz_target!(|input: FuzzInput| {
                 if filled.is_empty() { continue; }
                 let idx = filled[(*position_idx as usize) % filled.len()];
                 let pos = &positions[idx];
-                let pos_data = fixture.trading.get_position(&pos.id);
+                let pos_data = fixture.trading.get_position(&pos.user, &pos.id);
 
                 // Compute TP/SL based on entry price and offsets
                 let tp_bps = (*tp_offset_bps as i128).min(5000).max(100);
@@ -442,7 +443,7 @@ fuzz_target!(|input: FuzzInput| {
                     )
                 };
 
-                let result = fixture.trading.try_set_triggers(&pos.id, &tp, &sl);
+                let result = fixture.trading.try_set_triggers(&pos.user, &pos.id, &tp, &sl);
                 verify_expected_error(&result, "SetTriggers", TRIGGER_ERRORS);
             }
 

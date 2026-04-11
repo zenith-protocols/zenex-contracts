@@ -3,8 +3,7 @@ use crate::{
     types::{MarketConfig, MarketData, Position, TradingConfig},
 };
 use soroban_sdk::{
-    contracttype, panic_with_error, unwrap::UnwrapOptimized, Address, Env,
-    IntoVal, TryFromVal, Val, Vec,
+    contracttype, panic_with_error, unwrap::UnwrapOptimized, Address, Env, Vec,
 };
 
 
@@ -37,15 +36,14 @@ pub enum TradingStorageKey {
     PriceVerifier,
     Config,
     Treasury,
-    PositionCounter,
     TotalNotional,
     LastFundingUpdate,
     // Persistent storage (per-entity)
     Markets, // Accessed during ADL, apply_funding, and market management.
     MarketConfig(u32),
     MarketData(u32),
-    UserPositions(Address),
-    Position(u32),
+    UserCounter(Address),
+    Position(Address, u32),
 }
 
 /// Bump the instance rent for the contract
@@ -133,11 +131,26 @@ pub fn set_status(e: &Env, status: u32) {
         .set(&TradingStorageKey::Status, &status);
 }
 
-pub fn next_position_id(e: &Env) -> u32 {
-    let key = TradingStorageKey::PositionCounter;
-    let current: u32 = e.storage().instance().get(&key).unwrap_or(0);
-    e.storage().instance().set(&key, &(current + 1));
+pub fn next_position_id(e: &Env, user: &Address) -> u32 {
+    let key = TradingStorageKey::UserCounter(user.clone());
+    let current: u32 = e.storage().persistent().get(&key).unwrap_or(0);
+    e.storage().persistent().set(&key, &(current + 1));
+    // Market-tier TTL: counter must outlive all positions to prevent ID reuse
+    e.storage()
+        .persistent()
+        .extend_ttl(&key, LEDGER_THRESHOLD_MARKET, LEDGER_BUMP_MARKET);
     current
+}
+
+pub fn get_user_counter(e: &Env, user: &Address) -> u32 {
+    let key = TradingStorageKey::UserCounter(user.clone());
+    let result: u32 = e.storage().persistent().get(&key).unwrap_or(0);
+    if result > 0 {
+        e.storage()
+            .persistent()
+            .extend_ttl(&key, LEDGER_THRESHOLD_MARKET, LEDGER_BUMP_MARKET);
+    }
+    result
 }
 
 pub fn get_total_notional(e: &Env) -> i128 {
@@ -246,8 +259,8 @@ pub fn remove_market_data(e: &Env, market_id: u32) {
     e.storage().persistent().remove(&key);
 }
 
-pub fn get_position(e: &Env, position_id: u32) -> Position {
-    let key = TradingStorageKey::Position(position_id);
+pub fn get_position(e: &Env, user: &Address, id: u32) -> Position {
+    let key = TradingStorageKey::Position(user.clone(), id);
     let result = e
         .storage()
         .persistent()
@@ -259,55 +272,15 @@ pub fn get_position(e: &Env, position_id: u32) -> Position {
     result
 }
 
-pub fn set_position(e: &Env, position_id: u32, position: &Position) {
-    let key = TradingStorageKey::Position(position_id);
+pub fn set_position(e: &Env, user: &Address, id: u32, position: &Position) {
+    let key = TradingStorageKey::Position(user.clone(), id);
     e.storage().persistent().set(&key, position);
     e.storage()
         .persistent()
         .extend_ttl(&key, LEDGER_THRESHOLD_POSITION, LEDGER_BUMP_POSITION);
 }
 
-pub fn remove_position(e: &Env, position_id: u32) {
-    let key = TradingStorageKey::Position(position_id);
+pub fn remove_position(e: &Env, user: &Address, id: u32) {
+    let key = TradingStorageKey::Position(user.clone(), id);
     e.storage().persistent().remove(&key);
-}
-
-pub fn get_user_positions(e: &Env, user: &Address) -> Vec<u32> {
-    let key = TradingStorageKey::UserPositions(user.clone());
-    if let Some(positions) = e.storage().persistent().get::<_, Vec<u32>>(&key) {
-        e.storage()
-            .persistent()
-            .extend_ttl(&key, LEDGER_THRESHOLD_POSITION, LEDGER_BUMP_POSITION);
-        positions
-    } else {
-        Vec::new(e)
-    }
-}
-
-pub fn set_user_positions(e: &Env, user: &Address, positions: &Vec<u32>) {
-    let key = TradingStorageKey::UserPositions(user.clone());
-    e.storage().persistent().set(&key, positions);
-    e.storage()
-        .persistent()
-        .extend_ttl(&key, LEDGER_THRESHOLD_POSITION, LEDGER_BUMP_POSITION);
-}
-
-pub fn add_user_position(e: &Env, user: &Address, position_id: u32) {
-    let mut positions = get_user_positions(e, user);
-    if positions.len() >= crate::constants::MAX_ENTRIES {
-        panic_with_error!(e, TradingError::MaxPositionsReached);
-    }
-    positions.push_back(position_id);
-    set_user_positions(e, user, &positions);
-}
-
-pub fn remove_user_position(e: &Env, user: &Address, position_id: u32) {
-    let mut positions = get_user_positions(e, user);
-    for i in 0..positions.len() {
-        if positions.get(i) == Some(position_id) {
-            positions.remove(i);
-            break;
-        }
-    }
-    set_user_positions(e, user, &positions);
 }

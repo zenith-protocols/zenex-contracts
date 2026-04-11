@@ -37,8 +37,8 @@ fn test_funding_accrues_and_settles() {
 
     // Close both positions at the same price (no PnL from price movement)
     let close_bytes = fixture.btc_price(BTC_PRICE_I64);
-    let payout_long = fixture.trading.close_position(&long_pos, &close_bytes);
-    let payout_short = fixture.trading.close_position(&short_pos, &close_bytes);
+    let payout_long = fixture.trading.close_position(&user_long, &long_pos, &close_bytes);
+    let payout_short = fixture.trading.close_position(&user_short, &short_pos, &close_bytes);
 
     assert!(payout_long > 0, "long should have some payout");
     assert!(payout_short > 0, "short should have some payout");
@@ -72,8 +72,8 @@ fn test_funding_dominant_side_pays() {
 
     // Close both at same price (no PnL from price movement)
     let close_bytes = fixture.btc_price(BTC_PRICE_I64);
-    fixture.trading.close_position(&long_pos, &close_bytes);
-    fixture.trading.close_position(&short_pos, &close_bytes);
+    fixture.trading.close_position(&user_long, &long_pos, &close_bytes);
+    fixture.trading.close_position(&user_short, &short_pos, &close_bytes);
 
     let final_long = fixture.token.balance(&user_long);
     let final_short = fixture.token.balance(&user_short);
@@ -274,7 +274,7 @@ fn test_fee_accrual_increases_with_time() {
 
     // Close the position after 2 hours
     let close_bytes = fixture.btc_price(BTC_PRICE_I64);
-    let payout = fixture.trading.close_position(&pos, &close_bytes);
+    let payout = fixture.trading.close_position(&user, &pos, &close_bytes);
     assert!(payout > 0, "position should have some payout");
 
     // The payout should be less than the collateral deposited (fees accumulated)
@@ -334,8 +334,8 @@ fn test_funding_rounding_dust_bounded() {
     }
 
     let close_bytes = fixture.btc_price(BTC_PRICE_I64);
-    let payout_alice = fixture.trading.close_position(&alice_pos, &close_bytes);
-    let payout_bob = fixture.trading.close_position(&bob_pos, &close_bytes);
+    let payout_alice = fixture.trading.close_position(&alice, &alice_pos, &close_bytes);
+    let payout_bob = fixture.trading.close_position(&bob, &bob_pos, &close_bytes);
 
     let vault_after = fixture.vault.total_assets();
     let alice_loss = 20_000 * SCALAR_7 - payout_alice;
@@ -438,7 +438,7 @@ fn test_adl_funding_undercharge_bounded() {
     let alice_pos = fixture.open_long(&alice, FEED_BTC, 50_000, 200_000, BTC_PRICE_I64);
     fixture.open_short(&bob, FEED_BTC, 50_000, 100_000, BTC_PRICE_I64);
 
-    let alice_data = fixture.trading.get_position(&alice_pos);
+    let alice_data = fixture.trading.get_position(&alice, &alice_pos);
     let original_notional = alice_data.notional;
     let alice_fund_idx_at_open = alice_data.fund_idx;
 
@@ -466,7 +466,7 @@ fn test_adl_funding_undercharge_bounded() {
     let fund_idx_final = fixture.trading.get_market_data(&FEED_BTC).l_fund_idx;
 
     fixture.jump(31);
-    let payout_alice = fixture.trading.close_position(&alice_pos, &fixture.btc_price(BTC_PRICE_I64));
+    let payout_alice = fixture.trading.close_position(&alice, &alice_pos, &fixture.btc_price(BTC_PRICE_I64));
 
     let alice_col = 50_000 * SCALAR_7;
     let actual_funding = alice_col - payout_alice;

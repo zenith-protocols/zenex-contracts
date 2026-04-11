@@ -166,12 +166,13 @@ pub trait Trading {
     /// - `TradingError::PositionNotPending` (721) if position is filled and market still exists (use `close_position` instead)
     /// - `TradingError::ContractFrozen` (742) if contract is Frozen
     /// - `TradingError::PositionNotFound` (720) if position_id is invalid
-    fn cancel_position(e: Env, position_id: u32) -> i128;
+    fn cancel_position(e: Env, user: Address, id: u32) -> i128;
 
     /// Close a filled position at the current oracle price with full settlement.
     ///
     /// # Parameters
-    /// - `position_id` - ID of the position
+    /// - `user` - Position owner address
+    /// - `id` - Position ID (per-user sequence number)
     /// - `price` - Binary-encoded price payload (ignored for disabled/deleted markets)
     ///
     /// # Returns
@@ -181,7 +182,7 @@ pub trait Trading {
     /// - `TradingError::ContractFrozen` (742) if contract is Frozen
     /// - `TradingError::PositionTooNew` (732) if MIN_OPEN_TIME not elapsed (normal path only)
     /// - `TradingError::InvalidPrice` (710) if feed_id mismatch (normal path only)
-    fn close_position(e: Env, position_id: u32, price: Bytes) -> i128;
+    fn close_position(e: Env, user: Address, id: u32, price: Bytes) -> i128;
 
     /// Add or withdraw collateral on an open (filled) position.
     ///
@@ -190,7 +191,8 @@ pub trait Trading {
     /// then transfers difference back to user.
     ///
     /// # Parameters
-    /// - `position_id` - ID of the filled position
+    /// - `user` - Position owner address
+    /// - `id` - Position ID (per-user sequence number)
     /// - `new_collateral` - Desired collateral amount after modification (token_decimals)
     /// - `price` - Binary-encoded price payload (needed for margin check on withdrawal)
     ///
@@ -199,7 +201,7 @@ pub trait Trading {
     /// - `TradingError::ActionNotAllowedForStatus` (733) if position is not filled
     /// - `TradingError::CollateralUnchanged` (727) if new_collateral == current
     /// - `TradingError::WithdrawalBreaksMargin` (728) if withdrawal leaves insufficient margin
-    fn modify_collateral(e: Env, position_id: u32, new_collateral: i128, price: Bytes);
+    fn modify_collateral(e: Env, user: Address, id: u32, new_collateral: i128, price: Bytes);
 
     /// Update take-profit and stop-loss trigger prices on an existing position.
     ///
@@ -207,13 +209,14 @@ pub trait Trading {
     /// entry-price validation. Invalid values simply never fire.
     ///
     /// # Parameters
-    /// - `position_id` - ID of the position
+    /// - `user` - Position owner address
+    /// - `id` - Position ID (per-user sequence number)
     /// - `take_profit` - New TP price, 0 = clear (price_scalar units)
     /// - `stop_loss` - New SL price, 0 = clear (price_scalar units)
     ///
     /// # Panics
     /// - `TradingError::ContractFrozen` (742) if contract is Frozen
-    fn set_triggers(e: Env, position_id: u32, take_profit: i128, stop_loss: i128);
+    fn set_triggers(e: Env, user: Address, id: u32, take_profit: i128, stop_loss: i128);
 
     /// Execute a batch of keeper actions for positions in a single market.
     ///
@@ -225,14 +228,15 @@ pub trait Trading {
     ///
     /// # Parameters
     /// - `caller` - Keeper address (receives `caller_rate` share of trading fees)
-    /// - `position_ids` - Position IDs to process
+    /// - `users` - Position owner addresses (parallel with `ids`)
+    /// - `ids` - Position IDs, per-user sequence numbers (parallel with `users`)
     /// - `price` - Binary-encoded price payload (single feed)
     ///
     /// # Panics
     /// - `TradingError::ContractFrozen` (742) if contract is Frozen
     /// - `TradingError::InvalidPrice` (710) if position feed doesn't match price feed
     /// - `TradingError::NotActionable` (731) if no valid action for the position
-    fn execute(e: Env, caller: Address, market_id: u32, position_ids: Vec<u32>, price: Bytes);
+    fn execute(e: Env, caller: Address, market_id: u32, users: Vec<Address>, ids: Vec<u32>, price: Bytes);
 
     /// Recalculate and store funding rates for all markets. Permissionless, callable
     /// once per hour.
@@ -244,11 +248,11 @@ pub trait Trading {
     /// - `TradingError::FundingTooEarly` (752) if < 1 hour since last call
     fn apply_funding(e: Env);
 
-    /// Returns the position for the given ID.
-    fn get_position(e: Env, position_id: u32) -> Position;
+    /// Returns the position for the given user and position ID.
+    fn get_position(e: Env, user: Address, id: u32) -> Position;
 
-    /// Returns all position IDs owned by the given user.
-    fn get_user_positions(e: Env, user: Address) -> Vec<u32>;
+    /// Returns the next sequence number for the given user (number of positions created).
+    fn get_user_counter(e: Env, user: Address) -> u32;
 
     /// Returns the market configuration for the given market.
     fn get_market_config(e: Env, market_id: u32) -> MarketConfig;
@@ -383,31 +387,31 @@ impl Trading for TradingContract {
         )
     }
 
-    fn cancel_position(e: Env, position_id: u32) -> i128 {
+    fn cancel_position(e: Env, user: Address, id: u32) -> i128 {
         storage::extend_instance(&e);
-        trading::execute_cancel_position(&e, position_id)
+        trading::execute_cancel_position(&e, &user, id)
     }
 
-    fn close_position(e: Env, position_id: u32, price: Bytes) -> i128 {
+    fn close_position(e: Env, user: Address, id: u32, price: Bytes) -> i128 {
         storage::extend_instance(&e);
-        trading::execute_close_position(&e, position_id, price)
+        trading::execute_close_position(&e, &user, id, price)
     }
 
-    fn modify_collateral(e: Env, position_id: u32, new_collateral: i128, price: Bytes) {
+    fn modify_collateral(e: Env, user: Address, id: u32, new_collateral: i128, price: Bytes) {
         storage::extend_instance(&e);
         let pv = PriceVerifierClient::new(&e, &storage::get_price_verifier(&e));
-        trading::execute_modify_collateral(&e, position_id, new_collateral, &pv.verify_price(&price));
+        trading::execute_modify_collateral(&e, &user, id, new_collateral, &pv.verify_price(&price));
     }
 
-    fn set_triggers(e: Env, position_id: u32, take_profit: i128, stop_loss: i128) {
+    fn set_triggers(e: Env, user: Address, id: u32, take_profit: i128, stop_loss: i128) {
         storage::extend_instance(&e);
-        trading::execute_set_triggers(&e, position_id, take_profit, stop_loss);
+        trading::execute_set_triggers(&e, &user, id, take_profit, stop_loss);
     }
 
-    fn execute(e: Env, caller: Address, market_id: u32, position_ids: Vec<u32>, price: Bytes) {
+    fn execute(e: Env, caller: Address, market_id: u32, users: Vec<Address>, ids: Vec<u32>, price: Bytes) {
         storage::extend_instance(&e);
         let pv = PriceVerifierClient::new(&e, &storage::get_price_verifier(&e));
-        trading::execute_trigger(&e, &caller, market_id, position_ids, &pv.verify_price(&price));
+        trading::execute_trigger(&e, &caller, market_id, users, ids, &pv.verify_price(&price));
     }
 
     fn apply_funding(e: Env) {
@@ -415,12 +419,12 @@ impl Trading for TradingContract {
         trading::execute_apply_funding(&e);
     }
 
-    fn get_position(e: Env, position_id: u32) -> Position {
-        storage::get_position(&e, position_id)
+    fn get_position(e: Env, user: Address, id: u32) -> Position {
+        storage::get_position(&e, &user, id)
     }
 
-    fn get_user_positions(e: Env, user: Address) -> Vec<u32> {
-        storage::get_user_positions(&e, &user)
+    fn get_user_counter(e: Env, user: Address) -> u32 {
+        storage::get_user_counter(&e, &user)
     }
 
     fn get_market_config(e: Env, market_id: u32) -> MarketConfig {

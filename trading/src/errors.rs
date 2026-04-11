@@ -19,7 +19,6 @@ pub enum TradingError {
     // 720: Position
     PositionNotFound = 720, // position ID not found in storage
     PositionNotPending = 721, // position is filled; expected pending
-    MaxPositionsReached = 722, // user has MAX_ENTRIES (50) positions
     NegativeValueNotAllowed = 723, // a parameter is <= 0 or negative
     NotionalBelowMinimum = 724, // notional below TradingConfig.min_notional
     NotionalAboveMaximum = 725, // notional above TradingConfig.max_notional
@@ -29,6 +28,7 @@ pub enum TradingError {
     NotActionable = 731, // no valid action for this position
     PositionTooNew = 732, // close attempted before MIN_OPEN_TIME (30s)
     ActionNotAllowedForStatus = 733, // action not allowed for position status
+    InvalidInput = 734, // malformed input (e.g. mismatched parallel vec lengths)
 
     // 740: Contract Status
     InvalidStatus = 740, // invalid or disallowed contract status value

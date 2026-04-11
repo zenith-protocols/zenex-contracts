@@ -202,7 +202,7 @@ fuzz_target!(|input: FuzzInput| {
             continue;
         };
 
-        let mut positions: Vec<u32> = vec![primary_id];
+        let mut positions: Vec<(Address, u32)> = vec![(user_primary.clone(), primary_id)];
 
         // Optionally open a counter-position for interest dynamics
         if scenario.open_counter {
@@ -218,7 +218,7 @@ fuzz_target!(|input: FuzzInput| {
             verify_expected_error(&counter_result, "OpenCounter", OPEN_ERRORS);
 
             if let Ok(Ok(counter_id)) = counter_result {
-                positions.push(counter_id);
+                positions.push((user_counter.clone(), counter_id));
             }
         }
 
@@ -248,18 +248,18 @@ fuzz_target!(|input: FuzzInput| {
                 StepAction::TryLiquidate => {
                     let price_bytes = build_btc_price(&fixture, btc_price);
                     let result = fixture.trading.try_execute(
-                        &keeper, &FEED_BTC, &svec![&fixture.env, primary_id], &price_bytes,
+                        &keeper, &FEED_BTC, &svec![&fixture.env, user_primary.clone()], &svec![&fixture.env, primary_id], &price_bytes,
                     );
                     verify_expected_error(&result, "TryLiquidate", EXECUTE_ERRORS);
 
                     if is_ok(&result) {
                         // Check position was actually removed
                         assert!(
-                            !fixture.position_exists(primary_id),
+                            !fixture.position_exists(&user_primary, primary_id),
                             "Position {} still exists after successful liquidation",
                             primary_id
                         );
-                        positions.retain(|&id| id != primary_id);
+                        positions.retain(|(_, id)| *id != primary_id);
                         primary_liquidated = true;
                     }
                 }
@@ -295,9 +295,9 @@ fuzz_target!(|input: FuzzInput| {
 
         // Cleanup: close remaining positions, tracking whether all succeed
         let mut all_closed = true;
-        for &pid in &positions {
+        for (user, pid) in &positions {
             let price_bytes = build_btc_price(&fixture, btc_price);
-            let result = fixture.trading.try_close_position(&pid, &price_bytes);
+            let result = fixture.trading.try_close_position(user, pid, &price_bytes);
             verify_expected_error(&result, "Cleanup", CLOSE_ERRORS);
             if !is_ok(&result) {
                 all_closed = false;
