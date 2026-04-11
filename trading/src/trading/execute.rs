@@ -32,6 +32,9 @@ pub fn execute_trigger(
     price_data: &PriceData,
 ) {
     require_can_manage(e);
+    if users.len() != ids.len() {
+        panic_with_error!(e, TradingError::InvalidConfig);
+    }
 
     let mut ctx = Context::load(e, market_id, price_data);
     let transfers = process_positions(e, &mut ctx, caller, users, ids);

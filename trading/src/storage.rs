@@ -135,9 +135,10 @@ pub fn next_position_id(e: &Env, user: &Address) -> u32 {
     let key = TradingStorageKey::UserCounter(user.clone());
     let current: u32 = e.storage().persistent().get(&key).unwrap_or(0);
     e.storage().persistent().set(&key, &(current + 1));
+    // Market-tier TTL: counter must outlive all positions to prevent ID reuse
     e.storage()
         .persistent()
-        .extend_ttl(&key, LEDGER_THRESHOLD_POSITION, LEDGER_BUMP_POSITION);
+        .extend_ttl(&key, LEDGER_THRESHOLD_MARKET, LEDGER_BUMP_MARKET);
     current
 }
 
@@ -147,7 +148,7 @@ pub fn get_user_counter(e: &Env, user: &Address) -> u32 {
     if result > 0 {
         e.storage()
             .persistent()
-            .extend_ttl(&key, LEDGER_THRESHOLD_POSITION, LEDGER_BUMP_POSITION);
+            .extend_ttl(&key, LEDGER_THRESHOLD_MARKET, LEDGER_BUMP_MARKET);
     }
     result
 }

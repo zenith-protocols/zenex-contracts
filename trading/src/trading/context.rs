@@ -129,7 +129,8 @@ impl Context {
     ///
     /// # Parameters
     /// - `position` - Mutable position to fill (collateral reduced by fees)
-    /// - `position_id` - Storage key for the position
+    /// - `user` - Position owner address (storage key)
+    /// - `id` - Position ID (per-user sequence number)
     ///
     /// # Returns
     /// `(base_fee, impact_fee)` both in token_decimals.
@@ -174,7 +175,8 @@ impl Context {
     ///
     /// # Parameters
     /// - `position` - Mutable position to settle (notional may be reduced by ADL)
-    /// - `position_id` - Storage key (position + user tracking removed)
+    /// - `user` - Position owner address (storage key)
+    /// - `id` - Position ID (per-user sequence number)
     ///
     /// # Returns
     /// [`Settlement`] with broken-down PnL and fee components.
