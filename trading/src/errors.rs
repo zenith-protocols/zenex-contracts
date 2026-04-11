@@ -28,6 +28,7 @@ pub enum TradingError {
     NotActionable = 731, // no valid action for this position
     PositionTooNew = 732, // close attempted before MIN_OPEN_TIME (30s)
     ActionNotAllowedForStatus = 733, // action not allowed for position status
+    InvalidInput = 734, // malformed input (e.g. mismatched parallel vec lengths)
 
     // 740: Contract Status
     InvalidStatus = 740, // invalid or disallowed contract status value

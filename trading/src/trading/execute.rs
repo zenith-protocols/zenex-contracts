@@ -33,7 +33,7 @@ pub fn execute_trigger(
 ) {
     require_can_manage(e);
     if users.len() != ids.len() {
-        panic_with_error!(e, TradingError::InvalidConfig);
+        panic_with_error!(e, TradingError::InvalidInput);
     }
 
     let mut ctx = Context::load(e, market_id, price_data);
