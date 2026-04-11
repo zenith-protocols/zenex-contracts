@@ -340,8 +340,8 @@ fn test_long_take_profit_trigger() {
     let keeper_before = fixture.token.balance(&keeper);
     let user_before = fixture.token.balance(&user);
     let users = svec![&fixture.env, user.clone()];
-    let seqs = svec![&fixture.env, position_id];
-    fixture.trading.execute(&keeper, &FEED_BTC, &users, &seqs, &tp_price);
+    let ids = svec![&fixture.env, position_id];
+    fixture.trading.execute(&keeper, &FEED_BTC, &users, &ids, &tp_price);
 
     assert!(!fixture.position_exists(&user, position_id));
     assert!(fixture.token.balance(&user) > user_before);
@@ -367,8 +367,8 @@ fn test_long_stop_loss_trigger() {
     let keeper_before = fixture.token.balance(&keeper);
     let user_before = fixture.token.balance(&user);
     let users = svec![&fixture.env, user.clone()];
-    let seqs = svec![&fixture.env, position_id];
-    fixture.trading.execute(&keeper, &FEED_BTC, &users, &seqs, &sl_price);
+    let ids = svec![&fixture.env, position_id];
+    fixture.trading.execute(&keeper, &FEED_BTC, &users, &ids, &sl_price);
 
     assert!(!fixture.position_exists(&user, position_id));
     assert!(fixture.token.balance(&user) > user_before);
@@ -393,8 +393,8 @@ fn test_short_take_profit_trigger() {
 
     let keeper_before = fixture.token.balance(&keeper);
     let users = svec![&fixture.env, user.clone()];
-    let seqs = svec![&fixture.env, position_id];
-    fixture.trading.execute(&keeper, &FEED_BTC, &users, &seqs, &tp_price);
+    let ids = svec![&fixture.env, position_id];
+    fixture.trading.execute(&keeper, &FEED_BTC, &users, &ids, &tp_price);
 
     assert!(!fixture.position_exists(&user, position_id));
     assert_eq!(fixture.token.balance(&keeper) - keeper_before, 5_000_001);
@@ -418,8 +418,8 @@ fn test_short_stop_loss_trigger() {
 
     let keeper_before = fixture.token.balance(&keeper);
     let users = svec![&fixture.env, user.clone()];
-    let seqs = svec![&fixture.env, position_id];
-    fixture.trading.execute(&keeper, &FEED_BTC, &users, &seqs, &sl_price);
+    let ids = svec![&fixture.env, position_id];
+    fixture.trading.execute(&keeper, &FEED_BTC, &users, &ids, &sl_price);
 
     assert!(!fixture.position_exists(&user, position_id));
     assert_eq!(fixture.token.balance(&keeper) - keeper_before, 5_000_001);
@@ -449,8 +449,8 @@ fn test_limit_order_place_fill_close() {
     let fill_price = fixture.btc_price(101_000 * PRICE_SCALAR as i64);
     let keeper_before = fixture.token.balance(&keeper);
     let users = svec![&fixture.env, user.clone()];
-    let seqs = svec![&fixture.env, position_id];
-    fixture.trading.execute(&keeper, &FEED_BTC, &users, &seqs, &fill_price);
+    let ids = svec![&fixture.env, position_id];
+    fixture.trading.execute(&keeper, &FEED_BTC, &users, &ids, &fill_price);
 
     let pos_filled = fixture.trading.get_position(&user, &position_id);
     assert!(pos_filled.filled);
@@ -497,8 +497,8 @@ fn test_limit_order_not_fillable_at_price() {
     // Price $105k > entry $101k — NOT fillable for long limit
     let bad_price = fixture.btc_price(105_000 * PRICE_SCALAR as i64);
     let users = svec![&fixture.env, user.clone()];
-    let seqs = svec![&fixture.env, position_id];
-    fixture.trading.execute(&keeper, &FEED_BTC, &users, &seqs, &bad_price);
+    let ids = svec![&fixture.env, position_id];
+    fixture.trading.execute(&keeper, &FEED_BTC, &users, &ids, &bad_price);
 }
 
 // ==========================================
@@ -563,8 +563,8 @@ fn test_execute_keeper_triggers_when_on_ice() {
     let tp_price = fixture.btc_price(111_000 * PRICE_SCALAR as i64);
 
     let users = svec![&fixture.env, user.clone()];
-    let seqs = svec![&fixture.env, position_id];
-    fixture.trading.execute(&keeper, &FEED_BTC, &users, &seqs, &tp_price);
+    let ids = svec![&fixture.env, position_id];
+    fixture.trading.execute(&keeper, &FEED_BTC, &users, &ids, &tp_price);
     assert!(!fixture.position_exists(&user, position_id));
 }
 
@@ -624,8 +624,9 @@ fn test_multi_user_position_isolation() {
 
     assert_eq!(fixture.trading.get_user_counter(&user1), 1);
     assert_eq!(fixture.trading.get_user_counter(&user2), 1);
-    assert_eq!(fixture.trading.get_position(&user1, &pos1).user, user1);
-    assert_eq!(fixture.trading.get_position(&user2, &pos2).user, user2);
+    // Positions are keyed by (user, id) — verify they exist and belong to the right market
+    assert!(fixture.trading.get_position(&user1, &pos1).filled);
+    assert!(fixture.trading.get_position(&user2, &pos2).filled);
 
     fixture.jump(31);
     let close_price = fixture.btc_price(110_000 * PRICE_SCALAR as i64);

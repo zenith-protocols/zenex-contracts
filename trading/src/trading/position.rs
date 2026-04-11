@@ -46,7 +46,7 @@ impl Settlement {
 }
 
 impl Position {
-    /// Create a new position, persist it, and register it under the user.
+    /// Create a new position and allocate a per-user ID.
     /// Returns (position_id, position).
     #[allow(clippy::too_many_arguments)]
     pub fn create(
@@ -61,7 +61,6 @@ impl Position {
         tp: i128,
     ) -> (u32, Self) {
         let position = Position {
-            user: user.clone(),
             filled: false,
             market_id,
             long,
@@ -260,9 +259,8 @@ mod tests {
     use crate::testutils::{create_trading, default_config, default_market, default_market_data, FEED_BTC};
     use soroban_sdk::{testutils::Address as _, Address, Env};
 
-    fn create_test_position(e: &Env) -> Position {
+    fn create_test_position(_e: &Env) -> Position {
         Position {
-            user: Address::generate(e),
             filled: true,
             market_id: FEED_BTC,
             long: true,
@@ -673,7 +671,6 @@ mod tests {
             );
 
             assert_eq!(id, 0);
-            assert_eq!(position.user, user);
             assert!(!position.filled);
             assert_eq!(position.market_id, FEED_BTC);
             assert!(position.long);

@@ -143,7 +143,7 @@ impl Context {
     /// # Panics
     /// - `TradingError::UtilizationExceeded` (751) if position pushes utilization past caps
     /// - All panics from `Position::validate()`
-    pub fn open(&mut self, e: &Env, position: &mut Position, user: &Address, seq: u32) -> (i128, i128) {
+    pub fn open(&mut self, e: &Env, position: &mut Position, user: &Address, id: u32) -> (i128, i128) {
         let base_fee = if self.data.is_dominant(position.long, position.notional) {
             position.notional.fixed_mul_ceil(e, &self.trading_config.fee_dom, &SCALAR_7)
         } else {
@@ -156,7 +156,7 @@ impl Context {
         position.col -= base_fee + impact_fee;
         position.validate(e, self.config.enabled, self.trading_config.min_notional, self.trading_config.max_notional, self.config.margin);
         position.fill(e, &self.data);
-        storage::set_position(e, user, seq, position);
+        storage::set_position(e, user, id, position);
 
         // entry_wt (entry-weighted aggregate) tracks Sigma(notional/entry_price) per side.
         // This enables O(1) estimate PnL calculation for the entire side during ADL checks,
@@ -178,12 +178,12 @@ impl Context {
     ///
     /// # Returns
     /// [`Settlement`] with broken-down PnL and fee components.
-    pub fn close(&mut self, e: &Env, position: &mut Position, user: &Address, seq: u32) -> Settlement {
+    pub fn close(&mut self, e: &Env, position: &mut Position, user: &Address, id: u32) -> Settlement {
         let s = position.settle(e, self);
         let ew_delta = position.notional.fixed_div_floor(e, &position.entry_price, &self.price_scalar);
         self.data.update_stats(position.long, -position.notional, ew_delta);
         self.total_notional -= position.notional;
-        storage::remove_position(e, user, seq);
+        storage::remove_position(e, user, id);
         s
     }
 

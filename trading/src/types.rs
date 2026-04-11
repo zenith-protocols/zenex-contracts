@@ -1,5 +1,5 @@
 use crate::errors::TradingError;
-use soroban_sdk::{contracttype, panic_with_error, Address, Env};
+use soroban_sdk::{contracttype, panic_with_error, Env};
 
 #[contracttype]
 #[derive(Clone, Debug)]
@@ -47,7 +47,6 @@ pub struct MarketData {
 #[contracttype]
 #[derive(Clone)]
 pub struct Position {
-    pub user:        Address, // position owner
     pub filled:      bool,    // false = pending limit, true = filled
     pub market_id:   u32,     // market identifier (maps to MarketConfig with feed_id)
     pub long:        bool,    // true = long, false = short

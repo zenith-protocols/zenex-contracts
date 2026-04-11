@@ -258,8 +258,8 @@ pub fn remove_market_data(e: &Env, market_id: u32) {
     e.storage().persistent().remove(&key);
 }
 
-pub fn get_position(e: &Env, user: &Address, seq: u32) -> Position {
-    let key = TradingStorageKey::Position(user.clone(), seq);
+pub fn get_position(e: &Env, user: &Address, id: u32) -> Position {
+    let key = TradingStorageKey::Position(user.clone(), id);
     let result = e
         .storage()
         .persistent()
@@ -271,15 +271,15 @@ pub fn get_position(e: &Env, user: &Address, seq: u32) -> Position {
     result
 }
 
-pub fn set_position(e: &Env, user: &Address, seq: u32, position: &Position) {
-    let key = TradingStorageKey::Position(user.clone(), seq);
+pub fn set_position(e: &Env, user: &Address, id: u32, position: &Position) {
+    let key = TradingStorageKey::Position(user.clone(), id);
     e.storage().persistent().set(&key, position);
     e.storage()
         .persistent()
         .extend_ttl(&key, LEDGER_THRESHOLD_POSITION, LEDGER_BUMP_POSITION);
 }
 
-pub fn remove_position(e: &Env, user: &Address, seq: u32) {
-    let key = TradingStorageKey::Position(user.clone(), seq);
+pub fn remove_position(e: &Env, user: &Address, id: u32) {
+    let key = TradingStorageKey::Position(user.clone(), id);
     e.storage().persistent().remove(&key);
 }

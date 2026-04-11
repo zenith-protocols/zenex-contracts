@@ -54,9 +54,9 @@ pub fn execute_create_limit(
 /// - **Pending** (not filled): requires user auth, cancels the limit order.
 /// - **Filled + market deleted**: permissionless (anyone can clean up stranded positions).
 /// - **Filled + market exists**: panics (use `close_position` for settlement).
-pub fn execute_cancel_position(e: &Env, user: &Address, seq: u32) -> i128 {
+pub fn execute_cancel_position(e: &Env, user: &Address, id: u32) -> i128 {
     require_can_manage(e);
-    let position = storage::get_position(e, user, seq);
+    let position = storage::get_position(e, user, id);
 
     if position.filled {
         // Filled positions can only be cancelled if the market was deleted
@@ -65,21 +65,21 @@ pub fn execute_cancel_position(e: &Env, user: &Address, seq: u32) -> i128 {
         }
         // Permissionless: anyone can clean up stranded positions on deleted markets
     } else {
-        position.user.require_auth();
+        user.require_auth();
     }
 
     let payout = position.col;
     if payout > 0 {
         let token_client = TokenClient::new(e, &storage::get_token(e));
-        token_client.transfer(&e.current_contract_address(), &position.user, &payout);
+        token_client.transfer(&e.current_contract_address(), user, &payout);
     }
 
-    storage::remove_position(e, user, seq);
+    storage::remove_position(e, user, id);
 
     RefundPosition {
         market_id: position.market_id,
-        user: position.user.clone(),
-        position_id: seq,
+        user: user.clone(),
+        position_id: id,
         amount: payout,
     }
     .publish(e);
@@ -147,18 +147,18 @@ pub fn execute_create_market(
 ///
 /// # Returns
 /// User payout amount (token_decimals), >= 0.
-pub fn execute_close_position(e: &Env, user: &Address, seq: u32, price: soroban_sdk::Bytes) -> i128 {
+pub fn execute_close_position(e: &Env, user: &Address, id: u32, price: soroban_sdk::Bytes) -> i128 {
     require_can_manage(e);
     let pv = crate::dependencies::PriceVerifierClient::new(e, &storage::get_price_verifier(e));
     let price_data = pv.verify_price(&price);
 
-    let mut position = storage::get_position(e, user, seq);
-    position.user.require_auth();
+    let mut position = storage::get_position(e, user, id);
+    user.require_auth();
     position.require_closable(e);
 
     let mut ctx = Context::load(e, position.market_id, &price_data);
     let col = position.col;
-    let s = ctx.close(e, &mut position, user, seq);
+    let s = ctx.close(e, &mut position, user, id);
 
     let user_payout = s.equity(col).max(0);
     let treasury_fee = ctx.treasury_fee(e, s.protocol_fee());
@@ -175,15 +175,15 @@ pub fn execute_close_position(e: &Env, user: &Address, seq: u32, price: soroban_
         token_client.transfer(&e.current_contract_address(), &ctx.treasury, &treasury_fee);
     }
     if user_payout > 0 {
-        token_client.transfer(&e.current_contract_address(), &position.user, &user_payout);
+        token_client.transfer(&e.current_contract_address(), user, &user_payout);
     }
 
     ctx.store(e);
 
     ClosePosition {
         market_id: position.market_id,
-        user: position.user.clone(),
-        position_id: seq,
+        user: user.clone(),
+        position_id: id,
         price: ctx.price,
         pnl: s.net_pnl(col),
         base_fee: s.base_fee,
@@ -201,10 +201,10 @@ pub fn execute_close_position(e: &Env, user: &Address, seq: u32, price: soroban_
 /// For withdrawals, a margin check is performed: the position's equity after
 /// settlement must remain above `notional * margin`. This prevents users from
 /// extracting collateral to a point where the position would be immediately liquidatable.
-pub fn execute_modify_collateral(e: &Env, user: &Address, seq: u32, new_collateral: i128, price_data: &PriceData) {
+pub fn execute_modify_collateral(e: &Env, user: &Address, id: u32, new_collateral: i128, price_data: &PriceData) {
     require_can_manage(e);
-    let mut position = storage::get_position(e, user, seq);
-    position.user.require_auth();
+    let mut position = storage::get_position(e, user, id);
+    user.require_auth();
 
     if !position.filled {
         panic_with_error!(e, TradingError::ActionNotAllowedForStatus);
@@ -218,7 +218,7 @@ pub fn execute_modify_collateral(e: &Env, user: &Address, seq: u32, new_collater
 
     if collateral_diff > 0 {
         let token_client = TokenClient::new(e, &storage::get_token(e));
-        token_client.transfer(&position.user, e.current_contract_address(), &collateral_diff);
+        token_client.transfer(user, e.current_contract_address(), &collateral_diff);
     } else {
         let ctx = Context::load(e, position.market_id, price_data);
         let token_client = TokenClient::new(e, &ctx.token);
@@ -229,14 +229,14 @@ pub fn execute_modify_collateral(e: &Env, user: &Address, seq: u32, new_collater
         }
 
         ctx.store(e);
-        token_client.transfer(&e.current_contract_address(), &position.user, &-collateral_diff);
+        token_client.transfer(&e.current_contract_address(), user, &-collateral_diff);
     }
 
-    storage::set_position(e, user, seq, &position);
+    storage::set_position(e, user, id, &position);
     ModifyCollateral {
         market_id: position.market_id,
-        user: position.user.clone(),
-        position_id: seq,
+        user: user.clone(),
+        position_id: id,
         amount: collateral_diff,
     }
     .publish(e);
@@ -246,19 +246,19 @@ pub fn execute_modify_collateral(e: &Env, user: &Address, seq: u32, new_collater
 ///
 /// Set to 0 to clear a trigger. TP/SL are pure price triggers — no
 /// entry-price validation. Invalid values simply never fire.
-pub fn execute_set_triggers(e: &Env, user: &Address, seq: u32, take_profit: i128, stop_loss: i128) {
+pub fn execute_set_triggers(e: &Env, user: &Address, id: u32, take_profit: i128, stop_loss: i128) {
     require_can_manage(e);
-    let mut position = storage::get_position(e, user, seq);
-    position.user.require_auth();
+    let mut position = storage::get_position(e, user, id);
+    user.require_auth();
 
     position.tp = take_profit;
     position.sl = stop_loss;
-    storage::set_position(e, user, seq, &position);
+    storage::set_position(e, user, id, &position);
 
     SetTriggers {
         market_id: position.market_id,
-        user: position.user.clone(),
-        position_id: seq,
+        user: user.clone(),
+        position_id: id,
         take_profit,
         stop_loss,
     }
