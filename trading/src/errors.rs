@@ -19,7 +19,6 @@ pub enum TradingError {
     // 720: Position
     PositionNotFound = 720, // position ID not found in storage
     PositionNotPending = 721, // position is filled; expected pending
-    MaxPositionsReached = 722, // user has MAX_ENTRIES (50) positions
     NegativeValueNotAllowed = 723, // a parameter is <= 0 or negative
     NotionalBelowMinimum = 724, // notional below TradingConfig.min_notional
     NotionalAboveMaximum = 725, // notional above TradingConfig.max_notional

@@ -272,8 +272,8 @@ fn test_adl_multi_market_scenario() {
     //
     // equity $427.98 < threshold $471.54 → liquidatable (but equity > 0 → NOT underwater)
     let liq_price = fixture.price_for_feed(FEED_BTC, 107_000 * PRICE_SCALAR as i64);
-    fixture.trading.execute(&keeper, &FEED_BTC, &svec![&fixture.env, btc_long_carol], &liq_price);
-    assert!(!fixture.position_exists(btc_long_carol));
+    fixture.trading.execute(&keeper, &FEED_BTC, &svec![&fixture.env, carol.clone()], &svec![&fixture.env, btc_long_carol], &liq_price);
+    assert!(!fixture.position_exists(&carol, btc_long_carol));
 
     // ========================================================
     // Phase 7 — Close all remaining at $107k BTC, $2k ETH, $0.10 XLM
@@ -291,7 +291,7 @@ fn test_adl_multi_market_scenario() {
     // pnl ~= $35,627.19 = floor(1_886_145_429_955 × 18_888_888 / 10^8) = 356_271_897_781
     // payout = $5k + $35,627.19 ~= $40,627.19
     // 50_000_000_000 + 356_271_897_781 = 406_271_897_781
-    let pay_alice_btc = fixture.trading.close_position(&btc_long_alice, &btc_107k);
+    let pay_alice_btc = fixture.trading.close_position(&alice, &btc_long_alice, &btc_107k);
     assert_eq!(pay_alice_btc, 406_271_897_781);
 
     // Bob BTC long: $150k @$100k, $4k col, compound ADL idx 0.9431.
@@ -302,7 +302,7 @@ fn test_adl_multi_market_scenario() {
     // pnl ~= $9,902.26 = floor(1_414_609_072_466 × 7_000_000 / 10^8) = 99_022_635_072
     // payout = $4k + $9,902.26 ~= $13,902.26
     // 40_000_000_000 + 99_022_635_072 = 139_022_635_072
-    let pay_bob_btc = fixture.trading.close_position(&btc_long_bob, &btc_107k);
+    let pay_bob_btc = fixture.trading.close_position(&bob, &btc_long_bob, &btc_107k);
     assert_eq!(pay_bob_btc, 139_022_635_072);
 
     // Dave BTC short: $100k @$200k, $25k col, compound ADL idx 0.9431.
@@ -313,7 +313,7 @@ fn test_adl_multi_market_scenario() {
     // pnl ~= $43,852.88 = floor(943_072_714_977 × 46_500_000 / 10^8) = 438_528_812_464
     // payout = $25k + $43,852.88 ~= $68,852.88
     // 250_000_000_000 + 438_528_812_464 = 688_528_812_464
-    let pay_dave_btc = fixture.trading.close_position(&btc_short_dave, &btc_107k);
+    let pay_dave_btc = fixture.trading.close_position(&dave, &btc_short_dave, &btc_107k);
     assert_eq!(pay_dave_btc, 688_528_812_464);
 
     // Alice ETH short: $200k @$2.5k, $25k col, compound ADL idx 0.9431.
@@ -324,7 +324,7 @@ fn test_adl_multi_market_scenario() {
     // pnl ~= $37,722.91 = floor(1_886_145_429_955 × 20_000_000 / 10^8) = 377_229_085_991
     // payout = $25k + $37,722.91 ~= $62,722.91
     // 250_000_000_000 + 377_229_085_991 = 627_229_085_991
-    let pay_alice_eth = fixture.trading.close_position(&eth_short_alice, &eth_2k);
+    let pay_alice_eth = fixture.trading.close_position(&alice, &eth_short_alice, &eth_2k);
     assert_eq!(pay_alice_eth, 627_229_085_991);
 
     // Bob ETH short: $150k @$2.2k, $20k col, compound ADL idx 0.9431.
@@ -335,7 +335,7 @@ fn test_adl_multi_market_scenario() {
     // pnl ~= $12,860.08 = floor(1_414_609_072_466 × 9_090_909 / 10^8) = 128_600_823_483
     // payout = $20k + $12,860.08 ~= $32,860.08
     // 200_000_000_000 + 128_600_823_483 = 328_600_823_483
-    let pay_bob_eth = fixture.trading.close_position(&eth_short_bob, &eth_2k);
+    let pay_bob_eth = fixture.trading.close_position(&bob, &eth_short_bob, &eth_2k);
     assert_eq!(pay_bob_eth, 328_600_823_483);
 
     // Carol ETH long: $100k @$1.5k, $15k col, compound ADL idx 0.9431.
@@ -346,14 +346,14 @@ fn test_adl_multi_market_scenario() {
     // pnl ~= $31,435.76 = floor(943_072_714_977 × 33_333_333 / 10^8) = 314_357_568_515
     // payout = $15k + $31,435.76 ~= $46,435.76
     // 150_000_000_000 + 314_357_568_515 = 464_357_568_515
-    let pay_carol_eth = fixture.trading.close_position(&eth_long_carol, &eth_2k);
+    let pay_carol_eth = fixture.trading.close_position(&carol, &eth_long_carol, &eth_2k);
     assert_eq!(pay_carol_eth, 464_357_568_515);
 
     // XLM: no ADL, $0.10 entry = $0.10 close, pnl = $0, no fees.
     // payout = col = $1k = 10_000_000_000
-    let pay_xlm_dave = fixture.trading.close_position(&xlm_long_dave, &xlm_010);
+    let pay_xlm_dave = fixture.trading.close_position(&dave, &xlm_long_dave, &xlm_010);
     assert_eq!(pay_xlm_dave, 10_000_000_000);
-    let pay_xlm_alice = fixture.trading.close_position(&xlm_short_alice, &xlm_010);
+    let pay_xlm_alice = fixture.trading.close_position(&alice, &xlm_short_alice, &xlm_010);
     assert_eq!(pay_xlm_alice, 10_000_000_000);
 
     // ========================================================
@@ -385,11 +385,11 @@ fn test_adl_multi_market_scenario() {
 
     // New position on BTC snapshots the compound ADL index (~0.9431)
     let new_btc = fixture.open_long(&alice, FEED_BTC, 1_000, 10_000, 107_000 * PRICE_SCALAR as i64);
-    assert_eq!(fixture.trading.get_position(&new_btc).adl_idx, 943_072_714_977_973_127);
+    assert_eq!(fixture.trading.get_position(&alice, &new_btc).adl_idx, 943_072_714_977_973_127);
 
     // New position on XLM snapshots SCALAR_18 (no ADL occurred on XLM)
     let new_xlm = fixture.open_long(&alice, FEED_XLM, 1_000, 10_000, 10_000_000);
-    assert_eq!(fixture.trading.get_position(&new_xlm).adl_idx, SCALAR_18);
+    assert_eq!(fixture.trading.get_position(&alice, &new_xlm).adl_idx, SCALAR_18);
 }
 
 /// ADL fires once, then the same prices cannot trigger it again.
@@ -584,11 +584,11 @@ fn test_entry_weight_dust_after_adl() {
 
     // Close all BTC positions
     let btc_989 = fixture.price_for_feed(FEED_BTC, 98_900 * PRICE_SCALAR as i64);
-    let pay_alice = fixture.trading.close_position(&alice_pos, &btc_989);
+    let pay_alice = fixture.trading.close_position(&alice, &alice_pos, &btc_989);
     assert_eq!(pay_alice, 9_692_307_692);
-    let pay_carol = fixture.trading.close_position(&carol_pos, &btc_989);
+    let pay_carol = fixture.trading.close_position(&carol, &carol_pos, &btc_989);
     assert_eq!(pay_carol, 904_230_769_230);
-    let pay_bob = fixture.trading.close_position(&bob_pos, &btc_989);
+    let pay_bob = fixture.trading.close_position(&bob, &bob_pos, &btc_989);
     assert_eq!(pay_bob, 261_000_000_000);
 
     // Dust: 1 unit each in l_entry_wt and l_notional

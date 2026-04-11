@@ -204,12 +204,12 @@ impl TestFixture<'_> {
         self.open_and_fill(user, market_id, collateral * SCALAR_7, notional * SCALAR_7, false, entry_price, 0, 0)
     }
 
-    pub fn position_exists(&self, position_id: u32) -> bool {
+    pub fn position_exists(&self, user: &Address, seq: u32) -> bool {
         self.env.as_contract(&self.trading.address, || {
             self.env
                 .storage()
                 .persistent()
-                .has(&trading::storage::TradingStorageKey::Position(position_id))
+                .has(&trading::storage::TradingStorageKey::Position(user.clone(), seq))
         })
     }
 

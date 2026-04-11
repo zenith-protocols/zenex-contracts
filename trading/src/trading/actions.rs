@@ -34,7 +34,7 @@ pub fn execute_create_limit(
     let market_config = storage::get_market_config(e, market_id);
     let (id, position) = Position::create(e, user, market_id, is_long, entry_price, collateral, notional_size, stop_loss, take_profit);
     position.validate(e, market_config.enabled, config.min_notional, config.max_notional, market_config.margin);
-    storage::set_position(e, id, &position);
+    storage::set_position(e, user, id, &position);
 
     let token_client = TokenClient::new(e, &storage::get_token(e));
     token_client.transfer(user, e.current_contract_address(), &collateral);
@@ -54,9 +54,9 @@ pub fn execute_create_limit(
 /// - **Pending** (not filled): requires user auth, cancels the limit order.
 /// - **Filled + market deleted**: permissionless (anyone can clean up stranded positions).
 /// - **Filled + market exists**: panics (use `close_position` for settlement).
-pub fn execute_cancel_position(e: &Env, position_id: u32) -> i128 {
+pub fn execute_cancel_position(e: &Env, user: &Address, seq: u32) -> i128 {
     require_can_manage(e);
-    let position = storage::get_position(e, position_id);
+    let position = storage::get_position(e, user, seq);
 
     if position.filled {
         // Filled positions can only be cancelled if the market was deleted
@@ -74,13 +74,12 @@ pub fn execute_cancel_position(e: &Env, position_id: u32) -> i128 {
         token_client.transfer(&e.current_contract_address(), &position.user, &payout);
     }
 
-    storage::remove_user_position(e, &position.user, position_id);
-    storage::remove_position(e, position_id);
+    storage::remove_position(e, user, seq);
 
     RefundPosition {
         market_id: position.market_id,
         user: position.user.clone(),
-        position_id,
+        position_id: seq,
         amount: payout,
     }
     .publish(e);
@@ -113,7 +112,7 @@ pub fn execute_create_market(
     let mut ctx = Context::load(e, market_id, price_data);
 
     let (id, mut position) = Position::create(e, user, market_id, is_long, ctx.price, collateral, notional_size, stop_loss, take_profit);
-    let (base_fee, impact_fee) = ctx.open(e, &mut position, id);
+    let (base_fee, impact_fee) = ctx.open(e, &mut position, user, id);
     ctx.store(e);
 
     let total_fee = base_fee + impact_fee;
@@ -148,18 +147,18 @@ pub fn execute_create_market(
 ///
 /// # Returns
 /// User payout amount (token_decimals), >= 0.
-pub fn execute_close_position(e: &Env, position_id: u32, price: soroban_sdk::Bytes) -> i128 {
+pub fn execute_close_position(e: &Env, user: &Address, seq: u32, price: soroban_sdk::Bytes) -> i128 {
     require_can_manage(e);
     let pv = crate::dependencies::PriceVerifierClient::new(e, &storage::get_price_verifier(e));
     let price_data = pv.verify_price(&price);
 
-    let mut position = storage::get_position(e, position_id);
+    let mut position = storage::get_position(e, user, seq);
     position.user.require_auth();
     position.require_closable(e);
 
     let mut ctx = Context::load(e, position.market_id, &price_data);
     let col = position.col;
-    let s = ctx.close(e, &mut position, position_id);
+    let s = ctx.close(e, &mut position, user, seq);
 
     let user_payout = s.equity(col).max(0);
     let treasury_fee = ctx.treasury_fee(e, s.protocol_fee());
@@ -184,7 +183,7 @@ pub fn execute_close_position(e: &Env, position_id: u32, price: soroban_sdk::Byt
     ClosePosition {
         market_id: position.market_id,
         user: position.user.clone(),
-        position_id,
+        position_id: seq,
         price: ctx.price,
         pnl: s.net_pnl(col),
         base_fee: s.base_fee,
@@ -202,9 +201,9 @@ pub fn execute_close_position(e: &Env, position_id: u32, price: soroban_sdk::Byt
 /// For withdrawals, a margin check is performed: the position's equity after
 /// settlement must remain above `notional * margin`. This prevents users from
 /// extracting collateral to a point where the position would be immediately liquidatable.
-pub fn execute_modify_collateral(e: &Env, position_id: u32, new_collateral: i128, price_data: &PriceData) {
+pub fn execute_modify_collateral(e: &Env, user: &Address, seq: u32, new_collateral: i128, price_data: &PriceData) {
     require_can_manage(e);
-    let mut position = storage::get_position(e, position_id);
+    let mut position = storage::get_position(e, user, seq);
     position.user.require_auth();
 
     if !position.filled {
@@ -233,11 +232,11 @@ pub fn execute_modify_collateral(e: &Env, position_id: u32, new_collateral: i128
         token_client.transfer(&e.current_contract_address(), &position.user, &-collateral_diff);
     }
 
-    storage::set_position(e, position_id, &position);
+    storage::set_position(e, user, seq, &position);
     ModifyCollateral {
         market_id: position.market_id,
         user: position.user.clone(),
-        position_id,
+        position_id: seq,
         amount: collateral_diff,
     }
     .publish(e);
@@ -247,19 +246,19 @@ pub fn execute_modify_collateral(e: &Env, position_id: u32, new_collateral: i128
 ///
 /// Set to 0 to clear a trigger. TP/SL are pure price triggers — no
 /// entry-price validation. Invalid values simply never fire.
-pub fn execute_set_triggers(e: &Env, position_id: u32, take_profit: i128, stop_loss: i128) {
+pub fn execute_set_triggers(e: &Env, user: &Address, seq: u32, take_profit: i128, stop_loss: i128) {
     require_can_manage(e);
-    let mut position = storage::get_position(e, position_id);
+    let mut position = storage::get_position(e, user, seq);
     position.user.require_auth();
 
     position.tp = take_profit;
     position.sl = stop_loss;
-    storage::set_position(e, position_id, &position);
-    
+    storage::set_position(e, user, seq, &position);
+
     SetTriggers {
         market_id: position.market_id,
         user: position.user.clone(),
-        position_id,
+        position_id: seq,
         take_profit,
         stop_loss,
     }
@@ -371,16 +370,15 @@ mod tests {
         let id = place_limit_long(&e, &contract, &user, collateral, notional);
 
         e.as_contract(&contract, || {
-            let pos = storage::get_position(&e, id);
+            let pos = storage::get_position(&e, &user, id);
             assert_eq!(pos.col, collateral);
             assert_eq!(pos.notional, notional);
             assert!(pos.long);
             assert!(!pos.filled);
             assert_eq!(pos.entry_price, BTC_PRICE);
 
-            let positions = storage::get_user_positions(&e, &user);
-            assert_eq!(positions.len(), 1);
-            assert_eq!(positions.get(0).unwrap(), id);
+            let counter = storage::get_user_counter(&e, &user);
+            assert_eq!(counter, 1);
         });
     }
 
@@ -394,7 +392,7 @@ mod tests {
         let id = place_limit_short(&e, &contract, &user, 1_000 * SCALAR_7, 10_000 * SCALAR_7);
 
         e.as_contract(&contract, || {
-            let pos = storage::get_position(&e, id);
+            let pos = storage::get_position(&e, &user, id);
             assert!(!pos.long);
             assert!(!pos.filled);
         });
@@ -424,7 +422,7 @@ mod tests {
         });
 
         e.as_contract(&contract, || {
-            let pos = storage::get_position(&e, id);
+            let pos = storage::get_position(&e, &user, id);
             assert!(pos.col < collateral); // collateral reduced by open fees
             assert_eq!(pos.notional, notional);
             assert!(pos.long);
@@ -498,10 +496,7 @@ mod tests {
         let id = place_limit_long(&e, &contract, &user, 1_000 * SCALAR_7, 10_000 * SCALAR_7);
 
         e.as_contract(&contract, || {
-            super::execute_cancel_position(&e, id);
-
-            let positions = storage::get_user_positions(&e, &user);
-            assert_eq!(positions.len(), 0);
+            super::execute_cancel_position(&e, &user, id);
         });
 
         // User gets full collateral back (no fees charged for limits)
@@ -532,7 +527,7 @@ mod tests {
         });
 
         e.as_contract(&contract, || {
-            super::execute_cancel_position(&e, id);
+            super::execute_cancel_position(&e, &user, id);
         });
     }
 
@@ -561,11 +556,8 @@ mod tests {
 
         let balance_before = token_client.balance(&user);
         e.as_contract(&contract, || {
-            let payout = super::execute_close_position(&e, id, dummy_price_bytes(&e));
+            let payout = super::execute_close_position(&e, &user, id, dummy_price_bytes(&e));
             assert!(payout > 0);
-
-            let positions = storage::get_user_positions(&e, &user);
-            assert_eq!(positions.len(), 0);
         });
 
         let balance_after = token_client.balance(&user);
@@ -595,8 +587,8 @@ mod tests {
 
         let new_collateral = 2_000 * SCALAR_7;
         e.as_contract(&contract, || {
-            super::execute_modify_collateral(&e, id, new_collateral, &pd);
-            let pos = storage::get_position(&e, id);
+            super::execute_modify_collateral(&e, &user, id, new_collateral, &pd);
+            let pos = storage::get_position(&e, &user, id);
             assert_eq!(pos.col, new_collateral);
         });
     }
@@ -623,11 +615,11 @@ mod tests {
         });
 
         e.as_contract(&contract, || {
-            let pos = storage::get_position(&e, id);
+            let pos = storage::get_position(&e, &user, id);
             // Withdraw a small amount — must stay above margin
             let new_collateral = pos.col - 100 * SCALAR_7;
-            super::execute_modify_collateral(&e, id, new_collateral, &pd);
-            let pos = storage::get_position(&e, id);
+            super::execute_modify_collateral(&e, &user, id, new_collateral, &pd);
+            let pos = storage::get_position(&e, &user, id);
             assert_eq!(pos.col, new_collateral);
         });
     }
@@ -654,8 +646,8 @@ mod tests {
         });
 
         e.as_contract(&contract, || {
-            let pos = storage::get_position(&e, id);
-            super::execute_modify_collateral(&e, id, pos.col, &pd);
+            let pos = storage::get_position(&e, &user, id);
+            super::execute_modify_collateral(&e, &user, id, pos.col, &pd);
         });
     }
 
@@ -683,8 +675,8 @@ mod tests {
         let tp = 110_000 * PRICE_SCALAR;
         let sl = 95_000 * PRICE_SCALAR;
         e.as_contract(&contract, || {
-            super::execute_set_triggers(&e, id, tp, sl);
-            let pos = storage::get_position(&e, id);
+            super::execute_set_triggers(&e, &user, id, tp, sl);
+            let pos = storage::get_position(&e, &user, id);
             assert_eq!(pos.tp, tp);
             assert_eq!(pos.sl, sl);
         });
@@ -713,8 +705,8 @@ mod tests {
 
         // Clear both triggers by setting to 0
         e.as_contract(&contract, || {
-            super::execute_set_triggers(&e, id, 0, 0);
-            let pos = storage::get_position(&e, id);
+            super::execute_set_triggers(&e, &user, id, 0, 0);
+            let pos = storage::get_position(&e, &user, id);
             assert_eq!(pos.tp, 0);
             assert_eq!(pos.sl, 0);
         });
@@ -799,11 +791,8 @@ mod tests {
         // Close settles normally (price unchanged → payout = col - fees)
         let balance_before = token_client.balance(&user);
         e.as_contract(&contract, || {
-            let payout = super::execute_close_position(&e, id, dummy_price_bytes(&e));
+            let payout = super::execute_close_position(&e, &user, id, dummy_price_bytes(&e));
             assert!(payout > 0);
-
-            let positions = storage::get_user_positions(&e, &user);
-            assert_eq!(positions.len(), 0);
         });
 
         let balance_after = token_client.balance(&user);
@@ -832,7 +821,7 @@ mod tests {
         });
 
         let col = e.as_contract(&contract, || {
-            storage::get_position(&e, id).col
+            storage::get_position(&e, &user, id).col
         });
 
         e.as_contract(&contract, || {
@@ -842,7 +831,7 @@ mod tests {
         // cancel_position works for filled positions when market is deleted
         let balance_before = token_client.balance(&user);
         e.as_contract(&contract, || {
-            let payout = super::execute_cancel_position(&e, id);
+            let payout = super::execute_cancel_position(&e, &user, id);
             assert_eq!(payout, col);
         });
 
@@ -869,7 +858,7 @@ mod tests {
 
         let balance_before = token_client.balance(&user);
         e.as_contract(&contract, || {
-            let payout = super::execute_cancel_position(&e, id);
+            let payout = super::execute_cancel_position(&e, &user, id);
             assert_eq!(payout, collateral);
         });
 

@@ -75,8 +75,7 @@ impl Position {
             created_at: e.ledger().timestamp(),
             adl_idx: SCALAR_18,
         };
-        let id = storage::next_position_id(e);
-        storage::add_user_position(e, user, id);
+        let id = storage::next_position_id(e, user);
         (id, position)
     }
 
@@ -687,10 +686,9 @@ mod tests {
             assert_eq!(position.adl_idx, SCALAR_18);
             assert_eq!(position.created_at, 1000);
 
-            // Verify user position tracking (create registers but does not persist position)
-            let user_positions = storage::get_user_positions(&e, &user);
-            assert_eq!(user_positions.len(), 1);
-            assert_eq!(user_positions.get(0), Some(id));
+            // Verify user counter incremented
+            let counter = storage::get_user_counter(&e, &user);
+            assert_eq!(counter, 1);
         });
     }
 

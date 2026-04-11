@@ -14,8 +14,8 @@ fn setup_fixture() -> TestFixture<'static> {
     create_fixture_with_data()
 }
 
-fn position_ids(env: &soroban_sdk::Env, id: u32) -> soroban_sdk::Vec<u32> {
-    svec![env, id]
+fn trigger_vecs(env: &soroban_sdk::Env, user: &Address, seq: u32) -> (soroban_sdk::Vec<Address>, soroban_sdk::Vec<u32>) {
+    (svec![env, user.clone()], svec![env, seq])
 }
 
 // ==========================================
@@ -36,11 +36,11 @@ fn test_liquidation_underwater_position() {
     fixture.jump(31); // past MIN_OPEN_TIME for the position to be closable
     let crash_price = fixture.btc_price(98_000 * PRICE_SCALAR as i64);
 
-    let ids = position_ids(&fixture.env, position_id);
-    fixture.trading.execute(&keeper, &FEED_BTC, &ids, &crash_price);
+    let (users, seqs) = trigger_vecs(&fixture.env, &user, position_id);
+    fixture.trading.execute(&keeper, &FEED_BTC, &users, &seqs, &crash_price);
 
     assert!(
-        !fixture.position_exists(position_id),
+        !fixture.position_exists(&user, position_id),
         "Position should be removed after liquidation"
     );
 }
@@ -60,10 +60,10 @@ fn test_liquidation_healthy_position_rejected() {
     // Equity = col + pnl - fees = ~1000 + (-500) - fees > liq_threshold (0.5% of 10k = 50)
     let mild_drop = fixture.btc_price(95_000 * PRICE_SCALAR as i64);
 
-    let ids = position_ids(&fixture.env, position_id);
+    let (users, seqs) = trigger_vecs(&fixture.env, &user, position_id);
     fixture
         .trading
-        .execute(&keeper, &FEED_BTC, &ids, &mild_drop); // should panic #751
+        .execute(&keeper, &FEED_BTC, &users, &seqs, &mild_drop); // should panic #751
 }
 
 #[test]
@@ -82,8 +82,8 @@ fn test_liquidation_keeper_receives_fee() {
     fixture.jump(31);
     let crash_price = fixture.btc_price(97_000 * PRICE_SCALAR as i64);
 
-    let ids = position_ids(&fixture.env, position_id);
-    fixture.trading.execute(&keeper, &FEED_BTC, &ids, &crash_price);
+    let (users, seqs) = trigger_vecs(&fixture.env, &user, position_id);
+    fixture.trading.execute(&keeper, &FEED_BTC, &users, &seqs, &crash_price);
 
     let keeper_balance_after = fixture.token.balance(&keeper);
     assert!(
@@ -126,10 +126,10 @@ fn test_liquidation_stale_price_rejected() {
     // Try liquidation with stale price (publish_time=99 < created_at=100)
     // Price verifier passes (abs_diff(100, 99) = 1 < max_staleness=60)
     // But trading contract's require_liquidatable rejects: StalePrice (749)
-    let ids = position_ids(&fixture.env, position_id);
+    let (users, seqs) = trigger_vecs(&fixture.env, &user, position_id);
     fixture
         .trading
-        .execute(&keeper, &FEED_BTC, &ids, &stale_price); // should panic #749
+        .execute(&keeper, &FEED_BTC, &users, &seqs, &stale_price); // should panic #749
 }
 
 // ==========================================
@@ -158,11 +158,11 @@ fn test_liquidation_after_interest_accrual() {
     // With a week of interest: accrued fees reduce equity below threshold
     let moderate_drop = fixture.btc_price(90_710 * PRICE_SCALAR as i64);
 
-    let ids = position_ids(&fixture.env, position_id);
-    fixture.trading.execute(&keeper, &FEED_BTC, &ids, &moderate_drop);
+    let (users, seqs) = trigger_vecs(&fixture.env, &user, position_id);
+    fixture.trading.execute(&keeper, &FEED_BTC, &users, &seqs, &moderate_drop);
 
     assert!(
-        !fixture.position_exists(position_id),
+        !fixture.position_exists(&user, position_id),
         "Position should be liquidatable after interest accrual ate into equity"
     );
 }
@@ -223,11 +223,11 @@ fn test_liquidation_after_adl() {
     );
     fixture.jump(31);
 
-    let ids = position_ids(&fixture.env, position_id);
-    fixture.trading.execute(&keeper, &FEED_BTC, &ids, &crash_price);
+    let (users, seqs) = trigger_vecs(&fixture.env, &user, position_id);
+    fixture.trading.execute(&keeper, &FEED_BTC, &users, &seqs, &crash_price);
 
     assert!(
-        !fixture.position_exists(position_id),
+        !fixture.position_exists(&user, position_id),
         "Position should be liquidated after ADL + price reversal"
     );
 }
