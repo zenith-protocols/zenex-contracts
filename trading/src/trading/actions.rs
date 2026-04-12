@@ -43,6 +43,13 @@ pub fn execute_create_limit(
         market_id,
         user: user.clone(),
         position_id: id,
+        long: position.long,
+        col: position.col,
+        notional: position.notional,
+        entry_price: position.entry_price,
+        sl: position.sl,
+        tp: position.tp,
+        created_at: position.created_at,
     }
     .publish(e);
 
@@ -80,7 +87,6 @@ pub fn execute_cancel_position(e: &Env, user: &Address, id: u32) -> i128 {
         market_id: position.market_id,
         user: user.clone(),
         position_id: id,
-        amount: payout,
     }
     .publish(e);
 
@@ -132,6 +138,16 @@ pub fn execute_create_market(
         market_id: ctx.market_id,
         user: user.clone(),
         position_id: id,
+        long: position.long,
+        col: position.col,
+        notional: position.notional,
+        entry_price: position.entry_price,
+        sl: position.sl,
+        tp: position.tp,
+        fund_idx: position.fund_idx,
+        borr_idx: position.borr_idx,
+        adl_idx: position.adl_idx,
+        created_at: position.created_at,
         base_fee,
         impact_fee,
     }
@@ -237,7 +253,10 @@ pub fn execute_modify_collateral(e: &Env, user: &Address, id: u32, new_collatera
         market_id: position.market_id,
         user: user.clone(),
         position_id: id,
-        amount: collateral_diff,
+        col: position.col,
+        fund_idx: position.fund_idx,
+        borr_idx: position.borr_idx,
+        adl_idx: position.adl_idx,
     }
     .publish(e);
 }
@@ -259,8 +278,8 @@ pub fn execute_set_triggers(e: &Env, user: &Address, id: u32, take_profit: i128,
         market_id: position.market_id,
         user: user.clone(),
         position_id: id,
-        take_profit,
-        stop_loss,
+        sl: stop_loss,
+        tp: take_profit,
     }
     .publish(e);
 }

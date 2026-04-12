@@ -257,6 +257,11 @@ fn apply_fill(
         market_id: position.market_id,
         user: user.clone(),
         position_id: id,
+        entry_price: position.entry_price,
+        fund_idx: position.fund_idx,
+        borr_idx: position.borr_idx,
+        adl_idx: position.adl_idx,
+        created_at: position.created_at,
         base_fee,
         impact_fee,
     }
