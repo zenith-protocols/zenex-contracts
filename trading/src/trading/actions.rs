@@ -254,9 +254,6 @@ pub fn execute_modify_collateral(e: &Env, user: &Address, id: u32, new_collatera
         user: user.clone(),
         position_id: id,
         col: position.col,
-        fund_idx: position.fund_idx,
-        borr_idx: position.borr_idx,
-        adl_idx: position.adl_idx,
     }
     .publish(e);
 }

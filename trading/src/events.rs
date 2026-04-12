@@ -1,26 +1,12 @@
 use soroban_sdk::{contractevent, Address};
 
-// ─────────────────────────────────────────────────────────────────
-// Event design
-//
 // Events carry only the fields that CHANGE at the emitting moment.
 // Off-chain indexers combine each event with the position row they
 // already hold. Fields established by an earlier event (e.g. long,
 // col, notional set at PlaceLimit) are not repeated on later events.
 //
 // Market-level events (ApplyFunding, ADLTriggered) are lifecycle
-// signals; consumers that need post-state re-read Market data. The
-// indexer runs one Market.loadMultiple per funding tick, not per
-// trade, so this is not hot-path.
-//
-// Scaling (i128 fields):
-//   col, notional, fees, pnl, amount   → token_decimals (10^7 on mainnet)
-//   entry_price, sl, tp, price         → 10^price_decimals per market
-//   fund_idx, borr_idx, adl_idx,
-//   reduction_pct                      → SCALAR_18
-// ─────────────────────────────────────────────────────────────────
-
-// ── Admin ────────────────────────────────────────────────────────
+// signals; consumers that need post-state re-read Market data.
 
 /// Global trading configuration updated via `set_config`. Indexer
 /// audits via (contract_id, tx_hash, event_type); full config read
@@ -56,7 +42,7 @@ pub struct SetStatus {
 
 /// Pending limit order created via `place_limit`. Establishes the
 /// row; `fund_idx` / `borr_idx` / `adl_idx` are not snapshotted
-/// until the order fills (indexer writes them as 0).
+/// until the order fills
 #[contractevent]
 #[derive(Clone)]
 pub struct PlaceLimit {
@@ -76,7 +62,6 @@ pub struct PlaceLimit {
 }
 
 /// Market order opened and immediately filled via `open_market`.
-/// No prior row — event carries full post-fill state.
 #[contractevent]
 #[derive(Clone)]
 pub struct OpenMarket {
@@ -121,8 +106,9 @@ pub struct FillLimit {
     pub impact_fee: i128,
 }
 
-/// Collateral added or withdrawn via `modify_collateral`. Funding
-/// accrues → indices refresh. Delta is `col - prior_col`.
+/// Collateral added or withdrawn via `modify_collateral`. Only `col`
+/// changes on the position; indices remain at their fill-time snapshot.
+/// Delta is `col - prior_col`.
 #[contractevent]
 #[derive(Clone)]
 pub struct ModifyCollateral {
@@ -133,13 +119,9 @@ pub struct ModifyCollateral {
     #[topic]
     pub position_id: u32,
     pub col: i128, // new collateral
-    pub fund_idx: i128,
-    pub borr_idx: i128,
-    pub adl_idx: i128,
 }
 
 /// Take-profit / stop-loss triggers updated via `set_triggers`.
-/// Nothing else changes.
 #[contractevent]
 #[derive(Clone)]
 pub struct SetTriggers {
@@ -152,11 +134,6 @@ pub struct SetTriggers {
     pub sl: i128,
     pub tp: i128,
 }
-
-// ── Position close (on-chain Position is deleted) ────────────────
-//
-// Indexer holds long / col / notional / entry_price / created_at
-// in its live row. Events carry only the close-specific payload.
 
 /// Closed by the user via `close_position`.
 #[contractevent]
@@ -230,8 +207,7 @@ pub struct StopLoss {
     pub borrowing_fee: i128,
 }
 
-/// Position refunded (market disabled or deleted). The refund amount
-/// equals the stored collateral, which the indexer already has.
+/// Position refunded (market disabled or deleted).
 #[contractevent]
 #[derive(Clone)]
 pub struct RefundPosition {

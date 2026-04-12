@@ -204,12 +204,17 @@ fn test_liquidation_after_adl() {
     fixture.jump(31);
     fixture.trading.update_status(&pump_price);
 
-    // ADL reduced long notional -- verify the index changed
+    // ADL reduced long notional -- verify the index changed.
+    // Note: ADL scales down notional only; collateral is untouched, so each
+    // affected position becomes *less* leveraged (safer), not more. This test
+    // verifies that a position can still be liquidated after an ADL event when
+    // the price reverses far enough to burn through the remaining collateral.
     let market = fixture.trading.get_market_data(&(FEED_BTC));
     assert!(market.l_adl_idx < 1_000_000_000_000_000_000i128, "ADL should have reduced long index");
 
-    // Now price crashes back below entry -- the ADL-reduced position has less
-    // notional to absorb the loss, making it easier to liquidate
+    // Price crashes well below entry. Even though ADL lowered effective leverage,
+    // the original position was ~83x so the reduced notional's loss on a 3% reversal
+    // still exceeds the 120-token collateral buffer.
     let crash_ts = fixture.env.ledger().timestamp() + 31;
     let crash_price = pyth_helper::build_price_update(
         &fixture.env,
